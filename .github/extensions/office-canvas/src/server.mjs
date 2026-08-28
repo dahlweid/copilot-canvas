@@ -285,7 +285,7 @@ export class ViewerInstance {
             stdio: "ignore",
             windowsHide: true,
         });
-        child.unref?.();
+        child.unref();
         return { launched: true, path: this.doc.path };
     }
 

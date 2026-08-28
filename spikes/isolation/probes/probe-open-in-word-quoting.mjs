@@ -35,8 +35,9 @@ const viaCmd = (p) => execFileAsync("cmd.exe", ["/c", "echo", p], { windowsHide:
 // corruption. Without this the probe overstates the defect by 3 of 9.
 const unquote = (s) => (s.startsWith('"') && s.endsWith('"') ? s.slice(1, -1) : s);
 
-// The argv-only alternative: no shell parse at all. `where` is a real
-// CommandLineToArgvW consumer, so it reports back exactly one argument.
+// The argv-only alternative: no shell parse at all. Node itself is the
+// CommandLineToArgvW consumer here — it re-prints the argument it was handed,
+// which is the whole measurement.
 const viaArgv = (p) =>
     execFileAsync(process.execPath, ["-e", "process.stdout.write(process.argv[1])", p], {
         windowsHide: true,

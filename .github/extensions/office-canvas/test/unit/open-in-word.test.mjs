@@ -13,11 +13,17 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { ViewerInstance } from "../../src/server.mjs";
 
-// Filenames that a `cmd.exe` parse corrupts. `&` truncates the path and runs
-// the tail as a command, `^` is eaten as cmd's escape character, and a matched
-// `%…%` pair is expanded. None has a space, which is what keeps Node from
-// quoting them in the first place.
-const HOSTILE = [
+// Filenames a `cmd.exe` parse mangles, plus benign controls. The first three
+// are the hostile cases: `&` truncates the path and runs the tail as a command,
+// `^` is eaten as cmd's escape character, and a matched `%…%` pair is expanded.
+// None has a space, which is what keeps Node from quoting them in the first
+// place.
+//
+// The last two are controls, and they earn their place: they survive a cmd
+// parse, because Node quotes them. They are here so the assertion covers the
+// paths the old implementation handled correctly as well as the ones it broke —
+// a fix that only repaired the hostile cases would be a regression for these.
+const LAUNCH_PATHS = [
     "C:\\Docs\\R&D.docx",
     "C:\\Docs\\caret^v.docx",
     "C:\\Docs\\%PATH%.docx",
@@ -40,7 +46,7 @@ const instanceWith = (docPath, calls) => {
 };
 
 test("the path is passed as one argv element, never interpolated into a command", () => {
-    for (const docPath of HOSTILE) {
+    for (const docPath of LAUNCH_PATHS) {
         const calls = [];
         instanceWith(docPath, calls).openInWord();
 
