@@ -12,7 +12,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readdir, rm, stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
-import { WordHost } from "./word-host.mjs";
+import { WordHost } from "./word/word-host.mjs";
 
 export class DocumentError extends Error {
     constructor(code, message) {

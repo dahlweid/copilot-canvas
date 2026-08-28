@@ -1,6 +1,6 @@
 # Repository restructure: `copilot-canvas`, and building on the server
 
-**Status:** plan, not executed
+**Status:** §2 and §3 executed; §4 workflows not yet written
 **Covers:** (1) renaming the repo for a multi-canvas future, (2) the directory and workflow
 structure needed to validate, version and package extensions in CI.
 
@@ -49,11 +49,27 @@ Low risk, and worth doing before a second canvas exists rather than after.
 
 | Identifier | Value | Why it is frozen |
 | --- | --- | --- |
-| Extension folder | `word-canvas` | `install_extension` repo-folder URLs point at it, and existing user installs live at `$COPILOT_HOME/extensions/word-canvas/` |
-| `extensionId` | `project:word-canvas` (auto-derived from the folder) | Changing the folder changes the id |
 | `canvasId` | `word-doc` | Already generic; agents and any saved state key off it |
 
 The repo name and the extension name are independent. Renaming the repo touches neither.
+
+**Correction, on execution.** This section previously froze the extension folder at
+`word-canvas` on the grounds that `install_extension` URLs point at it and user installs live
+at `$COPILOT_HOME/extensions/word-canvas/`. ADR 0003 makes that untenable — one extension
+hosting a Word *and* a PowerPoint canvas cannot be called `word-canvas` — so the folder was
+renamed to `office-canvas`, and with it the derived `extensionId`.
+
+The freeze was also based on a misreading. The only thing at
+`~/.copilot/extensions/word-canvas/` on this machine was an `artifacts/` directory — the
+render cache and recents file written at runtime by `store.mjs`, with no `extension.mjs`
+beside it. It was never an install. So the migration cost was one directory move, and the
+cache is regenerable anyway; only `recents.json` carried anything a user would miss.
+
+Anyone who *had* installed the extension keeps a working `word-canvas` copy that no longer
+receives updates, and would need to install `office-canvas` and delete the old folder — both
+register `canvasId` `word-doc`, so leaving both in place is a collision. That cost is real
+but is at its lowest now, before distribution, which is the argument for doing the rename
+first rather than later.
 
 ### 2.3 The one non-obvious cost
 
@@ -62,6 +78,10 @@ registered against a filesystem path (`C:\Git\...\copilot-canvas-word\`), and re
 directory breaks the registration. Either leave local paths alone — they are just names — or
 re-add the project through the app afterwards. Do not rename the directory and expect the app
 to notice.
+
+**On execution:** local paths were deliberately left alone, so the working copy still lives
+under `copilot-canvas-word\`. The remotes in both the main checkout and this worktree were
+repointed at the new URL and a fetch verified against it; GitHub's redirect was not relied on.
 
 ---
 
@@ -73,19 +93,20 @@ copilot-canvas/
 │  ├─ extensions/                    # C1: immediate subdirs only
 │  │  └─ office-canvas/              # ONE extension, a canvas per app (ADR 0003)
 │  │     ├─ extension.mjs            # C1: entry, exact name
-│  │     ├─ copilot-extension.json   # NEW — {name, version}; C4 requires it for gist install
+│  │     ├─ copilot-extension.json   # {name, version}; C4 requires it for gist install
 │  │     ├─ src/
-│  │     │  ├─ word/                 # Word canvas + tools
-│  │     │  ├─ powerpoint/           # PowerPoint canvas + tools
-│  │     │  ├─ shared/               # imported directly — no vendoring, no sync
-│  │     │  └─ ui/                   # pdf.js viewer, vendored once
+│  │     │  ├─ word/                 # Word COM host — app-specific
+│  │     │  ├─ powerpoint/           # (next) PowerPoint host
+│  │     │  ├─ ui/                   # viewer front-end; pdf.js vendored here
+│  │     │  └─ *.mjs                 # app-agnostic: cache, server, watcher, store
 │  │     └─ test/
-│  │        ├─ unit/                 # Office-free  → hosted runners
+│  │        ├─ unit/                 # Office-free  → hosted runners  (EMPTY — §4.4)
 │  │        └─ integration/          # needs Office → self-hosted only
 │  └─ workflows/
 │     ├─ validate.yml                # every push/PR, ubuntu-latest
 │     ├─ integration-windows.yml     # self-hosted + Office; nightly and manual
 │     └─ release.yml                 # on tag; packages and attaches artifacts
+├─ spikes/                           # outside the extension — see below
 ├─ tools/
 │  ├─ validate-extensions.mjs
 │  └─ package-extension.mjs
@@ -94,6 +115,19 @@ copilot-canvas/
 ├─ CONTEXT.md
 └─ README.md
 ```
+
+**There is no `src/shared/`.** The tree above previously showed one, but a `shared/`
+directory naming what is shared between one implementation and a hypothetical second is a
+guess at a seam. Application-specific code goes in `src/<app>/`; everything else sits at
+`src/` and is app-agnostic by default. The one genuine seam — `render-cache.mjs` importing
+`word/word-host.mjs` — is left as a visible direct import, to be broken when PowerPoint
+provides a second implementation to generalise against.
+
+**`spikes/` moved to the repository root**, out of the extension folder. C3 copies an
+extension folder wholesale, and the spike carried 300 KB of JPEG screenshots that no install
+needs — which C4 would also refuse outright, since gists reject binary files. Extracting it
+took the extension from 619 KB to 141 KB with zero binary files, so the C4 envelope now has
+headroom for pdf.js (§3.2).
 
 Excel would arrive later as `src/excel/` with its own canvas, once its display
 surface is decided — it will not be a page renderer.
@@ -226,16 +260,30 @@ Do this split **before** writing `validate.yml`, otherwise the workflow is decor
 
 ## 5. Order of work
 
-| | Step | Depends on |
-| --- | --- | --- |
-| 1 | Rename the repo; update remotes and README | — |
-| 2 | Add `copilot-extension.json` to `word-canvas` | — |
-| 3 | Split tests into `unit/` and `integration/` | — |
-| 4 | `tools/validate-extensions.mjs` + `validate.yml` | 2, 3 |
-| 5 | `tools/package-extension.mjs` + `release.yml` | 2 |
-| 6 | Probe: does pdf.js need its binary font files? (§3.2) | — |
-| 7 | Decide option **b** vs **c** for shared code (§3.1) | only when a second canvas is real |
-| 8 | Self-hosted Windows+Office runner, licence permitting | licence check |
+| | Step | Depends on | State |
+| --- | --- | --- | --- |
+| 1 | Rename the repo; update remotes and README | — | **done** |
+| 2 | Collapse to one `office-canvas` extension; move `spikes/` out; add `copilot-extension.json` | — | **done** |
+| 3 | Split tests into `unit/` and `integration/` | — | **dirs only** — `unit/` is empty |
+| 4 | `tools/validate-extensions.mjs` + `validate.yml` | 2, 3 | blocked on 3 |
+| 5 | `tools/package-extension.mjs` + `release.yml` | 2 | ready |
+| 6 | Probe: does pdf.js need its binary font files? (§3.2) | — | open |
+| 7 | Self-hosted Windows+Office runner, licence permitting | licence check | open |
 
-Steps 1–5 are a few hours and unblock everything else. Step 8 may never be worth it; steps 6
-and 7 are decisions this document deliberately leaves open rather than guessing at.
+Step 3 is the one that matters: the directories exist but `unit/` has nothing in it, so
+step 4 would produce a workflow that runs zero tests and reports green. **Write the first
+Office-free tests before writing `validate.yml`**, or the badge lies.
+
+Step 7 may never be worth it. Step 6 is a decision this document deliberately leaves open
+rather than guessing at.
+
+The former step 7 — "decide option b vs c for shared code" — is gone: ADR 0003 decided it,
+and §3.1 records the reasoning.
+
+### 5.1 Verification of steps 1–2
+
+The restructure was behaviour-preserving, checked rather than assumed: all three integration
+suites pass unchanged against the moved tree — 18/18 host, 16/16 cache, 29/29 server, with no
+`WINWORD.EXE` left behind. `node --check` passes on every `.mjs`, the manifest name matches
+its folder, no `package.json` exists in the extension (C2), and the folder now contains zero
+binary files (C4).

@@ -1,6 +1,6 @@
 // Smoke test for the document service / PDF cache.
 //
-// Run: node .github/extensions/word-canvas/test/cache-smoke.mjs
+// Run: node .github/extensions/office-canvas/test/integration/cache-smoke.mjs
 
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
-import { RenderCache, DocumentError, normalizeDocPath } from "../src/render-cache.mjs";
+import { RenderCache, DocumentError, normalizeDocPath } from "../../src/render-cache.mjs";
 
 const execFileAsync = promisify(execFile);
 const HERE = path.dirname(fileURLToPath(import.meta.url));

@@ -1,8 +1,20 @@
-# copilot-canvas-word
+# copilot-canvas
 
-A GitHub Copilot canvas extension that displays Microsoft Word documents in the app's side
-panel with **page-accurate rendering** — what Word would actually print, not a reflowed
-approximation.
+GitHub Copilot canvas extensions that display Microsoft Office documents in the app's side
+panel with **page-accurate rendering** — what the Office application would actually print,
+not a reflowed approximation.
+
+One extension, `office-canvas`, registers a canvas per application. Word ships today;
+PowerPoint is next. Excel is deliberately deferred, because a PDF cannot show a formula and a
+formula is exactly what an agent needs to see
+([ADR 0003](docs/adr/0003-one-extension-many-canvases.md)).
+
+See [`CONTEXT.md`](CONTEXT.md) for the vocabulary and [`docs/adr/`](docs/adr/) for the
+decisions behind the design.
+
+---
+
+# The Word canvas
 
 ## What it does
 
@@ -31,9 +43,9 @@ extension never touches a Word window you opened yourself.
 
 ## Install
 
-The extension lives in `.github/extensions/word-canvas/`, so cloning this repository into a
+The extension lives in `.github/extensions/office-canvas/`, so cloning this repository into a
 Copilot project is enough — project extensions are discovered automatically. To use it in
-every project instead, copy the `word-canvas` folder to `~/.copilot/extensions/`.
+every project instead, copy the `office-canvas` folder to `~/.copilot/extensions/`.
 
 ## Usage
 
@@ -87,7 +99,7 @@ serves that PDF to the panel's built-in PDF viewer, which supplies scrolling, zo
 selection and printing for free. Word stays open as a live document model, which is what
 makes outline, search and text extraction cheap — and is the path to read/write later.
 
-Renders are cached under `~/.copilot/extensions/word-canvas/artifacts/`, keyed by
+Renders are cached under `~/.copilot/extensions/office-canvas/artifacts/`, keyed by
 `path + mtime + size`, so reopening an unchanged document is instant and an edited one
 re-renders exactly once.
 
@@ -117,13 +129,13 @@ re-renders exactly once.
 
 ```powershell
 # Word bridge: COM lifecycle, read-only guarantees, no orphaned processes
-node .github/extensions/word-canvas/test/host-smoke.mjs
+node .github/extensions/office-canvas/test/integration/host-smoke.mjs
 
 # Document service: rendering, cache invalidation, typed errors
-node .github/extensions/word-canvas/test/cache-smoke.mjs
+node .github/extensions/office-canvas/test/integration/cache-smoke.mjs
 
 # Viewer server: HTTP API, PDF byte ranges, SSE, live reload
-node .github/extensions/word-canvas/test/server-smoke.mjs
+node .github/extensions/office-canvas/test/integration/server-smoke.mjs
 ```
 
 Each suite generates its own `.docx` fixture with Word, asserts on real behaviour, and fails
@@ -132,19 +144,34 @@ if a `WINWORD.EXE` is left behind.
 | File | Responsibility |
 | --- | --- |
 | `extension.mjs` | Canvas declaration, actions, lifecycle |
-| `src/word-host.ps1` | The Word COM host — every automation quirk lives here |
-| `src/word-host.mjs` | Node side of the bridge: framing, restart, teardown |
+| `copilot-extension.json` | Manifest: name and version |
+| `src/word/word-host.ps1` | The Word COM host — every automation quirk lives here |
+| `src/word/word-host.mjs` | Node side of the bridge: framing, restart, teardown |
 | `src/render-cache.mjs` | Temp copy, PDF export, cache keyed by path + mtime + size |
 | `src/server.mjs` | Per-instance loopback server: UI, `/pdf`, `/api/*`, SSE |
 | `src/watcher.mjs` | Change detection with settle-polling for multi-step writers |
 | `src/store.mjs` | Recents, under the user's Copilot home |
 | `src/ui/` | The viewer front-end |
-| `spikes/live-word/` | Comparison spike: streaming a live Word window instead of a PDF |
+| `test/integration/` | Needs Word installed |
+| `test/unit/` | Office-free; the suites CI can run (empty — see below) |
 
-`spikes/live-word/FINDINGS.md` records why the PDF renderer was chosen over pixel-streaming a
-live Word window, with measurements. Short version: streaming is fast enough (29 fps) and
-accurate, but it needs a *visible* Word window and gives up native text selection, search and
-print — a bad trade for a read-only viewer, and the obvious path to take up again for editing.
+Application-specific code lives under `src/<app>/`; everything above it is
+application-agnostic. `render-cache.mjs` still imports `word/word-host.mjs` directly, and
+that import is the seam PowerPoint will have to break — deliberately left visible rather than
+abstracted away before there is a second implementation to abstract over.
+
+`test/unit/` is empty, which is the current blocker for CI: every existing suite drives Word
+through `powershell.exe`, so no hosted runner can run any of them
+([`docs/repo-restructure.md`](docs/repo-restructure.md) §4.4).
+
+The `spikes/` directory sits at the repository root rather than inside the extension, because
+`install_extension` copies an extension folder wholesale and the spike carries 300 KB of
+screenshots that no install needs.
+
+[`spikes/live-word/FINDINGS.md`](spikes/live-word/FINDINGS.md) records why the PDF renderer
+was chosen over pixel-streaming a live Word window, with measurements. Short version:
+streaming is fast enough (29 fps) and accurate, but it needs a *visible* Word window and gives
+up native text selection, search and print — a bad trade for a read-only viewer.
 
 When editing the extension, run `extensions_reload` before testing — and never `console.log`
 from `extension.mjs`, since stdout carries JSON-RPC. Use `session.log` instead.

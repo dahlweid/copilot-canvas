@@ -1,7 +1,7 @@
 # word-host.ps1
 #
 # Long-lived PowerShell process that owns a hidden Microsoft Word instance and
-# acts as the rendering/query engine for the word-canvas extension.
+# acts as the rendering/query engine for the office-canvas extension.
 #
 # Protocol: newline-delimited JSON over stdio.
 #   in  -> {"id":1,"cmd":"open","args":{...}}
