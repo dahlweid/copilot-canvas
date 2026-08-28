@@ -136,16 +136,25 @@ export class DocumentReader {
      * The split between locked and not-permitted is measured, not assumed.
      * On this machine:
      *
-     *   | FileShare::None (exclusive lock) | EBUSY     |
-     *   | ACL denying read                 | EPERM     |
-     *   | FileShare::Read (Word's own lock) | succeeds |
-     *   | read-only attribute               | succeeds |
+     *   | FileShare::None (exclusive lock)  | EBUSY     |
+     *   | ACL denying read                  | EPERM     |
+     *   | Word's own lock (write handle,    | succeeds  |
+     *   |   granting FileShare::ReadWrite)  |           |
+     *   | read-only attribute               | succeeds  |
      *
-     * Those last two rows are load-bearing. Word opens a document with
-     * `FileShare::Read`, so a document **open in Word can still be read and
-     * copied** -- which is the only reason a copy-based read works against a
-     * document the user is looking at. And the read-only attribute does not
-     * block reading at all, so it never reaches here.
+     * Those last two rows are load-bearing. Word holds a **write** handle and
+     * grants `FileShare::ReadWrite`, and Node's read stream also grants
+     * `ReadWrite`, so a document **open in Word can still be read and copied**
+     * -- which is the only reason a copy-based read works against a document
+     * the user is looking at. And the read-only attribute does not block
+     * reading at all, so it never reaches here.
+     *
+     * The mechanism is worth stating exactly, because the intuitive version of
+     * it ("Word takes FileShare::Read") predicts that *any* reader succeeds.
+     * It does not: a reader granting only `FileShare::Read` refuses to let
+     * anyone else write, conflicts with Word's write handle, and gets a
+     * sharing violation on a file `Copy-Item` copies fine. Any reader added
+     * here must grant `ReadWrite`.
      *
      * The two codes therefore mean genuinely different things and deserve
      * different remediation: `file_locked` may clear on its own and is worth

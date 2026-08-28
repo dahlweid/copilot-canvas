@@ -65,8 +65,25 @@ async function withHolder(label, share) {
 // 1. exclusive lock -- stricter than Word
 results.push(["FileShare::None (exclusive)", await withHolder("exclusive", "None")]);
 
-// 2. what Word itself takes
-results.push(["FileShare::Read (Word's own lock)", await withHolder("wordlike", "Read")]);
+// 2. what Word itself takes, as closely as this probe can express it: a handle
+// with write access, granting ReadWrite.
+//
+// The **share** mode is the thing under test and the thing that was wrong. This
+// holder grants `ReadWrite`, not `Read`. The earlier version used `Read` and
+// labelled it "Word's own lock", which is where this repo's long-standing "Word
+// takes FileShare::Read" claim came from. It is wrong, and it was invisible here
+// because Node's read stream grants ReadWrite and so succeeds against *either*
+// holder. See probe-fileshare-algebra.ps1, which separates them with a reader
+// that grants only Read.
+//
+// The **access** mode is deliberately not claimed precisely. `withHolder` opens
+// with `FileAccess::ReadWrite`, and a holder's access mode is not observable
+// from outside at all -- every reader here sees only the consequences of the
+// share mode. That Word holds *some* write access is an inference from the fact
+// that it saves the file, not a measurement; and probe-fileshare-algebra.ps1
+// shows `Write`/ReadWrite and `ReadWrite`/ReadWrite holders are identical on
+// every cell, so the distinction is unobservable and cannot matter here.
+results.push(["Word's own lock (write access, granting ReadWrite)", await withHolder("wordlike", "ReadWrite")]);
 
 // 3. read-only attribute
 {
@@ -129,7 +146,7 @@ console.log();
 $dir = Join-Path $env:TEMP ("errno-ps-" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $dir -Force | Out-Null
 $rows = @()
-foreach ($case in @(@{n='FileShare::None (exclusive)';s='None'}, @{n="FileShare::Read (Word's own lock)";s='Read'})) {
+foreach ($case in @(@{n='FileShare::None (exclusive)';s='None'}, @{n="Word's own lock (write access, granting ReadWrite)";s='ReadWrite'})) {
     $src = Join-Path $dir ($case.s + '.txt')
     Set-Content -Path $src -Value 'hello'
     $fs = [IO.File]::Open($src, 'Open', 'ReadWrite', $case.s)
