@@ -953,3 +953,207 @@ viewer, always.** That is simpler than v1's arrangement and simpler than §11's.
 Consequently §14.3 phase 4 is **not** struck (as §15.4 first said); it stands, reworded: build
 the single pdf.js viewer with an overlay layer, per-page repaint, and a verified
 accessibility story.
+
+## 16. Measured: what holding the original open actually costs
+
+The proposal under review was that the agent should edit the original file
+directly and let Word arbitrate file locking, on the grounds that this is the
+cleanest model and avoids a copy the user never asked for. The instinct about
+the *user's* mental model is right. The claim about Word arbitrating is not.
+
+### 16.1 Method
+
+`probes/probe-original-lock.ps1` opens a document read-write in a hidden Word
+instance and then, while it is held open, attempts the three write patterns a
+document generator actually uses. `probes/probe-lock-control.ps1` adds the
+control the first probe lacked, running each arm in a job with a hard timeout.
+
+### 16.2 Results
+
+| Test | Result |
+| --- | --- |
+| Open original read-write | 586 ms, `ReadOnly=False` |
+| Lock artefact in user's folder | `~$iginal.docx` appears beside the document |
+| External overwrite (`Copy-Item`) | FAILED, sharing violation |
+| External write-temp-then-rename | FAILED |
+| External exclusive write handle | FAILED, sharing violation |
+| Second Word opens a *different* file | opened in 1167 ms |
+| Second Word opens *the same* file | **HUNG**, no result in 45 s |
+
+The last two rows are the A/B control. Arm A differs from arm B only in which
+path the second instance opens, so the hang is attributable to the lock and not
+to running two Word instances.
+
+### 16.3 What this falsifies
+
+**"Word handles the file locking" is false in the way that matters.** Word does
+not arbitrate; it *blocks*. The second instance hung indefinitely rather than
+failing fast or returning a read-only handle, and it did so with
+`DisplayAlerts = 0` already set — so alert suppression does not prevent it. Both
+Word processes had to be killed externally. In a hidden instance there is no
+dialog for anyone to dismiss, which is the precise failure mode the planned
+dialog watchdog exists to catch, arriving through a door the watchdog does not
+cover.
+
+**Holding the original open breaks the feature v1 was built around.** All three
+external write patterns fail with sharing violations. Auto-refresh on script
+regeneration is the behaviour the directory watcher exists to support — the
+watcher watches the containing directory precisely because generators replace
+and rename. If we hold the original open, the generator's write fails before the
+watcher has anything to observe. We would be locking the user out of their own
+document while claiming to display it.
+
+A third, smaller cost: `~$iginal.docx` appears in the user's folder for as long
+as we hold the document, and it is created and deleted inside the directory the
+watcher is watching.
+
+### 16.4 The middle path
+
+None of this argues for a persistent working copy, and the objection to copies
+stands: the user should not have to reason about which file is real. What the
+measurements argue against is the *duration* of the lock, not its existence.
+
+Hold the original open only for the length of a single operation — open, edit,
+save, close — and the lock window shrinks to roughly a second. Between
+operations the file is completely free: generators can rewrite it, the user's
+Word can open it, and the watcher behaves exactly as it does today. The
+document on disk stays the single source of truth, which is what the proposal
+was really asking for.
+
+Two things make this affordable rather than merely tolerable. Rendering is
+already decoupled — the canvas displays an exported PDF, so nothing needs the
+document to stay open to keep the display alive. And per-operation snapshots are
+already the agreed undo model, so we were never relying on Word's in-process
+undo stack surviving between operations.
+
+The cost is a per-operation open. Measured at 586 ms for the open alone; a full
+open-edit-save-close round trip was not cleanly measured because the probe was
+interrupted by the arm-B hang, and should be measured before this is committed
+to.
+
+### 16.5 Still to resolve
+
+Transient locking shrinks the collision window; it does not eliminate it. If
+the user has the document open in their own Word when an operation begins, the
+open will still block. That is what the handoff rule is for, and it is now a
+requirement rather than a nicety: **an operation must detect that the file is
+already open and refuse quickly, rather than blocking**. Detecting it by
+attempting to open is exactly what hangs, so detection has to be done another
+way — testing for a writable handle, or for the `~$` lock file, before calling
+into Word.
+
+## 17. Measured: the transient-lock design is implementable
+
+§16 proposed holding the original open only for the duration of one operation.
+That design rests on two things nobody had measured: what a round trip costs,
+and whether "already open" can be detected *without* calling `Documents.Open`,
+which is the call that hangs.
+
+`probes/probe-transient-lock.ps1`, against a warm hidden instance:
+
+| Measurement | Result |
+| --- | --- |
+| open + edit + save + close, 5 runs | 236, 232, 233, 219, 219 ms |
+| mean round trip | **228 ms** |
+| detection, file free | `locked=False` in 9 ms |
+| detection, file free, owner-file check | absent |
+| detection, file held by another Word | `locked=True` in 4 ms |
+| detection, held, owner-file check | present, `~$iginal.docx` |
+
+Two things worth noting. The round trip is **228 ms, not the 586 ms** §16
+recorded for a single open — that earlier figure included the one-off cost of a
+cold process, and the same effect was already known from the 4547 ms first
+export. And the spread across five runs is 17 ms, so this is a stable cost
+rather than an average hiding a bad tail.
+
+Detection works and is effectively free. Taking a write handle returns the
+correct answer in single-digit milliseconds in both directions, with no false
+positive on a free file and no blocking on a held one. That is the property
+that matters: the thing that hangs is Word, and this test never involves Word.
+
+### 17.1 The residual race
+
+Detection and open are not atomic. Between the 4 ms check and the open, the
+user could open the document in their own Word, and we would be back in the
+indefinite hang. The window is small but the consequence is severe — a wedged
+hidden instance that only an external kill can clear, as §16 measured.
+
+So detection is a fast-reject path, not a guarantee, and it needs a second
+layer behind it: **every `Documents.Open` must be bounded by a timeout**, with
+the instance abandoned and killed if it is exceeded. The probe harness already
+demonstrates the shape — arm B of the control ran in a job with a hard timeout
+and recovered cleanly, where the original probe, which had no timeout, wedged
+two Word processes that had to be killed by hand.
+
+The owner-file check adds nothing over the handle test and depends on Word's
+odd naming rule (`~$` followed by the basename with its first two characters
+dropped). Use it for diagnostics if at all, not for control flow.
+
+## 18. Measured: read-then-address, and the read that nearly sank it
+
+The agreed addressing model is read-then-address: a read returns the document's
+structure with IDs minted for that read, plus a revision token; edits cite an ID
+and present the token, and are refused if the token no longer matches. Three
+assumptions needed testing.
+
+### 18.1 A structural read must be cheap. Naively, it is not.
+
+`probes/probe-addressing.ps1`, walking `Document.Paragraphs` and reading
+`Range.Text` and `OutlineLevel` per paragraph:
+
+| Strategy | Time | Structure returned |
+| --- | --- | --- |
+| **A** Per-paragraph property access | **3724 ms** | text + outline level |
+| **B** One `Content.Text`, split locally | **6 ms** | text only, no structure |
+| **D** One `Content.WordOpenXML`, parsed outside Word | **289 ms** | text + style + full markup |
+
+219 paragraphs. Strategy A costs roughly 17 ms per paragraph because every
+property touch is a cross-process COM call, and the cost scales with document
+length — a 1000-paragraph document would take about 17 seconds. That is not a
+routine operation, and read-then-address requires reads to be routine.
+
+Strategy D is **13x faster than A and returns strictly more information**: 103 ms
+to fetch 106 KB of WordprocessingML, 186 ms to parse it outside Word. The
+document is crossed once instead of 438 times. **Structural reads go through
+`WordOpenXML`; per-paragraph property walks are a defect.**
+
+Strategy B is worth remembering for the narrow case where only text is wanted —
+6 ms — but it carries no structure and so cannot support addressing.
+
+### 18.2 Derived identity works, but this document does not stress it
+
+Word exposes no stable paragraph identity, so IDs must be derived from content.
+In `demo.docx`, 219 paragraphs contained exactly **one** empty paragraph and
+**zero** duplicate texts, so text alone was already unique and adding a heading
+path changed nothing.
+
+That result should not be over-read. It says the scheme is viable, not that a
+disambiguator is unnecessary. A document with many empty paragraphs, repeated
+table cells, or a boilerplate footer will collide. Keep the key as
+**heading path + text + occurrence index**, with the index doing nothing on
+documents like this one and earning its place on documents that need it.
+
+The parse also surfaced a localization trap already known from styles: the
+first heading's style ID came back as `Überschrift1`, not `Heading1`. Style IDs
+inside the markup are localized just as the object model's names are, so the
+parser must resolve them via the styles part or fall back to `w:outlineLvl`
+rather than matching English names.
+
+### 18.3 The revision token behaves exactly as the model needs
+
+A SHA-256 prefix over the file, computed in **3 ms**:
+
+| Event | Token changed? |
+| --- | --- |
+| Our own edit and save | yes |
+| Save with nothing dirty | no |
+| External regeneration of the file | yes |
+
+The middle row matters: Word does not rewrite the bytes when there is nothing
+to write, so a token does not churn on inspection. The first row means the edit
+response can hand back a fresh token, so the agent is not forced to re-read
+after its own edits — only after somebody else's.
+
+That is the whole concurrency story for transient locking. We hold nothing
+between operations, so we cannot assume anything stayed put; the token is what
+converts that from a hazard into a detectable, refusable condition.
