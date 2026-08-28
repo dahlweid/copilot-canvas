@@ -1,0 +1,35 @@
+name: validate
+
+# Everything here must run without Office installed. The integration suite
+# drives Word through COM and cannot run on a hosted runner (see
+# docs/repo-restructure.md §1, constraint C5) — it stays a local gate until a
+# self-hosted Windows runner with an Office licence exists.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # No package.json anywhere (constraint C2), so there is nothing to
+      # install and no cache key to derive.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Check extension packaging invariants (C1-C4)
+        run: node tools/validate-extensions.mjs
+
+      # `node --test <dir>` fails to resolve modules on some Node versions;
+      # the quoted glob is the form that works.
+      - name: Run Office-free unit tests
+        run: node --test ".github/extensions/office-canvas/test/unit/*.test.mjs"
