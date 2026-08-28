@@ -117,11 +117,12 @@ export class ViewerInstance {
     #watcher = null;
     #refreshing = null;
 
-    constructor({ cache, instanceId, workspacePath, log = () => {} }) {
+    constructor({ cache, instanceId, workspacePath, log = () => {}, spawnFn = spawn }) {
         this.cache = cache;
         this.instanceId = instanceId;
         this.workspacePath = workspacePath ?? null;
         this.log = log;
+        this.spawnFn = spawnFn;
         this.url = null;
 
         this.doc = null; // last known describe() payload
@@ -267,7 +268,19 @@ export class ViewerInstance {
         if (!this.doc) throw new DocumentError("not_open", "No document is open in this canvas.");
         // Launches the user's own visible Word. Safe because our hidden instance
         // only ever holds a temp copy, never the original file.
-        const child = spawn("cmd.exe", ["/c", "start", "", this.doc.path], {
+        //
+        // Deliberately NOT `cmd.exe /c start`. Node quotes an argv element only
+        // when it holds a space, tab or quote, and `cmd.exe` then applies its own
+        // parse on top of that — so a filename with no space and a `&`, `^` or a
+        // `%VAR%` pair reaches cmd unquoted and is mangled. Measured in
+        // spikes/isolation/probes/probe-open-in-word-quoting.mjs: 3 of 9 ordinary
+        // filenames corrupted, including `%PATH%.docx` expanding the environment
+        // variable into the path. `explorer.exe` opens the same default handler
+        // with no shell parse in the way, and corrupted 0 of 9.
+        //
+        // explorer.exe exits 1 even on success, which is why nothing here reads
+        // the exit code.
+        const child = this.spawnFn("explorer.exe", [this.doc.path], {
             detached: true,
             stdio: "ignore",
             windowsHide: true,

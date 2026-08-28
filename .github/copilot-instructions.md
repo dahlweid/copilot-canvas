@@ -71,6 +71,19 @@ welcome and has repeatedly found genuine defects.
 - **Caching an address across an edit.**
 - **Assuming a read returned the whole document.** Reads are paged and default
   to 300 paragraphs.
+- **A path crossing a parser nobody accounted for.** This has been found twice,
+  in different parsers, so treat it as a class rather than two sites. A path
+  interpolated into a PowerShell single-quoted literal breaks on an apostrophe
+  (`C:\Users\O'Brien\…`). A path handed to `cmd.exe` breaks on `&`, `^` or a
+  matched `%VAR%` pair — Node quotes an argv element only when it holds a space,
+  tab or quote, and `cmd` parses whatever is left: measured, 3 of 9 ordinary
+  filenames corrupted, including `%PATH%.docx` expanding into the path.
+  Note the two sets barely overlap, so enumerating dangerous characters per
+  site is the mistake. **Prefer removing the parser to escaping it**: pass
+  values as discrete argv elements (`powershell.exe -File script.ps1 -Param
+  value`, `explorer.exe <path>`), never interpolated into a command string.
+  Flag any new `-Command` with an interpolated value, any `shell: true`, and any
+  `cmd.exe /c`.
 
 ## Conventions
 
