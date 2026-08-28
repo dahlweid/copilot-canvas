@@ -17,6 +17,7 @@ import { RenderCache, DocumentError, normalizeDocPath, supportedList } from "./s
 import { ViewerInstance } from "./src/server.mjs";
 import { artifactsRoot } from "./src/store.mjs";
 import { createIdleShutdown } from "./src/word-lifecycle.mjs";
+import { normalizeReadArgs, DEFAULT_READ_LIMIT } from "./src/word/read-args.mjs";
 
 /** instanceId -> ViewerInstance */
 const instances = new Map();
@@ -349,7 +350,9 @@ const wordCanvas = createCanvas({
 // path and a 12-hex address each -- straight into the agent's context on the
 // first call. Paging is free here because addresses are minted across the whole
 // document regardless, and the response says how many were withheld.
-const DEFAULT_READ_LIMIT = 300;
+//
+// The default and the validation that protects it live in src/word/read-args.mjs,
+// so the description below and the handler cannot state different numbers.
 
 const readDocumentTool = {
     name: "read_document",
@@ -383,17 +386,30 @@ const readDocumentTool = {
         required: ["path"],
         additionalProperties: false,
     },
-    handler: async (args) =>
-        withWordWork(async () => {
+    handler: async (args) => {
+        // Validated before any Word work is entered. This is placement rather
+        // than a rescue: nothing on this path started Word for a bad argument
+        // before either, because `resolveInputPath` already threw ahead of
+        // `getCache()`. Keeping the checks together and ahead of `withWordWork`
+        // is what stops that from being an accident of evaluation order as more
+        // validation arrives -- L2's edit path will have considerably more.
+        let paging;
+        let docPath;
+        try {
+            paging = normalizeReadArgs(args);
+            docPath = resolveInputPath(args?.path);
+        } catch (err) {
+            throw asToolError(err);
+        }
+
+        return withWordWork(async () => {
             try {
-                return await getCache().readStructure(resolveInputPath(args?.path), {
-                    limit: args?.limit ?? DEFAULT_READ_LIMIT,
-                    offset: args?.offset ?? 0,
-                });
+                return await getCache().readStructure(docPath, paging);
             } catch (err) {
                 throw asToolError(err);
             }
-        }),
+        });
+    },
 };
 
 // --- lifecycle -------------------------------------------------------------
