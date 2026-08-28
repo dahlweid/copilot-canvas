@@ -59,8 +59,15 @@ function failFromStatus(result, docPath, intent) {
         case "file_not_found":
             throw new EditError("file_not_found", `No such file: ${docPath}`);
         case "document_locked":
+            // The shared `file_locked` code, but note the meaning differs from
+            // the read path's use of it. For a read, `file_locked` means a
+            // holder *stricter than Word*, because a document open in Word can
+            // still be copied -- so "close it in Word" would be wrong advice.
+            // For a write there is no such gap: every write open fails while
+            // Word holds the file, so a document open in Word is genuinely the
+            // obstacle and saying so is correct.
             throw new EditError(
-                "document_locked",
+                "file_locked",
                 `${name} is open in another program, so it cannot be edited. Close it there and try again.`,
             );
         case "open_failed":
@@ -133,8 +140,12 @@ export class DocumentEditor {
 
         // Full read, never paged: the address has to be resolvable wherever it
         // is in the document, and paging would hide paragraphs from resolution
-        // while leaving their addresses perfectly valid.
-        const before = await this.#reader.read(docPath);
+        // while leaving their addresses perfectly valid. `limit: 0` is stated
+        // rather than defaulted -- the tool boundary caps reads at a few hundred
+        // paragraphs, and if that cap ever migrates into the reader, a silent
+        // truncation here would surface as an unresolvable address on long
+        // documents only.
+        const before = await this.#reader.read(docPath, { limit: 0 });
 
         if (!tokensMatch(before.revisionToken, current)) {
             throw new EditError(
@@ -151,7 +162,7 @@ export class DocumentEditor {
         // timeout-bounded regardless.
         if (before.writable === false) {
             throw new EditError(
-                "document_locked",
+                "file_locked",
                 `${path.basename(docPath)} is open in another program, so it cannot be edited. Close it there and try again.`,
             );
         }
@@ -214,7 +225,13 @@ export class DocumentEditor {
 
         // The verification the agent can actually see. It also re-mints every
         // address, which the caller needs: the ones it holds are now stale.
-        const after = await this.#reader.read(docPath);
+        //
+        // Deliberately complete, where `read_document` pages. After an edit the
+        // caller holds nothing it can still use, so handing back the first page
+        // of a long document would leave it unable to address the rest without
+        // another round trip -- and unable to see its own edit if that edit was
+        // past the cap. Completeness is the point of this read.
+        const after = await this.#reader.read(docPath, { limit: 0 });
         const touched =
             result.wordIndex > 0 ? (after.paragraphs.find((p) => p.wordIndex === result.wordIndex) ?? null) : null;
 
@@ -281,13 +298,13 @@ export class DocumentEditor {
         // rather than a host round trip.
         if (!(await isWritable(docPath))) {
             throw new EditError(
-                "document_locked",
+                "file_locked",
                 `${path.basename(docPath)} is open in another program, so it cannot be reverted. Close it there and try again.`,
             );
         }
 
         const { restored, remaining } = await revertToLatest({ root: this.#snapshotRoot, docPath });
-        const after = await this.#reader.read(docPath);
+        const after = await this.#reader.read(docPath, { limit: 0 });
 
         this.#log(`revert_document: restored ${restored.name} over ${path.basename(docPath)}`);
 

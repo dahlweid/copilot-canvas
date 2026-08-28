@@ -3,8 +3,12 @@
 The agent edits the document the user named — not a persistent working copy —
 so there is never a question about which file is real. But it holds the file
 open only for the length of a single operation: open, edit, save, close,
-measured at **228 ms** against a warm hidden instance. Between operations the
-file is entirely free.
+measured at **158 ms** of Word work against a warm hidden instance. Between
+operations the file is entirely free.
+
+> This figure was originally recorded as 228 ms. That number was not wrong, it
+> measured a different thing; see the amendment at the end of this file for the
+> breakdown and for what the rest of the budget buys.
 
 The obvious alternative was to keep the document open for the session and let
 Word arbitrate access. We measured that and it does not work. Word does not
@@ -63,3 +67,83 @@ The process tail is also why a test asserting no Word was leaked must **poll**
 rather than sleep a fixed interval: the tail is load-dependent and unbounded by
 the idle measurements, so any flat settle is either a coin toss or a tax on
 every green run.
+
+## Why the read path's trick is not available here
+
+Reading never opens the original at all: it copies the file and opens the copy,
+so nothing is held. It is worth being precise about why that works, because it
+looks like the edit path is simply a lazier version of it — and because the
+intuitive explanation is wrong.
+
+Measured, with a document open in a hidden Word (`ok` = the open succeeded):
+
+| what the caller asks for | while Word holds it | file free |
+| --- | --- | --- |
+| `Copy-Item` | **ok** | ok |
+| read, `FileShare::ReadWrite` | **ok** | ok |
+| read, `FileShare::Read` | sharing violation | ok |
+| read, `FileShare::None` | sharing violation | ok |
+| write, any share mode | sharing violation | ok |
+
+So Word holds a **write** handle while granting `ReadWrite` sharing. The
+tempting one-line summary — "Word locks the file with `FileShare::Read`" — is
+**false**, and the table is what disproves it: if that were the lock, a reader
+requesting `FileShare::Read` would succeed, and it does not.
+
+The rule is subtler and worth stating exactly, because it is a share-mode
+negotiation and not a permission check. A caller's `FileShare` value is what it
+grants to *others*, so a reader that asks for `FileShare::Read` is refusing to
+let anyone else write — which conflicts with the write handle Word already
+holds, and fails, even though the caller only wanted to read. **A reader must
+itself permit `ReadWrite` to read a document that is open in Word.** `Copy-Item`
+does, which is the whole reason the copy-based read works; Node's file APIs do
+too, since libuv opens with all three share flags.
+
+Two consequences:
+
+- The copy-based read is not merely *tolerable* while the file is open in Word —
+  it is **unaffected**, which is why the viewer keeps working while the user has
+  the document open. But any helper that opens the original with a stricter
+  share mode will fail against a Word-held file while a plain copy of the same
+  file succeeds, and the errno gives no hint why.
+- Every write open fails, in every share mode, which is what makes the
+  write-handle pre-flight a sound detector.
+
+The corollary is the whole reason this ADR exists: **the copy survives the lock
+precisely because it is not the original, and an edit has to be.** Read and edit
+have genuinely different lock stories, not different amounts of care.
+
+## Amendment (2026-08-28): what the 228 ms measured, and what it did not
+
+Implementing `edit_document` produced a finer breakdown, and it splits the
+original figure in two. Measured warm, on an unmarked document, on an otherwise
+quiet machine:
+
+| | |
+| --- | --- |
+| Word work — open 80 ms, edit 15 ms, save 63 ms | **158 ms** |
+| Whole host command, end to end | **281 ms** |
+| Difference | 123 ms |
+
+The budget in this ADR is the **158 ms**, because that is the interval during
+which the lock is actually held, and holding the lock is what this decision is
+about.
+
+The 123 ms difference is the mark-of-the-web ADS check, the write-handle
+pre-flight, and the post-close release poll. **This overshoot is deliberate and
+is not slack to be recovered.** Each of those three steps buys a hang that we
+would otherwise take: the ADS check avoids the Protected View hang (ADR 0007),
+the pre-flight avoids the file-lock hang described above, and the release poll
+is what proves the lock actually went away. Optimising them out would trade
+123 ms for an unbounded wait.
+
+One case is much more expensive and should not come as a surprise: a document
+carrying mark-of-the-web costs **2737 ms** end to end, almost all of it the
+Protected View open. That is paid once per file, and ADR 0007 explains what it
+buys.
+
+All of these are typical-case figures taken on a quiet machine, not bounds. Word
+contends on per-user state, so a second session driving Word inflates them by
+amounts that the idle measurements do not predict — the same effect that made a
+30 s leak deadline insufficient. Nothing should assert an upper bound on Word's
+behaviour on the strength of numbers in this table.

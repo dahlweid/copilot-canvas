@@ -307,7 +307,7 @@ try {
                         { op: "replace_text", address: locked.paragraphs[0].address, text: "nope" },
                         { revisionToken: locked.revisionToken },
                     ),
-                (err) => err.code === "document_locked",
+                (err) => err.code === "file_locked",
             );
             const elapsed = Date.now() - started;
             assert.ok(elapsed < 30_000, `refusing a locked document took ${elapsed}ms; it should be immediate`);
