@@ -14,6 +14,7 @@
 
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -23,6 +24,57 @@ import { fileURLToPath } from "node:url";
 import { RenderCache } from "../../src/render-cache.mjs";
 import { fileRevisionToken, tokensMatch } from "../../src/revision-token.mjs";
 import { assertNoLeakedWord, newWordPids, wordPids } from "./word-pids.mjs";
+
+// Hold `target` open from a second process with a given FileShare mode, and do
+// not return until the handle is provably taken.
+//
+// The handshake is the point. A fixed sleep before reading looks like it waits
+// for the holder, but it only waits for the clock: on a loaded machine
+// PowerShell can still be starting when the sleep expires, the read then runs
+// against an unheld file and **succeeds without any contention**. The test goes
+// green having exercised nothing. Timings on this machine are typical-case and
+// never bounds, so a sleep can never establish this.
+//
+// The holder writes its ready file only after `[IO.File]::Open` returns, so the
+// file's existence *is* evidence the handle is held; and it never closes the
+// handle, so "still running" continues to mean "still holding". Callers assert
+// `exitCode === null` after the work to close the other end of the bracket.
+//
+// Measured, by making the holder signal ready *before* opening: the exclusive
+// (`None`) test goes red -- "a read of an exclusively held file should not
+// succeed" -- while the `ReadWrite` test stays **green**. The two are
+// asymmetric. A test asserting a refusal detects its own false-ready; a test
+// asserting success cannot, because an unheld read succeeds for the wrong
+// reason and looks identical. So the Word-like-holder check rests entirely on
+// this handshake, which is why it may not be relaxed back to a sleep.
+async function holdFile(target, share, readyPath) {
+    const holder = spawn(
+        "powershell.exe",
+        [
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "$fs=[IO.File]::Open($env:PROBE_PATH,'Open','ReadWrite',$env:PROBE_SHARE);" +
+                "Set-Content -LiteralPath $env:PROBE_READY -Value 'held';" +
+                "while ($true) { Start-Sleep -Seconds 5 }",
+        ],
+        { env: { ...process.env, PROBE_PATH: target, PROBE_SHARE: share, PROBE_READY: readyPath } },
+    );
+
+    const deadline = Date.now() + 60_000;
+    while (!existsSync(readyPath)) {
+        if (holder.exitCode !== null) {
+            holder.kill();
+            throw new Error(`the ${share} holder exited before taking the handle`);
+        }
+        if (Date.now() > deadline) {
+            holder.kill();
+            throw new Error(`the ${share} holder never signalled ready`);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    return holder;
+}
 
 const execFileAsync = promisify(execFile);
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -276,22 +328,13 @@ try {
         // Safe despite ADR 0005: the revision token is read before Word is
         // started, so this fails fast on the filesystem and never reaches the
         // `Documents.Open` that would hang.
-        const holder = spawn(
-            "powershell.exe",
-            [
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                "$fs=[IO.File]::Open($env:PROBE_PATH,'Open','ReadWrite','None'); while ($true) { Start-Sleep -Seconds 5 }",
-            ],
-            { env: { ...process.env, PROBE_PATH: fixture } },
-        );
+        const holder = await holdFile(fixture, "None", path.join(workRoot, "ready-none"));
         try {
-            await new Promise((resolve) => setTimeout(resolve, 2000));
             const err = await cache.readStructure(fixture).then(
                 () => null,
                 (e) => e,
             );
+            assert.equal(holder.exitCode, null, "the holder released during the read, so nothing was contended");
             assert.ok(err, "a read of an exclusively held file should not succeed");
             assert.equal(err.code, "file_locked", `expected file_locked, got ${err.code}: ${err.message}`);
             assert.doesNotMatch(
@@ -322,25 +365,13 @@ try {
         // narrower share mode: that change breaks reads of open documents and
         // nothing else would notice.
         //
-        // The holder waits to be killed rather than sleeping a fixed span. A
-        // timed hold would release mid-read on a loaded machine and the
-        // assertion would then pass without the lock ever being contended --
-        // green on slack rather than on behaviour, which is the exact defect
-        // already found in this repo's leak assertions. Timings here are
-        // typical-case, never bounds.
-        const holder = spawn(
-            "powershell.exe",
-            [
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                "$fs=[IO.File]::Open($env:PROBE_PATH,'Open','ReadWrite','ReadWrite'); while ($true) { Start-Sleep -Seconds 5 }",
-            ],
-            { env: { ...process.env, PROBE_PATH: fixture } },
-        );
+        // The holder is taken through `holdFile`, which does not return until the
+        // handle is provably held -- a fixed sleep would let the read run against
+        // an unheld file on a loaded machine and pass having contended nothing.
+        // The `exitCode` assertion after the read closes the other end: the
+        // holder never releases voluntarily, so still-running means still-holding.
+        const holder = await holdFile(fixture, "ReadWrite", path.join(workRoot, "ready-rw"));
         try {
-            await new Promise((resolve) => setTimeout(resolve, 2000));
-            assert.equal(holder.exitCode, null, "the holder died before the read, so nothing was contended");
             const result = await cache.readStructure(fixture);
             assert.equal(holder.exitCode, null, "the holder released during the read, so nothing was contended");
             assert.ok(result.paragraphCount > 0, "a read of a Word-held document returned nothing");

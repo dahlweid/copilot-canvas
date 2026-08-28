@@ -142,11 +142,21 @@ try {
         try { $word.Quit() } catch { }
         [System.Runtime.InteropServices.Marshal]::ReleaseComObject($word) | Out-Null
     }
-    # Only ever reap a Word this probe started.
+    # Only ever reap a Word this probe started. Wait first, because Quit() returns
+    # in ~120 ms while the process lives on for seconds; then force-terminate,
+    # because the two documented ways Word blocks here -- a held file and
+    # mark-of-the-web -- both *hang* rather than fail, so a patient wait alone
+    # leaks a WINWORD.EXE. That is not hypothetical: an earlier run of this probe
+    # left one alive past the full 20 s wait.
     foreach ($p in $startedPids) {
         $proc = Get-Process -Id $p -ErrorAction SilentlyContinue
         if ($proc) {
             $proc.WaitForExit(20000) | Out-Null
+        }
+        $still = Get-Process -Id $p -ErrorAction SilentlyContinue
+        if ($still) {
+            Write-Output ("  reaping hung WINWORD pid {0}" -f $p)
+            Stop-Process -Id $p -Force -ErrorAction SilentlyContinue
         }
     }
     Write-Output ''
