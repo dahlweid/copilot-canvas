@@ -16,7 +16,7 @@ stands, and three of them rule out the obvious approach.
 | **C1** | The entry file must be `.github/extensions/<name>/extension.mjs`. Discovery scans **only immediate subdirectories** of `.github/extensions/`. | runtime | One folder per extension, no nesting, no grouping folder |
 | **C2** | `@github/copilot-sdk` is auto-resolved. **Do not add a `package.json` or `node_modules` for it.** | runtime, stated explicitly | No conventional npm build |
 | **C3** | `install_extension` can install **a folder in a GitHub repo** (`/tree/<ref>/path/to/ext`). | tool contract | Each extension folder must be **runnable exactly as committed** |
-| **C4** | Gist sharing is **flat, UTF-8 only**, ~1 MB per file, ~5 MB total; binary files are refused. | runtime | Binary assets cannot ship via gist at all |
+| **C4** | `install_extension` enforces **1,000,000 bytes per file and 5,000,000 bytes total** (decimal, not MiB) on **both** install paths — gist *and* repo folder. Gist sharing additionally flattens to one level and refuses non-UTF-8 files. | measured — see §3.2 | Binary assets cannot ship via gist at all, and no install path escapes the size caps |
 | **C5** | **Every existing test drives Word through `powershell.exe`.** `cache-smoke`, `host-smoke`, `server-smoke` and `make-fixture.ps1` all need Word installed. | measured — grep of `test/` | GitHub-hosted runners cannot run **any** current test |
 
 **C2 + C3 together mean this repository cannot have a conventional build.** There is no
@@ -93,7 +93,7 @@ copilot-canvas/
 │  ├─ extensions/                    # C1: immediate subdirs only
 │  │  └─ office-canvas/              # ONE extension, a canvas per app (ADR 0003)
 │  │     ├─ extension.mjs            # C1: entry, exact name
-│  │     ├─ copilot-extension.json   # {name, version}; C4 requires it for gist install
+│  │     ├─ copilot-extension.json   # {name, version:1, productVersion}; the install gate
 │  │     ├─ src/
 │  │     │  ├─ word/                 # Word COM host — app-specific
 │  │     │  ├─ powerpoint/           # (next) PowerPoint host
@@ -156,8 +156,8 @@ canvases that share not "most of their substance" but effectively all of it,
 since both paginate natively and both render through the same export pipeline.
 The sync-shared machinery would exist to serve a distinction that carries no
 weight between them. And §3.2's pdf.js constraint bites hardest here: option b
-vendors pdf.js once per extension folder against a gist cap of roughly 5 MB
-that refuses binary files, while option c vendors it once.
+vendors pdf.js once per extension folder against a 5,000,000-byte install cap,
+while option c vendors it once.
 
 The two objections raised against **c** above are worth answering rather than
 dropping:
@@ -186,15 +186,79 @@ honest shape of it under C2.
 
 ### 3.2 A packaging constraint that lands on the pdf.js decision
 
-`PLAN.md` §15.5 commits to vendoring pdf.js. C4 caps a gist at ~5 MB total and **refuses
-binary files**. pdf.js's worker is large but is UTF-8 JavaScript and should fit; its
-**standard font files are binary and would be rejected outright**.
+`PLAN.md` §15.5 commits to vendoring pdf.js, and this section originally *predicted* where
+C4 would bite. Both halves of the prediction turned out to be wrong, so what follows is the
+measurement that replaced it.
 
-So: gist sharing may stop being a viable distribution channel for this extension once pdf.js
-lands. Repo-folder install (C3) and release zips have no such limit and become the primary
-channels. Whether the font files are needed at all is testable — Word's PDF export embeds
-fonts, so the standard-font fallback may never fire. **That is a probe, not an assumption**,
-and it belongs next to the §15.5 accessibility probe.
+**The caps are decimal and they apply to every install path.** `install_extension` is
+implemented in the app binary, not in `copilot-sdk/`. Pushing deliberately oversized inputs
+through all four paths gives:
+
+| Path | Over per-file | Over total |
+| --- | --- | --- |
+| `share_extension` (gist) | `too large (1536000 bytes > 1000000 byte limit)` | `too large to share via gist (>5000000 bytes)` |
+| `install_extension` (repo folder) | same `> 1000000 byte limit` | `Folder contents exceed the 5000000 byte total limit.` |
+
+So the limits are **1,000,000 bytes per file and 5,000,000 bytes total — decimal, not
+`1024*1024` and `5*1024*1024`.** The earlier claim here that *"repo-folder install and release
+zips have no such limit and become the primary channels"* is false: repo-folder install has
+**identical** limits, and a release zip escapes them only because nothing installs a zip —
+`install_extension` accepts a gist or a repo folder and nothing else, so a zip is not a
+distribution channel in any useful sense. Gist sharing is not the constrained path; it is
+merely the path that *additionally* flattens to one level and refuses non-UTF-8 files.
+
+The decimal/binary distinction is not pedantry: `tools/validate-extensions.mjs` used the
+binary constants, which left a 48,576-byte window in which a file passed validation and was
+then rejected at install. That is corrected, and `test/unit/validator.test.mjs` now pins the
+boundary from both sides so the values cannot be "tidied" back to `1024*1024`.
+
+**Fonts are a non-issue; the worker is the constraint.** The predicted blocker was pdf.js's
+binary `standard_fonts/`. Probing a Word-exported PDF found 8 `/FontFile*` entries, 4
+subset-tagged `BaseFont`s, zero standard-14 references and Identity-encoded CID fonts — every
+font is embedded, so `standard_fonts/` (780 KB binary) and `cmaps/` (1.17 MB, 169 binary
+files) never need to ship, and C4's binary refusal never fires. What does bite is
+`pdf.worker.min.mjs` at **1,262,398 bytes**, which exceeds the *per-file* cap on both paths.
+It is UTF-8 JavaScript, so it is not refused for being binary — it is simply too large for any
+single file. §15.5's design therefore splits the worker across three committed parts under
+`src/vendor/` reassembled behind one server route, rather than switching channels; splitting
+at packaging time would violate C3 by producing an installable artefact from a source tree
+that is not itself installable.
+
+Against the real 5,000,000-byte total, the packaged extension is **107,232 bytes today**
+(`tools/package-extension.mjs` reports it), and pdf.js projects to about 1.8 MB — roughly 36%
+of budget.
+
+### 3.3 The manifest field that made the extension uninstallable
+
+Packaging surfaced a defect that no amount of local testing could have: the extension **ran
+perfectly in the development checkout and could not be installed by anyone.**
+
+`copilot-extension.json` carried `"version": "1.0.0"`. The in-place loader never looks at it,
+so nothing complained. `install_extension` does, and refuses the whole extension:
+
+```
+Failed to parse `copilot-extension.json`: invalid type: string "1.0.0", expected u32
+```
+
+`version` is the **manifest format version**, not the product version — the app's own authoring
+guide gives the shape as `{ "name": "<name>", "version": 1 }`, and `mobile-canvas`, the one
+extension installed on this machine, uses `1`. Unknown keys *are* tolerated (measured: a
+manifest carrying `productVersion` installs cleanly), so the product version gets its own key
+and `release.yml` tags from that.
+
+Two further behaviours were measured while proving this, both worth knowing:
+
+- **The installer does not copy `copilot-extension.json` into the installed folder.** It is
+  purely an install-time gate. The installed tree is the other ten files, byte-identical to
+  the packaged artefact.
+- **Gist keys round-trip correctly.** `src\ui\app.js` in the flat bundle is restored as
+  `src/ui/app.js` on install.
+
+This is the strongest argument for the round-trip criterion in issue #10. A packaging tool
+that only checked file layout would have produced a green build for an artefact nobody could
+install, and `validate-extensions.mjs` — the very file whose job is to prevent that — was
+asserting the version *had* to be semver. Both are now fixed and pinned by fault-injection
+tests.
 
 ---
 
@@ -214,8 +278,9 @@ be described as if it does.
 - Assert each `.github/extensions/*/` has `extension.mjs` and `copilot-extension.json`, and
   that the manifest `name` matches its folder name.
 - Assert **no `package.json`** exists in any extension folder (C2).
-- Enforce the C4 envelope: UTF-8, per-file ≤ 1 MB, total ≤ 5 MB — so gist share cannot fail
-  in a way only discovered at share time.
+- Enforce the C4 envelope: UTF-8, per-file ≤ 1,000,000 bytes, total ≤ 5,000,000 bytes (decimal
+  — see §3.2) — so neither gist share nor repo-folder install can fail in a way only discovered
+  at install time.
 - Verify no file under an extension folder imports from outside it (C3), which
   is what makes the folder installable as committed.
 - Run `test/unit/` — currently **empty**, see §4.4.
@@ -238,10 +303,18 @@ papered over with a green badge.
 
 - Tag format `v1.2.0`. With a single extension there is nothing to version
   independently; revisit only if the repo ever ships a second one.
-- Assert the tag version equals `copilot-extension.json`'s `version`.
-- Produce a folder zip, and a flattened gist-format bundle (`/` → `\`) when it
-  fits inside C4.
-- Attach both to a GitHub Release.
+- Assert the tag version equals `copilot-extension.json`'s **`productVersion`**. Note that the
+  manifest's `version` key is *not* the product version — see §3.3.
+- Produce the installable folder, a zip of it, and a flattened gist bundle.
+
+One detail worth recording, because it changed the shape of the output: the
+flattened gist bundle **cannot be written as files on Windows**. Gist keys encode
+a nested path with a backslash (verified against a real shared gist:
+`src\ui\nested.js`), and on Windows the backslash *is* the path separator, so
+writing that key creates a subdirectory instead of a flat entry. The bundle is
+therefore emitted as a **JSON API request body** —
+`dist/office-canvas-<version>.gist.json`, `POST`-able to `/gists` unmodified —
+rather than as a directory. It is checked against C4 either way.
 
 ### 4.4 The prerequisite nobody can skip
 
@@ -266,16 +339,16 @@ Do this split **before** writing `validate.yml`, otherwise the workflow is decor
 | 2 | Collapse to one `office-canvas` extension; move `spikes/` out; add `copilot-extension.json` | — | **done** |
 | 3 | Split tests into `unit/` and `integration/` | — | **done** — 42 Office-free tests |
 | 4 | `tools/validate-extensions.mjs` + `validate.yml` | 2, 3 | **done** — green on `ubuntu-latest` |
-| 5 | `tools/package-extension.mjs` + `release.yml` | 2 | ready |
-| 6 | Probe: does pdf.js need its binary font files? (§3.2) | — | open |
+| 5 | `tools/package-extension.mjs` + `release.yml` | 2 | **done** — see §5.3 |
+| 6 | Probe: does pdf.js need its binary font files? (§3.2) | — | **done** — no; the worker is the constraint |
 | 7 | Self-hosted Windows+Office runner, licence permitting | licence check | open |
 
 Step 3 is done. It was the one that mattered: the directories existed but `unit/` had
 nothing in it, so step 4 would have produced a workflow that runs zero tests and reports
 green. §5.2 records what running them actually found.
 
-Step 7 may never be worth it. Step 6 is a decision this document deliberately leaves open
-rather than guessing at.
+Step 7 may never be worth it. Step 6 is answered in §3.2, and the answer inverted the
+prediction: the fonts are unnecessary and the worker is what does not fit.
 
 The former step 7 — "decide option b vs c for shared code" — is gone: ADR 0003 decided it,
 and §3.1 records the reasoning.
@@ -309,3 +382,38 @@ Two things were found by writing the tests rather than by reading the code:
 `validator.test.mjs` breaks one invariant at a time in a staged copy of the repo and asserts
 the validator rejects it *and* accepts the untouched copy, so the failures cannot be an
 artefact of everything being broken.
+
+### 5.3 Verification of step 5
+
+The same Office-free check applies to packaging: **62/62 unit tests pass on Linux x86_64 (WSL,
+Node 22.11.0)**, 17 of them covering the packager, and the same 62 pass on Windows. More
+usefully, the packaged artefact is **byte-identical across the two platforms** —
+`sha256:859370ecfc85feb6b35c4b47346b2faf10ff45717d00c316bf568654f27ff49f` from both — which is
+what makes the reproducibility check in `release.yml` meaningful rather than a tautology.
+Determinism comes from a sorted file list, verbatim byte copies (C3 forbids normalising line
+endings, so nothing is rewritten), every output mtime pinned to `SOURCE_DATE_EPOCH`, and a
+manifest that contains no timestamp.
+
+Two decisions are worth recording:
+
+- **The packager runs `tools/validate-extensions.mjs` rather than reimplementing it**, and
+  runs it **twice** — once on the source, once on the artefact. The second run is not
+  redundant: the first refuses to package anything CI would reject, including material an
+  exclusion rule would otherwise hide; the second catches an exclusion that removed something
+  the extension actually needs. Both directions have tests.
+- **Exclusion is a small named ruleset, not a glob list**, and each rule carries a `why` that
+  is printed at package time. Only `test/` is expected to match in practice; the rest
+  (`spikes/`, `artifacts/`, VCS and editor metadata, OS junk, secrets, build output) exist so
+  that a future stray file is excluded *deliberately* and visibly. `artifacts/` matters more
+  than it looks: on a development machine it holds exported PDFs of the user's own documents,
+  which must never be shipped.
+
+The one criterion in issue #10 that cannot be met on CI is the end-to-end round trip —
+install the packaged artefact and confirm the canvas renders a document — because that needs
+Word (C5). It was run by hand and it earned its place: it is what found §3.3. The procedure
+was: package, `POST` the gist body to `/gists`, `install_extension` from that gist, move the
+development copy out of `.github/extensions/` so the `word-doc` canvas id is unambiguous,
+open a five-page Word fixture, and confirm `get_info` and `get_outline` return real pagination
+(5 pages, 1,399 words, 10 headings across pages 1–5) rather than a status string. The gist and
+the installed copy were then deleted and the development copy restored. This belongs in the
+§4.2 release checklist, not in `release.yml`.
