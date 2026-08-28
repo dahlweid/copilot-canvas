@@ -225,10 +225,37 @@ Every PR gets a Copilot review. Reply to every comment, push, re-request,
 repeat. The coordinator requests and merges; the owning session replies and
 pushes, so two worktrees never touch one branch.
 
+**Read the review body, not just the thread list.** Findings arrive in two
+shapes and only one of them is a thread. **Suppressed** findings — "previously
+missed, in code that hasn't changed" — appear in the body alone: no inline
+thread, no resolve button, no reply affordance, and setting `in_reply_to` to
+one of their comment IDs fails with a 422. So they sit outside "address every
+comment, reply, repeat" entirely, and a PR can show zero unresolved threads
+while carrying the only finding that gates its merge. Reply to those with a
+top-level PR comment. Three of the best findings on #12 arrived this way,
+including the one that turned out to have three sites rather than one.
+
 **Six rounds, then merge.** This is a hard cap, not a target. At round six the
 PR merges with any remaining comments declined explicitly in a reply. The one
 thing that may go past six is a **correctness or data-loss defect**, and it buys
 exactly one more round — it does not reset the counter.
+
+**Effort follows the same curve: Balanced for rounds 1–4, Lite for 5–6.** The
+deep pass is worth paying for while the diff is still novel; by round five the
+reviewer is re-reading code it has already cleared, and the findings have
+consistently been documentation and contract precision rather than defects.
+Escalate back to Balanced mid-loop only when a round lands a **substantive code
+change** — new logic, a changed contract, a fix touching more than the site it
+was aimed at — because that is new material the deep pass has never seen.
+A one-line comment or message fix is not that, and re-reviewing it deeply has
+never once paid.
+
+**Effort cannot be set programmatically**, so the curve's upper half is
+aspirational and every round is Lite in practice. It is a control on the PR's
+Reviewers panel and nothing else: measured across five routes, including a REST
+field that is accepted and then silently ignored. Because a request can look
+like it succeeded, **read the effort level printed in every review body** rather
+than assuming the one you asked for took effect.
 
 The cap exists because the loop has no natural end. The reviewer re-scans
 unchanged code every round and surfaces different **suppressed** findings each
@@ -249,9 +276,44 @@ Declining is a real outcome and must be recorded as one: reply saying why, so
 the next engineer sees a decision rather than an omission. Replies are for the
 human record — Copilot cannot read them.
 
-**Lite is a floor.** Effort level is UI-only and cannot be set from the CLI;
-every review is labelled with its level, so check rather than assume. A clean
-Lite pass means the cheap checks passed, not that the code is right — an
-independent deeper pass over #16 found a critical data-loss defect that six Lite
-rounds elsewhere never approached.
+**Lite is a floor.** A clean Lite pass means the cheap checks passed, not that
+the code is right — an independent deeper read of #16 found a critical
+data-loss defect that six Lite rounds elsewhere never approached. Spending
+rounds 5–6 at Lite is only defensible because the deep pass ran at 1–4; it is
+not a claim that Lite suffices.
+
+**Mutation-check every test before you rely on it: reintroduce the defect, run,
+confirm red.** A test that cannot fail is worse than no test, because it reads
+as evidence. This is not a caution, it is a step — two of #12's four
+test-related findings were tests that could never fail, and *both were written
+by someone who had just been told about that exact failure mode*, one of them
+in the same session in which they had criticised another test for it. The
+tautology is easy to write and invisible on inspection: asserting that every
+entry in `SUPPORTED` appears in a list built from `SUPPORTED` passes with the
+defect fully reintroduced. Knowing about the failure mode demonstrably does not
+prevent it; running the check does.
+
+The same rule catches the case where the machine, not the test, is providing the
+coverage. A green suite says nothing when **the environment cannot produce the
+input**: this account generates no apostrophe in a path, the Linux runner
+generates no exclusive lock, an idle machine generates no contended shutdown.
+That code is untested, not correct, and the suite disguises it. The tell is when
+a test's coverage depends on a property of the machine rather than on the test.
+
+**Assert through the boundary the caller actually sees, not one layer beneath
+it.** A test placed below a boundary will confirm a property no caller can
+observe. `edit_document`'s recovery path set `snapshot`, `rolledBack` and
+`documentUnchanged` on its error, and its unit tests asserted all three and
+passed — while `asToolError` forwarded only `code`, `message` and `data`, so
+every one of those facts was dropped at the tool boundary and the agent saw a
+bare `word_timeout` with nothing about the state of the user's document. The
+requirement was to keep the bytes *and* tell the caller they exist; the tests
+could only see the first half.
+
+An independent deep review missed it too. It traced all three branches of the
+recovery function and correctly cleared it — no path discards the pre-edit
+bytes — because **a reviewer reasoning about a function does not reason about
+the boundary that function's output has to cross.** That blind spot is
+structural, not a matter of effort level, so it is not something a better review
+fixes. Test at the surface a caller consumes.
 
