@@ -439,7 +439,7 @@ const editDocumentTool = {
         properties: {
             path: {
                 type: "string",
-                description: "Absolute or workspace-relative path to a Word document (.docx, .docm, .doc, .rtf).",
+                description: `Absolute or workspace-relative path to a Word document (${supportedList()}).`,
             },
             revisionToken: {
                 type: "string",
