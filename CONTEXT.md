@@ -230,6 +230,21 @@ PR merges with any remaining comments declined explicitly in a reply. The one
 thing that may go past six is a **correctness or data-loss defect**, and it buys
 exactly one more round — it does not reset the counter.
 
+**Effort follows the same curve: Balanced for rounds 1–4, Lite for 5–6.** The
+deep pass is worth paying for while the diff is still novel; by round five the
+reviewer is re-reading code it has already cleared, and the findings have
+consistently been documentation and contract precision rather than defects.
+Escalate back to Balanced mid-loop only when a round lands a **substantive code
+change** — new logic, a changed contract, a fix touching more than the site it
+was aimed at — because that is new material the deep pass has never seen.
+A one-line comment or message fix is not that, and re-reviewing it deeply has
+never once paid.
+
+**Today the ladder's top rung is unreachable, so every round is Lite.** Effort
+level is a UI-only control on the PR's Reviewers panel; it cannot be set from
+the CLI or the REST API. Every review body states the level it ran at — always
+read it rather than assuming the requested level took effect.
+
 The cap exists because the loop has no natural end. The reviewer re-scans
 unchanged code every round and surfaces different **suppressed** findings each
 time, so "0 new comments" never means "clear" — on #12, rounds four and five
