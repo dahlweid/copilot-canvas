@@ -18,7 +18,7 @@
 // concurrent operations write different files rather than fighting over one.
 
 import { createHash } from "node:crypto";
-import { copyFile, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 /** How many snapshots to keep per document before the oldest are discarded. */
@@ -26,6 +26,26 @@ export const MAX_SNAPSHOTS_PER_DOCUMENT = 20;
 
 const SNAPSHOT_EXTENSION = ".snapshot";
 const MANIFEST_EXTENSION = ".json";
+
+/**
+ * Monotonic within the process, so two snapshots taken in the same millisecond
+ * still have a defined order.
+ *
+ * The timestamp alone is not enough. An edit takes about 280 ms end to end but
+ * the snapshot is taken at the very start of it, so two operations queued
+ * together are snapshotted within the same millisecond routinely rather than
+ * exceptionally. Without this the names tie-break on the operation name and
+ * then a random nonce, which is an ordering unrelated to time -- so
+ * `revertToLatest`, which takes the lexically greatest name, could restore the
+ * *older* of two snapshots and report that it had undone the newer.
+ */
+let sequence = 0;
+const nextSequence = () => ++sequence;
+
+/** Test seam: makes ordering assertions independent of how many ran before. */
+export function __resetSequenceForTests(value = 0) {
+    sequence = value;
+}
 
 export class SnapshotError extends Error {
     constructor(code, message) {
@@ -54,8 +74,12 @@ export function compactStamp(date = new Date()) {
 /**
  * Names are parseable, and sort oldest-first as plain strings, so listing a
  * history never needs to stat every file.
+ *
+ * The sequence sits immediately after the timestamp and is zero-padded to a
+ * fixed width, so lexical order and numeric order agree and the tie-break at
+ * equal timestamps is time of creation rather than operation name.
  */
-export function snapshotName({ takenAt = new Date(), op, token, nonce = "" }) {
+export function snapshotName({ takenAt = new Date(), op, token, nonce = "", seq = nextSequence() }) {
     const stamp = typeof takenAt === "string" ? takenAt : compactStamp(takenAt);
     const tokenPart = String(token ?? "none")
         .replace(/^sha256:/, "")
@@ -63,15 +87,25 @@ export function snapshotName({ takenAt = new Date(), op, token, nonce = "" }) {
         .replace(/[^0-9a-z]/gi, "") || "none";
     const opPart = String(op ?? "edit").replace(/[^a-z_]/gi, "") || "edit";
     const noncePart = nonce ? `-${String(nonce).replace(/[^0-9a-z]/gi, "")}` : "";
-    return `${stamp}-${opPart}-${tokenPart}${noncePart}${SNAPSHOT_EXTENSION}`;
+    const seqPart = String(Math.max(0, Number(seq) || 0)).padStart(9, "0");
+    return `${stamp}-${seqPart}-${opPart}-${tokenPart}${noncePart}${SNAPSHOT_EXTENSION}`;
 }
 
 export function parseSnapshotName(name) {
     if (!name.endsWith(SNAPSHOT_EXTENSION)) return null;
     const stem = name.slice(0, -SNAPSHOT_EXTENSION.length);
-    const match = /^(\d{8}T\d{9}Z)-([a-z_]+)-([0-9a-z]+)(?:-([0-9a-z]+))?$/i.exec(stem);
+    // The sequence is optional so a snapshot written before it existed still
+    // parses, lists and restores rather than becoming invisible.
+    const match = /^(\d{8}T\d{9}Z)(?:-(\d{9}))?-([a-z_]+)-([0-9a-z]+)(?:-([0-9a-z]+))?$/i.exec(stem);
     if (!match) return null;
-    return { name, stamp: match[1], op: match[2], token: match[3], nonce: match[4] ?? null };
+    return {
+        name,
+        stamp: match[1],
+        seq: match[2] === undefined ? null : Number(match[2]),
+        op: match[3],
+        token: match[4],
+        nonce: match[5] ?? null,
+    };
 }
 
 /**
@@ -94,11 +128,10 @@ const manifestPathFor = (snapshotPath) => `${snapshotPath}${MANIFEST_EXTENSION}`
  * leaves a restorable snapshot with no metadata, which is recoverable. The
  * reverse order would leave a manifest promising bytes that do not exist.
  */
-export async function takeSnapshot({ root, docPath, op, token, description = null, nonce = "" }) {
+export async function takeSnapshot({ root, docPath, op, token, description = null, nonce = "", takenAt = new Date() }) {
     const dir = snapshotDirFor(root, docPath);
     await mkdir(dir, { recursive: true });
 
-    const takenAt = new Date();
     const name = snapshotName({ takenAt, op, token, nonce });
     const file = path.join(dir, name);
 
@@ -160,11 +193,24 @@ export async function latestSnapshot({ root, docPath }) {
  * Restores the newest snapshot over the original and discards it, so a second
  * revert reaches the state before that.
  *
- * `copyFile` overwrites the file's default data stream in place. It does not
- * recreate the file, so an alternate data stream on the original — notably
- * `Zone.Identifier`, the mark of the web — survives a revert. Losing it here
+ * Written to a sibling temp and renamed over the original, rather than copied
+ * straight onto it. `copyFile` truncates the destination and then fills it, so
+ * a failure part-way through leaves the user's document truncated; `rename`
+ * within a volume is atomic, so the document is either the old bytes or the
+ * restored ones and never a prefix of either. The temp is a sibling so that the
+ * rename stays on one volume -- across volumes it degrades to copy-and-delete
+ * and the atomicity is lost.
+ *
+ * Alternate data streams -- notably `Zone.Identifier`, the mark of the web --
+ * survive this, but not for the reason an earlier version of this comment gave.
+ * They do not survive because the destination is written in place; measured,
+ * `copyFile` from an unmarked source over a marked destination *drops* the
+ * destination's mark. They survive because the stream travels with the
+ * *source*: `takeSnapshot` copies the original, so the snapshot carries the
+ * mark, and the temp copied from the snapshot carries it too. Verified both
+ * ways round, including that `rename` preserves the source's streams. Losing it
  * would silently strip a security marker from the user's file, which is the
- * exact outcome ADR 0007 refuses to accept elsewhere.
+ * outcome ADR 0007 refuses elsewhere.
  */
 export async function revertToLatest({ root, docPath }) {
     const newest = await latestSnapshot({ root, docPath });
@@ -175,7 +221,15 @@ export async function revertToLatest({ root, docPath }) {
         );
     }
 
-    await copyFile(newest.file, docPath);
+    const staging = `${docPath}.revert-${process.pid.toString(36)}${(nextSequence() % 1000).toString(36)}.tmp`;
+    try {
+        await copyFile(newest.file, staging);
+        await rename(staging, docPath);
+    } catch (err) {
+        await rm(staging, { force: true }).catch(() => {});
+        throw err;
+    }
+
     await rm(newest.file, { force: true }).catch(() => {});
     await rm(manifestPathFor(newest.file), { force: true }).catch(() => {});
 

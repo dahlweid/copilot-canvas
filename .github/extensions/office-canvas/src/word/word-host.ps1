@@ -183,7 +183,28 @@ function Get-PageOf($range) {
 # Word splits runs invisibly and the map already normalizes for that.
 function Get-NormalizedText([string]$value) {
     if ([string]::IsNullOrEmpty($value)) { return '' }
-    $clean = [regex]::Replace($value, '[\u0000-\u0008\u000B\u000C\u000E-\u001F]', '')
+
+    # This must mirror paragraphText() in structure-map.mjs character for
+    # character. Word renders layout marks as control characters in Range.Text;
+    # the map renders the same marks from the markup. Any disagreement makes the
+    # affected paragraph *permanently uneditable*: the pre-mutation text check
+    # fails, and the failure is reported as "the file changed between the read
+    # and the edit", which is false and sends the caller into an infinite
+    # re-read loop, because re-reading mints the identical address.
+    #
+    # Measured end to end on a fixture carrying each mark. Before this mapping,
+    # w:br and w:noBreakHyphen paragraphs failed every edit; w:tab and
+    # w:softHyphen passed, the first by luck and the second because both sides
+    # happen to drop it.
+    #
+    #   mark                     markup            JS gives   Word gives
+    #   line/page/column break   w:br              "\n"->" "  \u000B \u000C \u000E
+    #   non-breaking hyphen      w:noBreakHyphen   "-"        \u001E
+    #   optional (soft) hyphen   w:softHyphen      dropped    \u001F
+    #   tab                      w:tab             "\t"->" "  \u0009
+    $clean = [regex]::Replace($value, '[\u000B\u000C\u000E]', ' ')
+    $clean = [regex]::Replace($clean, '\u001E', '-')
+    $clean = [regex]::Replace($clean, '[\u0000-\u0008\u000F-\u001F]', '')
     return ([regex]::Replace($clean, '\s+', ' ')).Trim()
 }
 
@@ -824,7 +845,21 @@ function Open-OriginalForEdit([string]$path) {
     if (Test-MarkOfTheWeb $path) {
         # FileName, Password, AddToRecentFiles, Repair
         $window = $script:App.ProtectedViewWindows.Open($path, $FAIL_FAST_PASSWORD, $false, $false)
-        return @{ doc = $window.Edit(); protectedView = $true }
+        try {
+            $doc = $window.Edit()
+        } catch {
+            # Edit() failing leaves the Protected View window open, and that
+            # window holds the user's file. Our own hidden Word would then be
+            # the "other program" every later edit tells the user to close --
+            # recreated on every retry, until idle shutdown. Close it here.
+            try { $window.Close() } catch { }
+            throw
+        }
+        # Edit() transitions the window into a normal document; closing it is a
+        # no-op or throws, and either way the window must not be left holding a
+        # reference.
+        try { $window.Close() } catch { }
+        return @{ doc = $doc; protectedView = $true }
     }
 
     # FileName, ConfirmConversions, ReadOnly, AddToRecentFiles,
@@ -893,7 +928,20 @@ function Invoke-EditOperation($doc, [int]$wordIndex, $a) {
             return $wordIndex
         }
         'delete_paragraph' {
-            $para.Range.Delete() | Out-Null
+            # Constraint 6's bug class at a second site. A cell paragraph's
+            # Range runs to the end-of-cell mark, and deleting that mark either
+            # throws or quietly damages the table -- a cell must keep at least
+            # one paragraph. Trim the mark off the range, derived from the
+            # position span rather than the string length for the reason
+            # Get-TextRange documents, and delete what is left.
+            $range = $para.Range
+            $raw = [string]$range.Text
+            if ($raw.Contains([char]7)) {
+                $visible = $raw.TrimEnd("`r", [char]7, "`n")
+                $drop = ($range.End - $range.Start) - $visible.Length
+                if ($drop -gt 0) { $range.MoveEnd($WD_CHARACTER, -$drop) | Out-Null }
+            }
+            $range.Delete() | Out-Null
             return 0
         }
         'set_heading_level' {
@@ -983,13 +1031,42 @@ function Cmd-Edit($a) {
         $touched = Invoke-EditOperation $doc $wordIndex $a
         $editMs = [int]$editStarted.ElapsedMilliseconds
 
+        # A delete is the one operation whose success cannot be confirmed by
+        # looking at the paragraph it names, because that paragraph is meant to
+        # be gone. So confirm it by the count, before saving rather than after:
+        # inside a table a cell must keep one paragraph, so a delete there can
+        # quietly do nothing instead of throwing, and an unverified 'edited'
+        # would then be a lie the caller has no way to detect.
+        if ([string]$a.op -eq 'delete_paragraph') {
+            $afterCount = [int]$doc.Paragraphs.Count
+            if ($afterCount -ne ($count - 1)) {
+                return @{
+                    status         = 'edit_had_no_effect'
+                    reason         = 'paragraph_count_unchanged'
+                    wordIndex      = $wordIndex
+                    paragraphCount = $afterCount
+                    expectedCount  = $count - 1
+                }
+            }
+        }
+
         $saveStarted = [Diagnostics.Stopwatch]::StartNew()
         $doc.Save()
         $saveMs = [int]$saveStarted.ElapsedMilliseconds
 
+        # Everything past this point is reporting, not mutation: the file on
+        # disk is already changed. A COM throw here must not surface as a failed
+        # edit, because the caller treats a throw as "outcome unknown" and the
+        # truth is "the edit succeeded and we failed to describe it".
         $page = 0
-        if ($touched -gt 0 -and $touched -le [int]$doc.Paragraphs.Count) {
-            $page = Get-PageOf $doc.Paragraphs.Item($touched).Range
+        $paragraphCount = 0
+        try {
+            if ($touched -gt 0 -and $touched -le [int]$doc.Paragraphs.Count) {
+                $page = Get-PageOf $doc.Paragraphs.Item($touched).Range
+            }
+            $paragraphCount = [int]$doc.Paragraphs.Count
+        } catch {
+            $page = 0
         }
 
         $result = @{
@@ -997,7 +1074,7 @@ function Cmd-Edit($a) {
             protectedView  = [bool]$opened.protectedView
             markOfTheWeb   = $marked
             wordIndex      = $touched
-            paragraphCount = [int]$doc.Paragraphs.Count
+            paragraphCount = $paragraphCount
             page           = $page
             openMs         = $openMs
             editMs         = $editMs

@@ -497,6 +497,8 @@ const revertDocumentTool = {
         "through the edit history; each restored snapshot is consumed, so this only moves backwards.",
         "Word's own undo cannot be used — the document is closed at the end of every edit and the undo",
         "history goes with it.",
+        "Requires the revisionToken you last saw for the document, so a revert cannot silently discard",
+        "changes made by someone else since.",
     ].join(" "),
     parameters: {
         type: "object",
@@ -508,17 +510,20 @@ const revertDocumentTool = {
             revisionToken: {
                 type: "string",
                 description:
-                    "Optional. If given, the revert is refused unless the file still matches it, so a document changed by something else is not silently overwritten.",
+                    "Required. The revisionToken from the read_document or edit_document call whose result you are " +
+                    "reverting. The revert is refused unless the file still matches it. This is not optional: a revert " +
+                    "overwrites the document with older bytes and keeps no copy of what it replaced, so running it " +
+                    "against a document someone has changed since you looked destroys that work permanently.",
             },
         },
-        required: ["path"],
+        required: ["path", "revisionToken"],
         additionalProperties: false,
     },
     handler: async (args) =>
         withWordWork(async () => {
             try {
                 const result = await getCache().revertDocument(resolveInputPath(args?.path), {
-                    revisionToken: args?.revisionToken ?? null,
+                    revisionToken: args?.revisionToken,
                 });
                 await refreshCanvasesFor(result.document.path);
                 return result;

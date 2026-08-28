@@ -195,9 +195,14 @@ export class DocumentReader {
      * means the file changed while we were reading, which would hand back a map
      * that addresses a document that no longer exists — so the read is retried
      * once and then refused.
+     *
+     * `deadline` lets a caller that performs several Word operations in one
+     * logical call impose a single wall clock over all of them, instead of each
+     * layer starting a fresh budget and the worst cases multiplying. Omitted, a
+     * read budgets itself as before.
      */
-    async read(docPath, { limit = 0, offset = 0 } = {}) {
-        const deadline = Date.now() + READ_BUDGET_MS;
+    async read(docPath, { limit = 0, offset = 0, deadline: externalDeadline = null } = {}) {
+        const deadline = externalDeadline ?? Date.now() + READ_BUDGET_MS;
         let info;
         try {
             info = await stat(docPath);

@@ -6,11 +6,12 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
 import {
+    __resetSequenceForTests,
     compactStamp,
     latestSnapshot,
     listSnapshots,
@@ -34,10 +35,45 @@ const withTemp = async (fn) => {
 };
 
 test("names sort oldest-first as plain strings", () => {
-    const early = snapshotName({ takenAt: new Date("2026-01-02T03:04:05.006Z"), op: "replace_text", token: "sha256:aa" });
-    const late = snapshotName({ takenAt: new Date("2026-01-02T03:04:05.007Z"), op: "replace_text", token: "sha256:aa" });
+    const early = snapshotName({
+        takenAt: new Date("2026-01-02T03:04:05.006Z"),
+        op: "replace_text",
+        token: "sha256:aa",
+        seq: 1,
+    });
+    const late = snapshotName({
+        takenAt: new Date("2026-01-02T03:04:05.007Z"),
+        op: "replace_text",
+        token: "sha256:aa",
+        seq: 2,
+    });
     assert.ok(early < late, `${early} should sort before ${late}`);
-    assert.match(early, /^20260102T030405006Z-replace_text-aa\.snapshot$/);
+    assert.match(early, /^20260102T030405006Z-000000001-replace_text-aa\.snapshot$/);
+});
+
+test("two snapshots in the same millisecond still have a defined order", () => {
+    // The case that actually occurs: an edit is ~280 ms but its snapshot is
+    // taken at the very start, so two operations queued together are
+    // snapshotted within the same millisecond routinely. Before the counter the
+    // tie broke on operation name and then a random nonce -- an ordering with
+    // no relation to time, so `revertToLatest` could restore the older of the
+    // two and report that it had undone the newer.
+    const at = new Date("2026-01-02T03:04:05.006Z");
+    const first = snapshotName({ takenAt: at, op: "replace_text", token: "sha256:aa", nonce: "zzzz", seq: 7 });
+    const second = snapshotName({ takenAt: at, op: "delete_paragraph", token: "sha256:bb", nonce: "aaaa", seq: 8 });
+    assert.ok(first < second, `${first} should sort before ${second}`);
+
+    // And the ordering survives the sort that retention and revert both use.
+    const { keep } = pruneSnapshots([second, first], 20);
+    assert.equal(keep[0].name, second, "the newest by sequence must come first");
+});
+
+test("the counter is monotonic across calls without an explicit seq", () => {
+    __resetSequenceForTests(0);
+    const at = new Date("2026-01-02T03:04:05.006Z");
+    const names = [0, 1, 2, 3].map(() => snapshotName({ takenAt: at, op: "replace_text", token: "sha256:aa" }));
+    assert.deepEqual(names, [...names].sort(), "names taken in order must sort in order");
+    assert.equal(new Set(names).size, names.length, "names collided");
 });
 
 test("the timestamp keeps millisecond resolution", () => {
@@ -50,13 +86,30 @@ test("names round-trip through the parser", () => {
         op: "insert_paragraph_after",
         token: "sha256:0123456789abcdef",
         nonce: "k9x2",
+        seq: 42,
     });
     assert.deepEqual(parseSnapshotName(name), {
         name,
         stamp: "20260828T183012123Z",
+        seq: 42,
         op: "insert_paragraph_after",
         token: "0123456789abcdef",
         nonce: "k9x2",
+    });
+});
+
+test("a snapshot written before the counter existed still parses", () => {
+    // Retention and revert both discover snapshots by parsing their names, so a
+    // name that stops parsing does not merely sort oddly -- it becomes invisible
+    // to `listSnapshots` and its bytes are stranded on disk forever.
+    const legacy = "20260828T183012123Z-replace_text-0123456789abcdef.snapshot";
+    assert.deepEqual(parseSnapshotName(legacy), {
+        name: legacy,
+        stamp: "20260828T183012123Z",
+        seq: null,
+        op: "replace_text",
+        token: "0123456789abcdef",
+        nonce: null,
     });
 });
 
@@ -140,6 +193,46 @@ test("revert restores the newest snapshot and consumes it", async () => {
             () => revertToLatest({ root: dir, docPath: doc }),
             (err) => err instanceof SnapshotError && err.code === "no_snapshot",
         );
+    });
+});
+
+test("revert leaves no staging file behind", async () => {
+    // The restore goes through a sibling temp and an atomic rename rather than
+    // copying straight onto the document: `copyFile` truncates its destination
+    // and then fills it, so a failure part-way through leaves the user's
+    // document as a prefix of the snapshot. The temp must not survive.
+    await withTemp(async (dir) => {
+        const doc = path.join(dir, "report.docx");
+        await writeFile(doc, "v1");
+        await takeSnapshot({ root: dir, docPath: doc, op: "replace_text", token: "sha256:1" });
+        await writeFile(doc, "v2");
+
+        await revertToLatest({ root: dir, docPath: doc });
+        assert.equal(await readFile(doc, "utf8"), "v1");
+
+        const leftovers = (await readdir(dir)).filter((f) => f.includes(".revert-") || f.endsWith(".tmp"));
+        assert.deepEqual(leftovers, [], `staging files left behind: ${leftovers.join(", ")}`);
+    });
+});
+
+test("revert restores the newest snapshot even when both were taken in one millisecond", async () => {
+    // Two concurrent edits snapshot within the same millisecond as a matter of
+    // course. If ordering fell back to the operation name, this would restore
+    // the wrong bytes while reporting that it had undone the newer edit.
+    await withTemp(async (dir) => {
+        const doc = path.join(dir, "report.docx");
+        const at = new Date("2026-01-02T03:04:05.006Z");
+
+        await writeFile(doc, "v1");
+        await takeSnapshot({ root: dir, docPath: doc, op: "replace_text", token: "sha256:1", takenAt: at });
+        await writeFile(doc, "v2");
+        // `delete_paragraph` sorts before `replace_text`, so under the old
+        // name format this second, newer snapshot would have lost the tie.
+        await takeSnapshot({ root: dir, docPath: doc, op: "delete_paragraph", token: "sha256:2", takenAt: at });
+        await writeFile(doc, "v3");
+
+        await revertToLatest({ root: dir, docPath: doc });
+        assert.equal(await readFile(doc, "utf8"), "v2", "revert restored the older of two same-millisecond snapshots");
     });
 });
 

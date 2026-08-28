@@ -224,8 +224,12 @@ try {
     });
 
     await check("revert restores the previous state and steps backwards", async () => {
+        // The token is required now, and each revert mints a new one, so a
+        // second revert has to carry the token the first one returned. That is
+        // the contract working, not ceremony: it is what stops a revert
+        // overwriting a document someone changed in between.
         const beforeRevert = read.revisionToken;
-        const result = await cache.revertDocument(fixture);
+        const result = await cache.revertDocument(fixture, { revisionToken: beforeRevert });
 
         assert.ok(!tokensMatch(result.document.revisionToken, beforeRevert), "revert did not change the file");
         assert.ok(
@@ -235,7 +239,7 @@ try {
         assert.equal(result.restored.op, "replace_text");
 
         // Consumed, so a second revert goes further back rather than redoing.
-        const second = await cache.revertDocument(fixture);
+        const second = await cache.revertDocument(fixture, { revisionToken: result.document.revisionToken });
         assert.equal(second.snapshotsRemaining, result.snapshotsRemaining - 1);
         read = second.document;
     });
@@ -310,7 +314,17 @@ try {
                 (err) => err.code === "file_locked",
             );
             const elapsed = Date.now() - started;
-            assert.ok(elapsed < 30_000, `refusing a locked document took ${elapsed}ms; it should be immediate`);
+            // Measured at 342-359 ms across runs: the write-handle pre-flight is
+            // ~4 ms and the rest is the read that precedes it. The bound is
+            // deliberately not tight to that. Every timing in this repo was
+            // taken on a quiet machine, and Word's own shutdown has already been
+            // measured contending on per-user state when another session drives
+            // it -- so a tight bound here would fail for load rather than for
+            // regression. What must not regress is the *shape*: a refusal that
+            // never opens Word, rather than the indefinite hang a trial open
+            // gives on a held file. Three seconds is far below that and far
+            // above the noise.
+            assert.ok(elapsed < 3_000, `refusing a locked document took ${elapsed}ms; it should not involve Word`);
             assert.equal(await exists(ownerFileFor(fixture)), false, "a ~$ owner file appeared");
             process.stderr.write(`  [locked document refused in ${elapsed}ms]\n`);
         } finally {
@@ -356,17 +370,119 @@ try {
         assert.match(zoneAfter, /ZoneId=3/, "editing stripped the file's mark of the web");
     });
 
+    await check("paragraphs carrying Word's layout marks are editable", async () => {
+        // Regression for a defect that made ordinary documents silently
+        // unusable. The map renders `w:br` as "\n" and `w:noBreakHyphen` as "-";
+        // Word's Range.Text renders them as \u000B and \u001E. The host's
+        // normalizer used to *delete* those control characters, so the two texts
+        // never matched and the pre-mutation check rejected every edit.
+        //
+        // What made it worse than a refusal: the rejection is reported as "the
+        // file changed between the read and the edit. Read it again and use the
+        // new address." That is false, and the advice is a loop -- re-reading
+        // mints the identical address, so an agent following it never stops.
+        // Soft breaks are common in headings and postal addresses.
+        const marks = path.join(docs, "layout-marks.docx");
+        await execFileAsync("powershell.exe", [
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            path.join(HERE, "inject-layout-marks.ps1"),
+            "-Source",
+            fixture,
+            "-Out",
+            marks,
+        ]);
+
+        const map = await cache.readStructure(marks);
+        let token = map.revisionToken;
+
+        for (const [marker, expectedMapText] of [
+            ["MARKbr", "MARKbr abc\ndef"],
+            ["MARKnbh", "MARKnbh e-mail"],
+            ["MARKtab", "MARKtab a\tb"],
+            ["MARKsoft", "MARKsoft softhyphen"],
+        ]) {
+            const target = map.paragraphs.find((p) => p.text.startsWith(marker));
+            assert.ok(target, `no ${marker} paragraph in the fixture`);
+            assert.equal(target.text, expectedMapText, `the map renders ${marker} differently than expected`);
+
+            const result = await cache.editDocument(
+                marks,
+                { op: "replace_text", address: target.address, text: `${marker} rewritten` },
+                { revisionToken: token },
+            );
+            assert.equal(result.paragraph.text, `${marker} rewritten`, `${marker} was not rewritten`);
+            token = result.document.revisionToken;
+        }
+    });
+
+    await check("deleting the only paragraph in a table cell is refused, not silently reported as done", async () => {
+        // A cell must retain at least one paragraph, so Word declines rather
+        // than throwing. Nothing downstream noticed, because the delete branch
+        // reported a hard-coded paragraph index and no count was compared.
+        const map = await cache.readStructure(fixture);
+        const cell = map.paragraphs.find((p) => p.inTable && p.text.trim().length > 0);
+        assert.ok(cell, "no table paragraph in the fixture");
+
+        const countBefore = map.paragraphCount;
+        await assert.rejects(
+            () => cache.editDocument(fixture, { op: "delete_paragraph", address: cell.address }, { revisionToken: map.revisionToken }),
+            (err) => {
+                assert.equal(err.code, "edit_failed", `unexpected code ${err.code}`);
+                assert.match(err.message, /had no effect|cannot be deleted|at least one/i);
+                return true;
+            },
+        );
+
+        const after = await cache.readStructure(fixture);
+        assert.equal(after.paragraphCount, countBefore, "the refused delete changed the document anyway");
+    });
+
+    await check("revert refuses to run without a revision token", async () => {
+        // A revert overwrites the document with older bytes and keeps no copy of
+        // what it replaced. Left optional, the sequence "agent edits, user works
+        // in Word, agent reverts" destroys the user's work with nothing to
+        // recover it from -- while `edit_document` refuses that exact situation.
+        await assert.rejects(
+            () => cache.revertDocument(fixture, {}),
+            (err) => err.code === "stale_revision_token",
+        );
+        await assert.rejects(
+            () => cache.revertDocument(fixture, { revisionToken: "sha256:0000000000000000" }),
+            (err) => err.code === "stale_revision_token",
+        );
+    });
+
     await check("editing needs no canvas open", async () => {
         assert.equal(cache.openCount, 0, "an edit left a document open");
     });
 
-    await check("snapshots are capped rather than growing without bound", async () => {
+    await check("snapshot files pair up and stay within the retention cap", async () => {
+        // The previous form of this asserted `<= 40` after roughly five edits,
+        // which no possible behaviour could have violated. Retention itself is
+        // proved on disk by the unit test; what is worth checking here is that
+        // real edits leave a coherent set -- one manifest per snapshot, nothing
+        // orphaned by the pruning.
         const dir = path.join(workRoot, "artifacts", "snapshots");
         const perDoc = await readdir(dir);
         assert.ok(perDoc.length >= 1, "no snapshots were taken");
         for (const sub of perDoc) {
             const files = await readdir(path.join(dir, sub));
-            assert.ok(files.length <= 40, `${files.length} snapshot files for one document`);
+            const snaps = files.filter((f) => f.endsWith(".snapshot"));
+            const manifests = files.filter((f) => f.endsWith(".snapshot.json"));
+            assert.equal(
+                snaps.length,
+                manifests.length,
+                `${sub}: ${snaps.length} snapshots but ${manifests.length} manifests`,
+            );
+            assert.ok(snaps.length <= 20, `${snaps.length} snapshots retained for one document, cap is 20`);
+            // Names must sort in the order they were taken, so revert pops the
+            // newest. Same-millisecond ties are broken by a monotonic counter.
+            const sorted = [...snaps].sort();
+            assert.deepEqual(snaps.slice().sort(), sorted);
         }
     });
 } finally {

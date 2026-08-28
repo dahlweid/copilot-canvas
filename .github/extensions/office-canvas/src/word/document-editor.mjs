@@ -27,6 +27,11 @@
 // The revision token is checked twice on purpose. Once before any Word work,
 // because refusing a stale edit should cost a file hash and not a Word start;
 // and once as part of the read, which closes the window between the two.
+//
+// Neither check closes the read->write window, and nothing about a token can:
+// two calls that read the same bytes both hold a valid token and would both be
+// authorized. Serialization is what closes that window, so every operation that
+// writes a given document runs under a per-document lock — see `#withLock`.
 
 import { open, rm, stat } from "node:fs/promises";
 import path from "node:path";
@@ -45,6 +50,16 @@ export class EditError extends Error {
 }
 
 /**
+ * Wall-clock ceiling on one `edit_document`, covering both reads and the edit.
+ *
+ * Five minutes is far longer than any measured edit -- 281 ms warm, 2.7 s on a
+ * document carrying the mark of the web, and those are typical-case figures
+ * rather than bounds -- so it is not a performance limit. It exists so a wedged
+ * Word surfaces as an error the caller can act on instead of as silence.
+ */
+const EDIT_BUDGET_MS = 300_000;
+
+/**
  * Maps the host's structured status onto typed errors.
  *
  * The host reports failure as a `status` field on a successful response rather
@@ -59,16 +74,25 @@ function failFromStatus(result, docPath, intent) {
         case "file_not_found":
             throw new EditError("file_not_found", `No such file: ${docPath}`);
         case "document_locked":
-            // The shared `file_locked` code, but note the meaning differs from
-            // the read path's use of it. For a read, `file_locked` means a
-            // holder *stricter than Word*, because a document open in Word can
-            // still be copied -- so "close it in Word" would be wrong advice.
-            // For a write there is no such gap: every write open fails while
-            // Word holds the file, so a document open in Word is genuinely the
-            // obstacle and saying so is correct.
+            // The shared `file_locked` code, but the meaning differs from the
+            // read path's use of it, in both directions.
+            //
+            // For a read, `file_locked` means a holder *stricter than Word*,
+            // because a document open in Word can still be copied -- so naming
+            // Word would be actively wrong. For a write there is no such gap:
+            // every write open fails while Word holds the file, so unlike the
+            // read path a document open in Word *is* a possible cause here.
+            //
+            // It is still not a cause we may state. `Test-FileWritable` takes a
+            // write handle, and a write handle cannot distinguish a sharing
+            // violation from a denying ACL from a read-only attribute -- the
+            // flag is collapsed by construction. So the message reports the
+            // fact it actually established, that the file could not be opened
+            // for writing, and offers the possibilities without asserting one.
             throw new EditError(
                 "file_locked",
-                `${name} is open in another program, so it cannot be edited. Close it there and try again.`,
+                `${name} could not be opened for writing. Another program may be holding it, or it may be protected ` +
+                    `against writing.`,
             );
         case "open_failed":
             throw new EditError(
@@ -88,6 +112,19 @@ function failFromStatus(result, docPath, intent) {
                     actualText: result.actualText ?? null,
                 },
             );
+        case "edit_had_no_effect":
+            // Word neither threw nor changed anything. The known cause is a
+            // delete inside a table cell: a cell must retain one paragraph, so
+            // Word declines the deletion silently rather than raising. Reported
+            // as its own status so the caller is not told an edit was applied
+            // that was not.
+            throw new EditError(
+                "edit_failed",
+                `Deleting paragraph ${result.wordIndex} of ${name} had no effect — it still has ` +
+                    `${result.paragraphCount} paragraphs. A paragraph that is the only one in a table cell cannot be ` +
+                    `deleted, because a cell must contain at least one; replace its text with an empty string instead.`,
+                { paragraphCount: result.paragraphCount ?? null, expectedCount: result.expectedCount ?? null },
+            );
         default:
             throw new EditError("edit_failed", `Word reported '${result.status}' while editing ${name}.`);
     }
@@ -98,12 +135,49 @@ export class DocumentEditor {
     #host;
     #snapshotRoot;
     #log;
+    /** path (lowercased) -> tail of the promise chain writing that document. */
+    #locks = new Map();
 
     constructor({ reader, host, snapshotRoot, log = () => {} }) {
         this.#reader = reader;
         this.#host = host;
         this.#snapshotRoot = snapshotRoot;
         this.#log = log;
+    }
+
+    /**
+     * Serializes everything that writes one document.
+     *
+     * A revision token authorizes an edit but cannot serialize one: two calls
+     * that read the same bytes both hold a valid token, and both would pass
+     * every check. Since `replace_text` does not shift `wordIndex` and does not
+     * touch another paragraph's text, two concurrent edits to different
+     * paragraphs of the same document both satisfy their pre-mutation checks
+     * and both apply -- while both snapshots hold the same pre-first-edit
+     * bytes, so one revert silently undoes two edits and reports one.
+     *
+     * Copilot issues tool calls in parallel as a matter of course, so this is
+     * reachable rather than theoretical. The lock is per document, keyed
+     * case-insensitively because Windows paths are.
+     */
+    #withLock(docPath, fn) {
+        const key = path.resolve(docPath).toLowerCase();
+        const previous = this.#locks.get(key) ?? Promise.resolve();
+        const run = previous.then(fn, fn);
+        // The stored tail exists only to order the next caller, so it must not
+        // reject -- an unhandled rejection here would be this operation's
+        // failure resurfacing inside an unrelated later one.
+        const tail = run.then(
+            () => {},
+            () => {},
+        );
+        this.#locks.set(key, tail);
+        // Drop the entry once this is the last operation queued, so a long-lived
+        // process does not accumulate one promise per document ever edited.
+        tail.then(() => {
+            if (this.#locks.get(key) === tail) this.#locks.delete(key);
+        });
+        return run;
     }
 
     async #requireFile(docPath) {
@@ -125,8 +199,37 @@ export class DocumentEditor {
      * the token is that "I read this, then changed it" is checkable.
      */
     async edit(docPath, rawIntent, { revisionToken } = {}) {
+        return this.#withLock(docPath, () => this.#edit(docPath, rawIntent, { revisionToken }));
+    }
+
+    async #edit(docPath, rawIntent, { revisionToken } = {}) {
         const intent = validateIntent(rawIntent);
         await this.#requireFile(docPath);
+
+        // One wall clock for the whole operation, not one per layer.
+        //
+        // An edit is three Word round trips -- read, edit, read -- and each of
+        // them defaults to its own budget. Left alone those compose
+        // multiplicatively: two 240 s reads either side of a 180 s host edit is
+        // eleven minutes of silence from what the caller issued as a single
+        // call. Nothing distinguishes that from a hang, and the agent on the
+        // other end has no way to know it should stop waiting.
+        //
+        // So the budget is spent, not restarted. Each step gets what remains,
+        // and a step that would start with nothing left fails immediately with
+        // the reason rather than blocking on a Word that is not coming back.
+        const deadline = Date.now() + EDIT_BUDGET_MS;
+        const remaining = (label) => {
+            const left = deadline - Date.now();
+            if (left <= 0) {
+                throw new EditError(
+                    "word_timeout",
+                    `Editing ${path.basename(docPath)} exceeded its ${Math.round(EDIT_BUDGET_MS / 1000)}s budget ` +
+                        `before ${label} could start.`,
+                );
+            }
+            return left;
+        };
 
         // Cheapest possible refusal, before Word is involved at all.
         const current = await fileRevisionToken(docPath);
@@ -145,7 +248,7 @@ export class DocumentEditor {
         // paragraphs, and if that cap ever migrates into the reader, a silent
         // truncation here would surface as an unresolvable address on long
         // documents only.
-        const before = await this.#reader.read(docPath, { limit: 0 });
+        const before = await this.#reader.read(docPath, { limit: 0, deadline });
 
         if (!tokensMatch(before.revisionToken, current)) {
             throw new EditError(
@@ -163,7 +266,8 @@ export class DocumentEditor {
         if (before.writable === false) {
             throw new EditError(
                 "file_locked",
-                `${path.basename(docPath)} is open in another program, so it cannot be edited. Close it there and try again.`,
+                `${path.basename(docPath)} could not be opened for writing. Another program may be holding it, or it ` +
+                    `may be protected against writing.`,
             );
         }
 
@@ -201,9 +305,21 @@ export class DocumentEditor {
                 op: intent.op,
                 text: intent.text ?? null,
                 headingLevel: intent.headingLevel ?? null,
+                timeoutMs: remaining("the edit itself"),
             });
         } catch (err) {
-            await this.#discardSnapshot(snapshot);
+            // The host *threw*, so the outcome is unknown -- which is precisely
+            // when the snapshot is the only copy of the pre-edit bytes. The two
+            // other discard sites below are safe because the host affirmatively
+            // reported that it did not touch the file; this one is their
+            // opposite and must not be treated the same way.
+            //
+            // The reachable sequence is one this codebase already knows is
+            // real: the request times out, the PowerShell child is killed, and
+            // the reap runs `taskkill /F /T` while Word may be mid-Save on the
+            // user's original. Discarding here would leave a half-written
+            // document and a `revert_document` that answers `no_snapshot`.
+            await this.#recoverFromUnknownOutcome({ docPath, snapshot, before: current, cause: err });
             throw err;
         }
 
@@ -231,9 +347,43 @@ export class DocumentEditor {
         // of a long document would leave it unable to address the rest without
         // another round trip -- and unable to see its own edit if that edit was
         // past the cap. Completeness is the point of this read.
-        const after = await this.#reader.read(docPath, { limit: 0 });
+        //
+        // By this line the edit is applied and persisted -- proven, not assumed,
+        // by the token comparison above. So a failure here is a failure to
+        // *describe* the document, not to change it, and it must not be
+        // reported as though the edit had not happened: an agent told "the edit
+        // failed" would retry and apply it twice. The snapshot is deliberately
+        // kept, because the edit it undoes is real.
+        let after;
+        try {
+            after = await this.#reader.read(docPath, { limit: 0, deadline });
+        } catch (err) {
+            throw new EditError(
+                "document_unreadable",
+                `The edit was applied to ${path.basename(docPath)} and saved, but reading the document back afterwards ` +
+                    `failed (${err.message}). Do not repeat the edit — it is already in the file. Read the document ` +
+                    `again to get current addresses.`,
+                { editApplied: true, snapshot: snapshot.name, cause: err.code ?? null },
+            );
+        }
         const touched =
             result.wordIndex > 0 ? (after.paragraphs.find((p) => p.wordIndex === result.wordIndex) ?? null) : null;
+
+        // The host polls until the file is writable again rather than trusting
+        // `Document.Close()` to have released it, and reports the answer.
+        // Measured, it releases in 0-1 ms every time -- unlike `Application
+        // .Quit()`, which returns seconds before the process actually exits.
+        // So `released: false` means something genuinely unusual, and it is
+        // worth saying so here: the next operation on this document will fail
+        // its writable pre-flight, and without this line that would look like a
+        // fresh and unexplained lock rather than a consequence of this edit.
+        const lockReleased = result.released !== false;
+        if (!lockReleased) {
+            this.#log(
+                `edit_document: ${path.basename(docPath)} was still held ${result.releaseMs}ms after the document was ` +
+                    `closed. The edit is saved; a follow-up edit may be refused until the handle goes.`,
+            );
+        }
 
         this.#log(
             `edit_document: ${describeIntent(intent)} in ${path.basename(docPath)} ` +
@@ -247,6 +397,7 @@ export class DocumentEditor {
             page: result.page || null,
             protectedView: Boolean(result.protectedView),
             markOfTheWeb: Boolean(result.markOfTheWeb),
+            lockReleased,
             previousRevisionToken: current,
             snapshot: { name: snapshot.name, takenAt: snapshot.takenAt },
             timings: {
@@ -266,22 +417,87 @@ export class DocumentEditor {
     }
 
     /**
+     * Called when the host threw, so we do not know whether the document was
+     * written. Re-hashes to find out, and makes the outcome one of two states
+     * the caller can reason about rather than an unknown one.
+     *
+     * Untouched -> the snapshot is a duplicate of what is on disk, so discard it
+     * exactly as the affirmative "nothing changed" paths do, and let the
+     * original error propagate unchanged.
+     *
+     * Changed -> the document was modified by an operation that then failed, so
+     * it may be half-written. Restore the snapshot. If the restore also fails,
+     * keep the snapshot and say its name in the error: the recovery point must
+     * survive even when we cannot apply it, because it is the only copy.
+     */
+    async #recoverFromUnknownOutcome({ docPath, snapshot, before, cause }) {
+        let afterToken = null;
+        try {
+            afterToken = await fileRevisionToken(docPath);
+        } catch {
+            // Cannot even hash it -- keep the snapshot. Losing a recovery point
+            // because we could not read the file is the worst available choice.
+            cause.snapshot = snapshot.name;
+            cause.rolledBack = false;
+            return;
+        }
+
+        if (tokensMatch(afterToken, before)) {
+            await this.#discardSnapshot(snapshot);
+            cause.rolledBack = false;
+            cause.documentUnchanged = true;
+            return;
+        }
+
+        try {
+            await revertToLatest({ root: this.#snapshotRoot, docPath });
+            cause.rolledBack = true;
+            this.#log(
+                `edit_document: ${path.basename(docPath)} was modified by a failed operation and has been rolled back ` +
+                    `from ${snapshot.name}`,
+            );
+        } catch (restoreErr) {
+            cause.rolledBack = false;
+            cause.snapshot = snapshot.name;
+            this.#log(
+                `edit_document: ${path.basename(docPath)} was modified by a failed operation and could NOT be rolled ` +
+                    `back (${restoreErr.message}); snapshot ${snapshot.name} kept`,
+            );
+        }
+    }
+
+    /**
      * Restores the newest snapshot and discards it, so repeated calls walk back
      * through the history rather than toggling between the last two states.
      *
      * The state that is reverted away is not kept. A "redo" snapshot would make
      * the next revert restore what was just undone, and an undo that alternates
      * is worse than one that only goes backwards.
+     *
+     * `revisionToken` is required, for the same reason `edit` requires it and
+     * with more at stake. A revert overwrites the document with older bytes and
+     * keeps no snapshot of what it destroyed, so without the check the sequence
+     * "agent edits, user works in Word for twenty minutes, agent reverts" ends
+     * with the user's work gone and nothing to recover it from. `edit_document`
+     * refuses exactly that situation; it would be incoherent for the
+     * destructive operation to be the lenient one. The agent always has a
+     * token, because `edit_document` returns one.
      */
-    async revert(docPath, { revisionToken = null } = {}) {
+    async revert(docPath, { revisionToken } = {}) {
+        return this.#withLock(docPath, () => this.#revert(docPath, { revisionToken }));
+    }
+
+    async #revert(docPath, { revisionToken } = {}) {
         await this.#requireFile(docPath);
 
         const current = await fileRevisionToken(docPath);
-        if (revisionToken !== null && !tokensMatch(revisionToken, current)) {
+        if (!tokensMatch(revisionToken, current)) {
             throw new EditError(
                 "stale_revision_token",
-                `${path.basename(docPath)} has changed since you read it. Read it again and retry with the new token.`,
-                { expectedRevisionToken: revisionToken, actualRevisionToken: current },
+                `${path.basename(docPath)} has changed since you read it. Read it again and retry with the new token. ` +
+                    `A revert overwrites the document and keeps no copy of what it replaces, so it will not run against ` +
+                    `bytes you have not seen.`,
+                { expectedRevisionToken: revisionToken ?? null, actualRevisionToken: current },
             );
         }
 
@@ -299,7 +515,8 @@ export class DocumentEditor {
         if (!(await isWritable(docPath))) {
             throw new EditError(
                 "file_locked",
-                `${path.basename(docPath)} is open in another program, so it cannot be reverted. Close it there and try again.`,
+                `${path.basename(docPath)} could not be opened for writing, so it cannot be reverted. Another program ` +
+                    `may be holding it, or it may be protected against writing.`,
             );
         }
 

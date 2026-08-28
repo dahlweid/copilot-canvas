@@ -147,3 +147,58 @@ contends on per-user state, so a second session driving Word inflates them by
 amounts that the idle measurements do not predict — the same effect that made a
 30 s leak deadline insufficient. Nothing should assert an upper bound on Word's
 behaviour on the strength of numbers in this table.
+
+## Amendment (2026-08-28, second): what a snapshot restore may and may not assume
+
+Two beliefs recorded elsewhere in this repo turned out to be wrong when probed
+during the review of `edit_document`. Both concerned how a file's bytes and its
+alternate data streams behave when a snapshot is restored over the original.
+
+### `copyFile` does not preserve the destination's mark of the web
+
+An earlier comment in `snapshots.mjs` justified restoring with a plain
+`copyFile` on the grounds that it overwrites the destination in place, leaving
+alternate data streams — notably `Zone.Identifier` — untouched. **That reasoning
+is false.** Measured on this machine:
+
+| operation | source stream | destination stream before | destination stream after |
+| --- | --- | --- | --- |
+| `copyFile` | none | `ZoneId=3` | **gone** |
+| `copyFile` | `ZoneId=3` | `ZoneId=3` | `ZoneId=3` |
+| `copyFile` | `ZoneId=3` | none | `ZoneId=3` (added) |
+| `rename` | `ZoneId=3` | `ZoneId=3` | `ZoneId=3` |
+
+The stream travels with the **source**, not with the destination. The mark
+survives a revert only because `takeSnapshot` copies the original, so the
+snapshot carries the mark and hands it back. Had the snapshot been written any
+other way, the restore would have silently stripped a security marker — the
+exact outcome ADR 0007 refuses.
+
+This also removes the objection to making the restore atomic. A restore now
+copies to a sibling temp and renames over the original: `copyFile` truncates its
+destination and then fills it, so a failure part-way through leaves the user's
+document as a prefix of the snapshot, whereas a rename within a volume is
+atomic. Because the temp is copied from the snapshot, it carries the mark, and
+the rename preserves it. Both halves verified.
+
+### `Document.Close()` releases the file immediately
+
+The host polls until the file is writable again rather than trusting `Close()`,
+because `Application.Quit()` is known to return well before its process exits
+and the same could have been true here. Measured: **0–1 ms, `released: true` on
+every run.**
+
+This is a positive result and it is load-bearing. It means the transient-lock
+model needs **no settling delay between operations** — a question anyone reading
+this ADR will eventually ask, and one that would otherwise be answered by
+guessing at a sleep. The poll stays anyway, because it costs nothing when the
+answer is immediate and it is the only thing that would catch the day it is not.
+
+### Why read and edit have genuinely different lock stories
+
+Worth stating plainly, because it is the sentence that explains why layer 1's
+design works at all: **the copy-based read is not merely tolerable during a
+lock, it is unaffected by one, because Word's own lock permits readers.** The
+sharper corollary is the half that matters here: *the copy survives the lock
+precisely because it is not the original, and an edit has to be.* The edit path
+is not a lazier version of the read path — it is solving a different problem.
