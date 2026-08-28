@@ -22,7 +22,7 @@ import { fileURLToPath } from "node:url";
 
 import { RenderCache } from "../../src/render-cache.mjs";
 import { fileRevisionToken, tokensMatch } from "../../src/revision-token.mjs";
-import { assertNoLeakedWord, wordPids } from "./word-pids.mjs";
+import { assertNoLeakedWord, newWordPids, wordPids } from "./word-pids.mjs";
 
 const execFileAsync = promisify(execFile);
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -69,6 +69,30 @@ const cache = new RenderCache({
 let firstRead = null;
 
 try {
+    await check("a missing file is reported without starting Word", async () => {
+        // Deliberately the first check of the run: nothing has warmed Word yet,
+        // so the pid assertion below can actually fail. Run after any successful
+        // read it could not -- a warm Word would be reused and no new pid would
+        // appear however late the existence check happened.
+        //
+        // The property is real on this path: DocumentReader.read() stats the
+        // file and throws before #fetchMarkup, which is what starts the bridge.
+        // Delete that stat and this goes red.
+        // Narrow on purpose: "No such file" is the JS-side ReadError, so this
+        // also pins *which layer* rejected. The host's own message is "File not
+        // found", which this deliberately does not match -- if the request ever
+        // reaches the host, that is the defect, not an alternative success.
+        await assert.rejects(() => cache.readStructure(path.join(workRoot, "nope.docx")), /file_not_found|No such file/i);
+
+        const appeared = await newWordPids(pidsBefore);
+        assert.deepEqual(
+            appeared,
+            [],
+            `a doomed read started Word (pid ${appeared.join(", ")}). ` +
+                "If another session was driving Word during this window, re-run before believing this.",
+        );
+    });
+
     await check("a structure map and a revision token come back together", async () => {
         const started = Date.now();
         firstRead = await cache.readStructure(fixture);
@@ -239,10 +263,6 @@ try {
         const after = await cache.readStructure(fixture);
         assert.ok(!tokensMatch(after.revisionToken, firstRead.revisionToken), "the token survived a regeneration");
         assert.ok(after.paragraphCount > firstRead.paragraphCount);
-    });
-
-    await check("a missing file is reported without starting Word", async () => {
-        await assert.rejects(() => cache.readStructure(path.join(workRoot, "nope.docx")), /file_not_found|No such file/i);
     });
 
     await check("an exclusively locked original is reported as locked, not as a generic failure", async () => {

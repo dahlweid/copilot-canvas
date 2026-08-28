@@ -344,8 +344,21 @@ function Cmd-Ping($a) {
 }
 
 function Open-DocInternal([string]$docId, [string]$path, [string]$workDir, [bool]$withStats = $true) {
-    Initialize-Word
-
+    # Validate before Initialize-Word. These checks are string and filesystem
+    # work costing microseconds; Initialize-Word costs up to ~4.5 s cold.
+    #
+    # Honest scope, because the obvious claim for this ordering is wrong here:
+    # it saves no Word startup today, and measurement said so. Word is started
+    # by the bridge, not by this command -- word-host.mjs pings as soon as the
+    # host process exists, so that `ownedPid` is known on the tools-only path
+    # and the reap net is not inert. By the time any command is dispatched,
+    # cold or warm, Word is already up; reordering inside this function cannot
+    # reach that. And the shipping read path never gets here with a bad path at
+    # all: DocumentReader.read() stats the file and throws first.
+    #
+    # It is kept because the ordering is correct on its own terms and free, and
+    # because it is what makes the eager ping the *only* thing standing between
+    # a doomed request and a Word startup, rather than one of two.
     if ([string]::IsNullOrWhiteSpace($path)) { throw (New-HostError 'invalid_request' "No document path supplied.") }
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
         throw (New-HostError 'file_not_found' "File not found: $path")
@@ -361,6 +374,8 @@ function Open-DocInternal([string]$docId, [string]$path, [string]$workDir, [bool
             throw (New-HostError 'write_failed' "Could not create the working directory. ($($_.Exception.Message))")
         }
     }
+
+    Initialize-Word
 
     # Never open the user's original file: copy it, strip the mark-of-the-web
     # (Protected View refuses automation) and open the copy read-only. This is
