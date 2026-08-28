@@ -84,10 +84,11 @@ one of them holds it at any moment.
 
 ### Failure
 
-Every host failure carries a typed code. The table lives in ADR 0006; these are
-the three whose plain-English reading is wrong, and which every layer must get
-right because the code is what an agent branches on and the message is what a
-user acts on.
+Every host failure carries a typed code. The full table arrives with
+`read_document`, in ADR 0006 — it is not on `main` yet, so this is a forward
+reference rather than a pointer. The three below are the ones whose
+plain-English reading is wrong, and every layer must get them right because the
+code is what an agent branches on and the message is what a user acts on.
 
 **`file_locked`**:
 The original is held **more strictly than Word itself holds it**. Measured: Word
