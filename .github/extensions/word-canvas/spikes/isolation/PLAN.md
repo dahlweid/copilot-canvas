@@ -953,3 +953,91 @@ viewer, always.** That is simpler than v1's arrangement and simpler than §11's.
 Consequently §14.3 phase 4 is **not** struck (as §15.4 first said); it stands, reworded: build
 the single pdf.js viewer with an overlay layer, per-page repaint, and a verified
 accessibility story.
+
+## 16. Measured: what holding the original open actually costs
+
+The proposal under review was that the agent should edit the original file
+directly and let Word arbitrate file locking, on the grounds that this is the
+cleanest model and avoids a copy the user never asked for. The instinct about
+the *user's* mental model is right. The claim about Word arbitrating is not.
+
+### 16.1 Method
+
+`probes/probe-original-lock.ps1` opens a document read-write in a hidden Word
+instance and then, while it is held open, attempts the three write patterns a
+document generator actually uses. `probes/probe-lock-control.ps1` adds the
+control the first probe lacked, running each arm in a job with a hard timeout.
+
+### 16.2 Results
+
+| Test | Result |
+| --- | --- |
+| Open original read-write | 586 ms, `ReadOnly=False` |
+| Lock artefact in user's folder | `~$iginal.docx` appears beside the document |
+| External overwrite (`Copy-Item`) | FAILED, sharing violation |
+| External write-temp-then-rename | FAILED |
+| External exclusive write handle | FAILED, sharing violation |
+| Second Word opens a *different* file | opened in 1167 ms |
+| Second Word opens *the same* file | **HUNG**, no result in 45 s |
+
+The last two rows are the A/B control. Arm A differs from arm B only in which
+path the second instance opens, so the hang is attributable to the lock and not
+to running two Word instances.
+
+### 16.3 What this falsifies
+
+**"Word handles the file locking" is false in the way that matters.** Word does
+not arbitrate; it *blocks*. The second instance hung indefinitely rather than
+failing fast or returning a read-only handle, and it did so with
+`DisplayAlerts = 0` already set — so alert suppression does not prevent it. Both
+Word processes had to be killed externally. In a hidden instance there is no
+dialog for anyone to dismiss, which is the precise failure mode the planned
+dialog watchdog exists to catch, arriving through a door the watchdog does not
+cover.
+
+**Holding the original open breaks the feature v1 was built around.** All three
+external write patterns fail with sharing violations. Auto-refresh on script
+regeneration is the behaviour the directory watcher exists to support — the
+watcher watches the containing directory precisely because generators replace
+and rename. If we hold the original open, the generator's write fails before the
+watcher has anything to observe. We would be locking the user out of their own
+document while claiming to display it.
+
+A third, smaller cost: `~$iginal.docx` appears in the user's folder for as long
+as we hold the document, and it is created and deleted inside the directory the
+watcher is watching.
+
+### 16.4 The middle path
+
+None of this argues for a persistent working copy, and the objection to copies
+stands: the user should not have to reason about which file is real. What the
+measurements argue against is the *duration* of the lock, not its existence.
+
+Hold the original open only for the length of a single operation — open, edit,
+save, close — and the lock window shrinks to roughly a second. Between
+operations the file is completely free: generators can rewrite it, the user's
+Word can open it, and the watcher behaves exactly as it does today. The
+document on disk stays the single source of truth, which is what the proposal
+was really asking for.
+
+Two things make this affordable rather than merely tolerable. Rendering is
+already decoupled — the canvas displays an exported PDF, so nothing needs the
+document to stay open to keep the display alive. And per-operation snapshots are
+already the agreed undo model, so we were never relying on Word's in-process
+undo stack surviving between operations.
+
+The cost is a per-operation open. Measured at 586 ms for the open alone; a full
+open-edit-save-close round trip was not cleanly measured because the probe was
+interrupted by the arm-B hang, and should be measured before this is committed
+to.
+
+### 16.5 Still to resolve
+
+Transient locking shrinks the collision window; it does not eliminate it. If
+the user has the document open in their own Word when an operation begins, the
+open will still block. That is what the handoff rule is for, and it is now a
+requirement rather than a nicety: **an operation must detect that the file is
+already open and refuse quickly, rather than blocking**. Detecting it by
+attempting to open is exactly what hangs, so detection has to be done another
+way — testing for a writable handle, or for the `~$` lock file, before calling
+into Word.

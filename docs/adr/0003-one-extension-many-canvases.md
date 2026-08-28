@@ -23,7 +23,14 @@ Excel.
 
 The shared pdf.js rendering surface is a good fit for Word and PowerPoint,
 where pagination is inherent to the format. It is a poor fit for Excel, where
-pages are invented by print setup and a PDF cannot show a formula at all. That
-does not undermine this decision — because the canvases are already separate,
-Excel can adopt a different view without disturbing the others. Only the
-packaging is shared, and that is the part the runtime forces us to share.
+pages are invented by print setup and a PDF cannot show a formula at all.
+**Excel is therefore out of scope for now**: we ship Word and PowerPoint, and
+revisit Excel once we know what its display surface should be, since it is
+almost certainly a grid rather than a page.
+
+That deferral costs nothing precisely because the canvases are already
+separate. Excel can arrive later with a different view, a different input
+schema, and a different verification signal, without disturbing the two that
+render as pages. Only the packaging is shared, and that is the part the runtime
+forces us to share.
+
