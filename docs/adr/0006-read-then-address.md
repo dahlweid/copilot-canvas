@@ -130,6 +130,18 @@ Measured against a real open document
 candidate mechanisms agree on every reader we happened to use, and disagree only
 on the second row, which is why the wrong one went unchallenged for so long.
 
+**One boundary on that claim, stated because this ADR is about a label that
+outlived its accuracy.** What the probe measures is the **share** mode: the
+discriminating reader separates a holder granting `Read` from one granting
+`ReadWrite`, and real Word lands unambiguously on `ReadWrite`. The holder's
+**access** mode is a different matter — it is not observable from outside at
+all, since every reader sees only the consequences of the share mode. That Word
+holds *write* access is an inference from the fact that it saves the file, not a
+measurement. The probe also shows the inference is unfalsifiable here and
+harmless: holders taking `Write` and `ReadWrite` access, both granting
+`ReadWrite`, are identical on every cell. So "write handle" is shorthand for
+"has write access, grants `ReadWrite`", and only the second half is measured.
+
 `file_locked` and `permission_denied` are separated on measurement, not on
 intuition, and they are separated because they need different remediation — a
 lock may clear on its own and is worth retrying, a permission will not and is
@@ -140,7 +152,7 @@ not. What each cause actually produces:
 | `FileShare::None` (exclusive lock) | `System.IO.IOException`             | `EBUSY`     |
 | ACL denying read                   | `System.UnauthorizedAccessException`| `EPERM`     |
 | holder grants `FileShare::Read`    | **succeeds**                        | **succeeds**|
-| Word's own lock (write handle, grants `ReadWrite`) | **succeeds**         | **succeeds**|
+| Word's own lock (write access, grants `ReadWrite`) | **succeeds**         | **succeeds**|
 | read-only attribute                | **succeeds**                        | **succeeds**|
 
 The bottom rows are the ones worth remembering. A document open in Word is
