@@ -140,6 +140,81 @@ test("when the rollback itself fails, the snapshot is kept and named", async () 
         assert.ok(err, "the failure was swallowed");
         assert.equal(err.rolledBack, false);
         assert.match(err.snapshot ?? "", /\.snapshot$/, "the error does not name the snapshot to recover from");
+
+        // ...and again through the tool boundary's filter. `asToolError` in
+        // extension.mjs forwards only `code`, `message` and `data`, so a fact
+        // recorded solely as a top-level property is visible to this test and
+        // invisible to the agent. The assertions above passed while the caller
+        // learned nothing but "word_timeout"; these are the ones that matter.
+        assert.match(
+            err.data?.snapshot ?? "",
+            /\.snapshot$/,
+            "the snapshot name is not on `data`, so it is dropped at the tool boundary",
+        );
+        assert.equal(err.data?.rolledBack, false);
+        assert.match(
+            err.message,
+            /may be partially written/,
+            "the message does not tell the agent the document may be half-written",
+        );
+        assert.ok(err.message.includes(err.snapshot), "the message does not name the snapshot");
+    });
+});
+
+test("a recovered edit tells the caller what happened to the document", async () => {
+    // The three recovery outcomes are only useful if they reach the agent, and
+    // the agent reads the message. A bare host error would say the call timed
+    // out and leave the state of the user's document unstated.
+    await withTemp(async (dir) => {
+        const doc = path.join(dir, "report.docx");
+        await writeFile(doc, "ORIGINAL");
+        const root = path.join(dir, "artifacts");
+
+        const editor = new DocumentEditor({
+            reader: stubReader(doc),
+            host: {
+                edit: async () => {
+                    await writeFile(doc, "HALF-WRITTEN");
+                    throw Object.assign(new Error("Word did not respond"), { code: "word_timeout" });
+                },
+            },
+            snapshotRoot: root,
+        });
+
+        const err = await editor
+            .edit(doc, intent, { revisionToken: await fileRevisionToken(doc) })
+            .then(() => null, (e) => e);
+
+        assert.ok(err, "the failure was swallowed");
+        assert.equal(err.data?.rolledBack, true, "the rollback is not reported on `data`");
+        assert.match(err.message, /rolled back/, "the message does not say the document was rolled back");
+        assert.equal(await readFile(doc, "utf8"), "ORIGINAL", "the document was not actually restored");
+    });
+});
+
+test("an untouched document after a host throw is reported as needing no recovery", async () => {
+    await withTemp(async (dir) => {
+        const doc = path.join(dir, "report.docx");
+        await writeFile(doc, "ORIGINAL");
+        const root = path.join(dir, "artifacts");
+
+        const editor = new DocumentEditor({
+            reader: stubReader(doc),
+            host: {
+                edit: async () => {
+                    throw Object.assign(new Error("Word did not respond"), { code: "word_timeout" });
+                },
+            },
+            snapshotRoot: root,
+        });
+
+        const err = await editor
+            .edit(doc, intent, { revisionToken: await fileRevisionToken(doc) })
+            .then(() => null, (e) => e);
+
+        assert.ok(err, "the failure was swallowed");
+        assert.equal(err.data?.documentUnchanged, true, "the untouched outcome is not reported on `data`");
+        assert.match(err.message, /unchanged/, "the message does not say the document was untouched");
     });
 });
 

@@ -431,36 +431,64 @@ export class DocumentEditor {
      * survive even when we cannot apply it, because it is the only copy.
      */
     async #recoverFromUnknownOutcome({ docPath, snapshot, before, cause }) {
+        // Facts go on `data` as well as on the error itself. Only `code`,
+        // `message` and `data` survive `asToolError` at the tool boundary, so a
+        // top-level property here reaches this module's own tests and nothing
+        // else -- which is exactly how this was wrong the first time: the
+        // snapshot was correctly kept and its name never left the process.
+        const record = (fields, note) => {
+            Object.assign(cause, fields);
+            cause.data = { ...(cause.data ?? {}), ...fields };
+            // The message is what the model actually reads. Leaving it as the
+            // bare host error would tell the agent its call timed out while
+            // saying nothing about the state of the user's document.
+            if (note) cause.message = `${cause.message} ${note}`;
+        };
+
+        const name = path.basename(docPath);
+
         let afterToken = null;
         try {
             afterToken = await fileRevisionToken(docPath);
         } catch {
             // Cannot even hash it -- keep the snapshot. Losing a recovery point
             // because we could not read the file is the worst available choice.
-            cause.snapshot = snapshot.name;
-            cause.rolledBack = false;
+            record(
+                { snapshot: snapshot.name, rolledBack: false },
+                `${name} could not be re-read afterwards, so whether it was modified is unknown. A snapshot of the ` +
+                    `state before this edit is kept as ${snapshot.name}; revert_document restores it.`,
+            );
             return;
         }
 
         if (tokensMatch(afterToken, before)) {
             await this.#discardSnapshot(snapshot);
-            cause.rolledBack = false;
-            cause.documentUnchanged = true;
+            record(
+                { rolledBack: false, documentUnchanged: true },
+                `${name} is byte-for-byte unchanged, so nothing was written and no recovery is needed.`,
+            );
             return;
         }
 
         try {
             await revertToLatest({ root: this.#snapshotRoot, docPath });
-            cause.rolledBack = true;
+            record(
+                { rolledBack: true },
+                `${name} had been modified before the failure and has been rolled back to its state before this edit.`,
+            );
             this.#log(
-                `edit_document: ${path.basename(docPath)} was modified by a failed operation and has been rolled back ` +
+                `edit_document: ${name} was modified by a failed operation and has been rolled back ` +
                     `from ${snapshot.name}`,
             );
         } catch (restoreErr) {
-            cause.rolledBack = false;
-            cause.snapshot = snapshot.name;
+            record(
+                { rolledBack: false, snapshot: snapshot.name },
+                `${name} had been modified before the failure and could NOT be rolled back automatically ` +
+                    `(${restoreErr.message}). It may be partially written. A snapshot of the state before this edit ` +
+                    `is kept as ${snapshot.name}; revert_document restores it.`,
+            );
             this.#log(
-                `edit_document: ${path.basename(docPath)} was modified by a failed operation and could NOT be rolled ` +
+                `edit_document: ${name} was modified by a failed operation and could NOT be rolled ` +
                     `back (${restoreErr.message}); snapshot ${snapshot.name} kept`,
             );
         }
