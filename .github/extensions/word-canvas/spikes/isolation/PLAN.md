@@ -837,7 +837,7 @@ simplification in this document.
 | --- | --- | --- |
 | `RangeFromPoint` / `GetPoint` coordinate channel (§5.2) | Translate a human's click into a document range | **Deleted** — an agent addresses ranges semantically ("the paragraph under heading X"), never by pixel |
 | Version/consistency protocol (§12.4 item 3) | Guard against a click landing on a stale frame | **Deleted** — it existed only to protect the coordinate channel |
-| pdf.js edit-mode viewer (§11.494) | (a) scroll position, (b) client-coordinate page geometry, (c) per-page replace | **Probably deleted.** (b) was click geometry and is gone. (a) and (c) are refresh cosmetics that do not need a text layer we own. This removes option C's only new dependency |
+| pdf.js edit-mode viewer (§11.494) | (a) scroll position, (b) client-coordinate page geometry, (c) per-page replace | **Retained — see §15.5.** Ground (b) is gone with the coordinate channel, but the reframing creates a stronger ground that (a)–(c) never covered: an agent that edits must be able to *show what it changed*, and nothing can be drawn over the native plugin's content |
 | Optimistic typing overlay (§5.3, §11 cost 1) | Hide re-export latency behind a keystroke echo | **Deleted** — see below |
 | Caret and selection rendering (§5.3) | A human needs to see where they are | **Deleted** — an agent has no caret |
 | The 168 ms latency budget (§11) | Had to fit between a keystroke and its echo | **Non-binding.** Agent edits are transactional; even the 664 ms full export is acceptable. The number is now a nicety, not a gate |
@@ -883,13 +883,73 @@ back after writing it. That is a check, not a defect.
 
 ### 15.4 Effect on the phases
 
-§14.3 stands, with phase 4 (pdf.js viewer) **struck** pending a decision on refresh cosmetics,
-and phase 5 (structured intents) promoted to the core deliverable rather than the last step.
+§14.3 stands, with phase 4 (the pdf.js viewer) **retained and reworded** — see §15.5 — and
+phase 5 (structured intents) promoted to the core deliverable rather than the last step.
 Phases 0-2 — security review, hidden-desktop host with Job Object lifetime, out-of-process
 dialog watchdog — are unaffected: they are about running Word safely and invisibly, which this
 reframing needs just as much.
 
-Two probes are now worth more than any further design work:
+Three probes are now worth more than any further design work:
 
 - `Range.InsertXML` throughput, to settle §15.3 limit 2.
 - A read-back-after-write check on `TypeText`, to size the autocorrect problem.
+- A screen-reader pass over a pdf.js text layer, to settle §15.5 cost 3.
+
+### 15.5 pdf.js: struck, then reinstated on better grounds
+
+§15.1 first recorded pdf.js as "probably deleted", on the reasoning that two of §11's three
+justifications were click-geometry. That was the same error this document keeps catching in
+itself: **the dependency was re-checked against the old requirement list.** The reframing did
+not only delete requirements, it created one — and that one was never checked for.
+
+**An agent that edits must be able to show what it changed.** Highlight the edited paragraph,
+box the inserted table, mark the regenerated TOC. Nothing can be drawn over the content of a
+native PDF plugin in an `<iframe>`: its internals are not in our DOM. This is structural, not
+difficult. pdf.js renders into a `<canvas>` we own with a text layer we position, so overlays
+are trivial.
+
+Agent-editing is therefore the *strongest* argument for pdf.js, not an argument against it.
+
+**v1 already demonstrates the underlying limitation.** From `src/ui/app.js`:
+
+> `// The fragment alone is not enough -- the PDF plugin only reads it while loading -- so the`
+> `// src is reassigned.`
+
+Changing page in v1 reloads the whole document. That is the plugin's opacity biting already,
+in read-only mode, before any editing exists.
+
+| Capability | Native plugin | pdf.js |
+| --- | --- | --- |
+| Read scroll position | ✗ | ✓ |
+| Change page without a full reload | ✗ — v1 reassigns `src` | ✓ |
+| Know which page is visible | ✗ | ✓ |
+| Overlay change markers / highlights | ✗ **structurally impossible** | ✓ |
+| Swap one re-exported page in place | ✗ | ✓ |
+| Custom layout: continuous, side-by-side diff, thumbnails | ✗ | ✓ |
+| Identical behaviour across embedders | ✗ varies by browser/Electron build | ✓ deterministic |
+
+The last row is a robustness argument independent of editing: a canvas host without a PDF
+plugin cannot display v1 at all. pdf.js removes that dependency on the embedder.
+
+The pairing that matters is **pdf.js + the 168 ms single-page re-export**: edit → re-export one
+page → repaint one canvas. No reload, no scroll loss, no flicker. Neither half delivers that
+alone.
+
+**It also simplifies rather than complicates.** §11 proposed two viewer modes — native iframe
+for read-only, pdf.js for editing — and flagged the risk of the two diverging. Under §15 there
+is no user-facing mode switch, because the agent may edit at any moment. So: **one pdf.js
+viewer, always.** That is simpler than v1's arrangement and simpler than §11's.
+
+**Costs, stated honestly:**
+
+1. Vendoring pdf.js and its worker (~1–2 MB), which becomes ours to maintain and update.
+2. Rebuilding what the plugin gave for free: pagination, zoom, print, search UI, keyboard
+   navigation.
+3. **Accessibility must be verified, not assumed.** §11 credited option C with tagged-PDF
+   screen-reader support *via the native viewer*. pdf.js's text layer gives selectable and
+   readable text, but structural tagging — headings, lists, reading order — is weaker. §11's
+   parity claim was asserted without test and is **withdrawn pending a probe**.
+
+Consequently §14.3 phase 4 is **not** struck (as §15.4 first said); it stands, reworded: build
+the single pdf.js viewer with an overlay layer, per-page repaint, and a verified
+accessibility story.
