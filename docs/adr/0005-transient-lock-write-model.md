@@ -85,6 +85,13 @@ Measured, with a document open in a hidden Word (`ok` = the open succeeded):
 | read, `FileShare::None` | sharing violation | ok |
 | write, any share mode | sharing violation | ok |
 
+The last row is the one this layer depends on. `Test-FileWritable` asks for
+`FileAccess::ReadWrite` with **`FileShare::None`**, and `None` conflicts with
+*any* existing handle whatever that handle grants. So the edit path's pre-flight
+refusal against a document open in Word is **guaranteed rather than incidental**:
+it does not depend on Word's share mode being any particular value, which is
+exactly the assumption that turned out to be wrong everywhere else on this page.
+
 So Word holds a **write** handle while granting `ReadWrite` sharing. The
 tempting one-line summary — "Word locks the file with `FileShare::Read`" — is
 **false**, and the table is what disproves it: if that were the lock, a reader
