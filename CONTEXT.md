@@ -228,7 +228,7 @@ pushes, so two worktrees never touch one branch.
 **Read the review body, not just the thread list.** Findings arrive in two
 shapes and only one of them is a thread. **Suppressed** findings — "previously
 missed, in code that hasn't changed" — appear in the body alone: no inline
-thread, no resolve button, no reply affordance, and `in_reply_to` on their id
+thread, no resolve button, no reply affordance, and `in_reply_to` on their ids
 returns 422. So they sit outside "address every comment, reply, repeat"
 entirely, and a PR can show zero unresolved threads while carrying the only
 finding that gates its merge. Reply to those with a top-level PR comment.
@@ -299,4 +299,21 @@ input**: this account generates no apostrophe in a path, the Linux runner
 generates no exclusive lock, an idle machine generates no contended shutdown.
 That code is untested, not correct, and the suite disguises it. The tell is when
 a test's coverage depends on a property of the machine rather than on the test.
+
+**Assert through the boundary the caller actually sees, not one layer beneath
+it.** A test placed below a boundary will confirm a property no caller can
+observe. `edit_document`'s recovery path set `snapshot`, `rolledBack` and
+`documentUnchanged` on its error, and its unit tests asserted all three and
+passed — while `asToolError` forwarded only `code`, `message` and `data`, so
+every one of those facts was dropped at the tool boundary and the agent saw a
+bare `word_timeout` with nothing about the state of the user's document. The
+requirement was to keep the bytes *and* tell the caller they exist; the tests
+could only see the first half.
+
+An independent deep review missed it too. It traced all three branches of the
+recovery function and correctly cleared it — no path discards the pre-edit
+bytes — because **a reviewer reasoning about a function does not reason about
+the boundary that function's output has to cross.** That blind spot is
+structural, not a matter of effort level, so it is not something a better review
+fixes. Test at the surface a caller consumes.
 
