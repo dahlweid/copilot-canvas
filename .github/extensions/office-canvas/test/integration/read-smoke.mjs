@@ -13,7 +13,7 @@
 //   * Reading does not lock or modify the original.
 
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -172,7 +172,19 @@ try {
 
         const info = await stat(fixture);
         assert.equal(info.size, firstRead.sizeBytes);
-        // Writable in the strongest sense: we can open it for exclusive write.
+
+        // Writable in the strongest sense: nobody holds a conflicting handle,
+        // so we can open it denying all sharing. Node's own fs cannot show
+        // this -- it always opens with FILE_SHARE_READ|WRITE|DELETE, so a
+        // readFile/writeFile round trip succeeds even against a file Word has
+        // open, and would prove nothing.
+        await execFileAsync("powershell.exe", [
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            `[IO.File]::Open('${fixture}', 'Open', 'ReadWrite', 'None').Close()`,
+        ]);
+
         const handle = await readFile(fixture);
         await writeFile(fixture, handle);
         assert.equal(await fileRevisionToken(fixture), firstRead.revisionToken, "rewriting identical bytes moved the token");
@@ -222,6 +234,41 @@ try {
 
     await check("a missing file is reported without starting Word", async () => {
         await assert.rejects(() => cache.readStructure(path.join(workRoot, "nope.docx")), /file_not_found|No such file/i);
+    });
+
+    await check("an exclusively locked original is reported as locked, not as a generic failure", async () => {
+        // The one path units cannot cover: a real sharing violation from a real
+        // second process. Measured behaviour this depends on -- an exclusive
+        // hold gives EBUSY, whereas Word's own FileShare::Read does not fail at
+        // all -- is why `file_locked` means "stricter than Word", not "open in
+        // Word".
+        //
+        // Safe despite ADR 0005: the revision token is read before Word is
+        // started, so this fails fast on the filesystem and never reaches the
+        // `Documents.Open` that would hang.
+        const holder = spawn("powershell.exe", [
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            `$fs=[IO.File]::Open('${fixture}','Open','ReadWrite','None'); Start-Sleep -Seconds 20; $fs.Close()`,
+        ]);
+        try {
+            await new Promise((resolve) => setTimeout(resolve, 2000));
+            const err = await cache.readStructure(fixture).then(
+                () => null,
+                (e) => e,
+            );
+            assert.ok(err, "a read of an exclusively held file should not succeed");
+            assert.equal(err.code, "file_locked", `expected file_locked, got ${err.code}: ${err.message}`);
+            assert.doesNotMatch(
+                err.message,
+                /permission/i,
+                "a sharing violation must not be reported as a permissions problem",
+            );
+        } finally {
+            holder.kill();
+            await new Promise((resolve) => setTimeout(resolve, 500));
+        }
     });
 
     await check("reading needs no canvas open", async () => {

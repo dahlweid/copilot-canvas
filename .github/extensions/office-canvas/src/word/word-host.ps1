@@ -178,6 +178,12 @@ function Get-PageOf($range) {
 # ADR 0005: this is the *only* safe way to ask. Probing by asking Word to open
 # the document is precisely the call that hangs indefinitely on a held file,
 # with DisplayAlerts already off, leaving two processes to be killed by hand.
+# True when a *write* handle can be taken. Note what that does and does not
+# mean, because the answer is reported to callers: it is false for a sharing
+# violation, but equally for an ACL that denies write and for the read-only
+# attribute. Measured: the read-only attribute and Word's own FileShare::Read
+# both still allow *reading* and copying, so `writable = $false` must never be
+# reported as "another process has it open" -- that is one of three causes.
 function Test-FileWritable([string]$path) {
     try {
         $stream = [IO.File]::Open($path, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
@@ -345,8 +351,15 @@ function Open-DocInternal([string]$docId, [string]$path, [string]$workDir, [bool
         throw (New-HostError 'file_not_found' "File not found: $path")
     }
 
+    if ([string]::IsNullOrWhiteSpace($workDir)) {
+        throw (New-HostError 'invalid_request' "No working directory supplied.")
+    }
     if (-not (Test-Path -LiteralPath $workDir)) {
-        New-Item -ItemType Directory -Force -Path $workDir | Out-Null
+        try {
+            New-Item -ItemType Directory -Force -Path $workDir -ErrorAction Stop | Out-Null
+        } catch {
+            throw (New-HostError 'write_failed' "Could not create the working directory. ($($_.Exception.Message))")
+        }
     }
 
     # Never open the user's original file: copy it, strip the mark-of-the-web
@@ -357,15 +370,34 @@ function Open-DocInternal([string]$docId, [string]$path, [string]$workDir, [bool
     try {
         Copy-Item -LiteralPath $path -Destination $copy -Force -ErrorAction Stop
     } catch {
-        # The copy is the first thing that touches the original, so an exclusive
-        # lock held by another process surfaces here rather than at Documents.Open
-        # -- which is the good outcome, because that is the call that hangs.
-        if (-not (Test-FileWritable $path)) {
-            throw (New-HostError 'file_locked' `
-                "Another process is holding $([IO.Path]::GetFileName($path)) open. Close it and try again." `
+        # The copy is the first thing that touches the original, so a failure to
+        # read it surfaces here rather than at Documents.Open -- which is the
+        # good outcome, because that is the call that hangs.
+        #
+        # Branch on the exception *type*, never the message: messages are
+        # localized, and matching them is the trap that has already cost this
+        # project twice. Measured on this machine:
+        #
+        #   FileShare::None (exclusive)   -> System.IO.IOException
+        #   ACL denying read              -> System.UnauthorizedAccessException
+        #   FileShare::Read (Word's own)  -> copy succeeds
+        #   read-only attribute           -> copy succeeds
+        #
+        # The last two are why a read works against a document the user has
+        # open, and why "read-only" is not a failure at all.
+        $ex = $_.Exception
+        $name = [IO.Path]::GetFileName($path)
+        if ($ex -is [System.UnauthorizedAccessException]) {
+            throw (New-HostError 'permission_denied' `
+                "Not allowed to read $name. This is a permissions problem, not another program holding the file." `
                     @{ writable = $false })
         }
-        throw (New-HostError 'copy_failed' "Could not make a working copy of the document. ($($_.Exception.Message))")
+        if ($ex -is [System.IO.IOException]) {
+            throw (New-HostError 'file_locked' `
+                "Another process is holding $name open more strictly than Word does. A document merely open in Word can still be read." `
+                    @{ writable = $false })
+        }
+        throw (New-HostError 'copy_failed' "Could not make a working copy of the document. ($($ex.Message))")
     }
     try { Unblock-File -LiteralPath $copy -ErrorAction SilentlyContinue } catch { }
 
@@ -444,7 +476,14 @@ function Cmd-Structure($a) {
         $thrown = $_.TargetObject
         if ($thrown -is [hashtable] -and $thrown.__hostError) {
             if ($null -eq $thrown.data) { $thrown.data = @{} }
-            $thrown.data.writable = $writable
+            # Only fill it in when the failure did not already say so. A deeper
+            # error knows more than this pre-flight does: it observed the actual
+            # open, whereas $writable was sampled before the attempt and the
+            # file can change hands in between. Overwriting it discarded the
+            # better answer in favour of the staler one.
+            if (-not $thrown.data.ContainsKey('writable')) {
+                $thrown.data.writable = $writable
+            }
         }
         throw
     }

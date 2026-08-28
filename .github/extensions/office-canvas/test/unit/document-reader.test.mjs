@@ -291,7 +291,11 @@ test("an exclusively locked original is a typed file_locked error, not a raw err
     });
 });
 
-test("a permission error is reported as locked rather than as a missing file", async () => {
+test("a permission error is reported as permission_denied, not as a lock", async () => {
+    // Measured on Windows: an ACL denying read gives EPERM, while an exclusive
+    // FileShare::None lock gives EBUSY. They need different remediation -- a
+    // lock may clear on its own, a permission will not -- so collapsing them
+    // into one code repeats the single-`word_error` defect in miniature.
     for (const errno of ["EACCES", "EPERM"]) {
         await withWorkspace(async ({ docPath, workRoot }) => {
             const reader = new DocumentReader({
@@ -303,9 +307,32 @@ test("a permission error is reported as locked rather than as a missing file", a
                 () => null,
                 (e) => e,
             );
-            assert.equal(err.code, "file_locked", `${errno} should map to file_locked`);
+            assert.equal(err.code, "permission_denied", `${errno} should map to permission_denied`);
+            assert.doesNotMatch(
+                err.message,
+                /another process (is )?holding/i,
+                "a permission failure must not tell the caller to close another program",
+            );
         });
     }
+});
+
+test("only a genuine sharing violation is described as another process holding the file", async () => {
+    await withWorkspace(async ({ docPath, workRoot }) => {
+        const reader = new DocumentReader({
+            host: stubHost(),
+            workRoot,
+            tokenOf: errnoThrower("EBUSY"),
+        });
+        const err = await reader.read(docPath).then(
+            () => null,
+            (e) => e,
+        );
+        assert.equal(err.code, "file_locked");
+        assert.match(err.message, /another process/i);
+        // The distinction that makes the copy-based read possible at all.
+        assert.match(err.message, /open in Word can still be read/i);
+    });
 });
 
 test("a file that vanishes between the stat and the token read is file_not_found", async () => {

@@ -128,34 +128,54 @@ export class DocumentReader {
      * into the typed vocabulary.
      *
      * This is the *first* thing in a read that touches the original, before
-     * Word is involved at all, so it is where an exclusive lock surfaces. It
+     * Word is involved at all, so it is where an inaccessible file surfaces. It
      * used to surface as a raw `EBUSY` from the stream -- not a `ReadError`,
      * not even `word_error` -- which escaped the whole stack and left a caller
      * unable to distinguish "locked" from any other failure.
      *
-     * Worth knowing why a lock reaches here at all: Word itself opens a
-     * document with `FileShare::Read`, so a document open in Word *can* still
-     * be read and copied -- which is precisely why the copy-based read works
-     * against a document the user has open. Only a stricter holder
-     * (`FileShare::None`) blocks us, and that is a genuinely different
-     * situation the caller needs told apart.
+     * The split between locked and not-permitted is measured, not assumed.
+     * On this machine:
+     *
+     *   | FileShare::None (exclusive lock) | EBUSY     |
+     *   | ACL denying read                 | EPERM     |
+     *   | FileShare::Read (Word's own lock) | succeeds |
+     *   | read-only attribute               | succeeds |
+     *
+     * Those last two rows are load-bearing. Word opens a document with
+     * `FileShare::Read`, so a document **open in Word can still be read and
+     * copied** -- which is the only reason a copy-based read works against a
+     * document the user is looking at. And the read-only attribute does not
+     * block reading at all, so it never reaches here.
+     *
+     * The two codes therefore mean genuinely different things and deserve
+     * different remediation: `file_locked` may clear on its own and is worth
+     * retrying, while `permission_denied` will not and is not. Collapsing them
+     * would repeat, in miniature, the single-`word_error` defect this typed
+     * vocabulary exists to fix.
      */
     async #tokenOf(docPath) {
         try {
             return await this.#readToken(docPath);
         } catch (err) {
             const errno = err?.code;
+            const name = path.basename(docPath);
             if (errno === "ENOENT") {
                 throw new ReadError("file_not_found", `No such file: ${docPath}`);
             }
-            if (errno === "EBUSY" || errno === "EACCES" || errno === "EPERM") {
+            if (errno === "EBUSY") {
                 throw new ReadError(
                     "file_locked",
-                    `${path.basename(docPath)} is locked by another process and cannot be read. ` +
-                        `A document open in Word can still be read; this is a stricter lock than Word's own.`,
+                    `${name} is held by another process more strictly than Word does. ` +
+                        `A document merely open in Word can still be read, so this is something else.`,
                 );
             }
-            throw new ReadError("document_unreadable", `Could not read ${path.basename(docPath)}: ${err?.message ?? errno}`);
+            if (errno === "EACCES" || errno === "EPERM") {
+                throw new ReadError(
+                    "permission_denied",
+                    `Not allowed to read ${name}. This is a permissions problem, not another program holding the file.`,
+                );
+            }
+            throw new ReadError("document_unreadable", `Could not read ${name}: ${err?.message ?? errno}`);
         }
     }
 

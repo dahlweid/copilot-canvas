@@ -91,6 +91,7 @@ The codes a caller may branch on:
 | --------------------------- | ---------------------------------------------------------- |
 | `file_not_found`            | nothing at that path                                        |
 | `file_locked`               | another process holds it *more strictly than Word does*     |
+| `permission_denied`         | we are not allowed to read it; no other process involved    |
 | `document_unreadable`       | Word opened it and could not make sense of it               |
 | `copy_failed`               | the working copy could not be made                          |
 | `write_failed`              | the output could not be written                             |
@@ -106,6 +107,29 @@ document **open in Word can still be read and copied** — which is the only
 reason a copy-based read works against a document the user is looking at. So
 `file_locked` does not mean "open in Word"; it means a stricter holder, and a
 message that says "close it in Word" would usually be wrong.
+
+`file_locked` and `permission_denied` are separated on measurement, not on
+intuition, and they are separated because they need different remediation — a
+lock may clear on its own and is worth retrying, a permission will not and is
+not. What each cause actually produces:
+
+| cause                              | `Copy-Item` (host)                  | Node stream |
+| ---------------------------------- | ----------------------------------- | ----------- |
+| `FileShare::None` (exclusive lock) | `System.IO.IOException`             | `EBUSY`     |
+| ACL denying read                   | `System.UnauthorizedAccessException`| `EPERM`     |
+| `FileShare::Read` (Word's own)     | **succeeds**                        | **succeeds**|
+| read-only attribute                | **succeeds**                        | **succeeds**|
+
+The bottom two rows are the ones worth remembering. A document open in Word is
+readable, and the read-only attribute does not block reading at all — so
+neither reaches these codes, and neither is a failure.
+
+The host branches on the exception **type**, never the message. Messages are
+localized, so message-matching works on an English machine and silently stops
+working on this German one; that trap has already cost this project twice.
+Note also that `writable = $false` on its own does not imply a lock:
+`Test-FileWritable` takes a *write* handle, which the read-only attribute and a
+write-denying ACL also refuse.
 
 Two shapes follow from this and are worth stating because both were originally
 backwards:
