@@ -84,6 +84,88 @@ const exists = (p) =>
 /** The `~$name.docx` owner file Word leaves behind when a document is held. */
 const ownerFileFor = (docPath) => path.join(path.dirname(docPath), `~$${path.basename(docPath)}`);
 
+/**
+ * Holds an open handle on a file until the returned handle is released.
+ *
+ * Both brackets of the hold are guarded, because a contention test is only
+ * meaningful while the contention exists and neither end of that window is
+ * self-evident:
+ *
+ *   * **Acquisition.** The holder writes its ready file only after
+ *     `[IO.File]::Open` has returned, so waiting on that file waits on the
+ *     handle rather than on the process having been spawned. Sleeping a fixed
+ *     interval instead would be a guess about scheduler latency.
+ *   * **Release.** The holder never closes the handle and never times out; it
+ *     blocks until it is killed. A time-boxed hold makes the test's outcome
+ *     depend on how fast the machine is, which this repo treats as never a
+ *     bound. `release()` asserts the process was still alive when the work
+ *     finished, so a holder that died early fails loudly instead of quietly
+ *     turning the test into one that measured nothing.
+ *
+ * A mutation check tells you which of your assertions this actually protects:
+ * signal ready *before* opening, and a test asserting a **refusal** fails,
+ * because the refusal stops firing. A test asserting a **success** under
+ * contention still passes, because an uncontended success is identical on every
+ * observable. Only the refusing kind detects its own false ready.
+ */
+async function holdFile(target, share) {
+    const readyPath = `${target}.holder-ready`;
+    await rm(readyPath, { force: true });
+
+    const child = spawn(
+        "powershell.exe",
+        [
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "$s=[IO.File]::Open($env:HOLD_DOC,[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::" +
+                `${share});` +
+                // Signalled only once the handle is genuinely held.
+                "Set-Content -LiteralPath $env:HOLD_READY -Value 'held';" +
+                // Never closes, never lapses: the handle outlives the work by
+                // construction, and the kill in release() is the only way out.
+                "while ($true) { Start-Sleep -Seconds 3600 }",
+        ],
+        { stdio: "ignore", env: { ...process.env, HOLD_DOC: target, HOLD_READY: readyPath } },
+    );
+
+    let exitedEarly = null;
+    child.once("exit", (code) => {
+        exitedEarly = code;
+    });
+
+    for (let i = 0; i < 100; i++) {
+        if (await exists(readyPath)) break;
+        if (exitedEarly !== null) {
+            throw new Error(`the holder exited with ${exitedEarly} before taking a handle on ${target}`);
+        }
+        await new Promise((r) => setTimeout(r, 50));
+    }
+    if (!(await exists(readyPath))) {
+        child.kill();
+        throw new Error(`the holder never signalled that it had opened ${target}`);
+    }
+
+    return {
+        /**
+         * Asserts the handle was still held. Call this *before* examining the
+         * result of the contended operation: if the holder died, that is the
+         * explanation, and reporting it first beats a confusing "expected a
+         * rejection" from an operation that correctly succeeded against a file
+         * nobody was holding any more.
+         */
+        assertStillHeld() {
+            assert.ok(
+                child.exitCode === null && child.signalCode === null,
+                `the holder released ${path.basename(target)} before the test finished, so nothing was contended`,
+            );
+        },
+        kill() {
+            child.kill();
+        },
+    };
+}
+
 const workRoot = await mkdtemp(path.join(tmpdir(), "word-edit-test-"));
 const docs = path.join(workRoot, "docs");
 const fixture = path.join(docs, "editable.docx");
@@ -328,48 +410,44 @@ try {
         // one place read and edit genuinely diverge: layer 1's copy-based read
         // sails through this same lock, because the copy is not the original and
         // an edit has to be.
-        const holder = spawn(
-            "powershell.exe",
-            [
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                `$s=[IO.File]::Open($env:SMOKE_DOC,[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::ReadWrite); Start-Sleep -Seconds 25; $s.Close()`,
-            ],
-            { stdio: "ignore", env: { ...process.env, SMOKE_DOC: fixture } },
-        );
+        const holder = await holdFile(fixture, "ReadWrite");
         try {
-            // Give the holder time to actually take the handle.
-            for (let i = 0; i < 50; i++) {
-                const map = await cache.readStructure(fixture).catch(() => null);
-                if (map && map.writable === false) break;
-                await new Promise((r) => setTimeout(r, 200));
-            }
-
+            // The ready file proves a handle exists; this proves it is the
+            // handle that matters. `writable` is the product's own observable,
+            // the same field the edit path pre-flights on, so asserting it here
+            // means the test contends with exactly what production contends
+            // with rather than with something merely correlated.
             const locked = await cache.readStructure(fixture);
-            assert.equal(locked.writable, false, "the holder never took an exclusive handle");
+            assert.equal(locked.writable, false, "the holder never took a handle the pre-flight can see");
 
             const started = Date.now();
-            await assert.rejects(
-                () =>
-                    cache.editDocument(
-                        fixture,
-                        { op: "replace_text", address: locked.paragraphs[0].address, text: "nope" },
-                        { revisionToken: locked.revisionToken },
-                    ),
-                (err) => err.code === "file_locked",
-            );
+            let refusal = null;
+            try {
+                await cache.editDocument(
+                    fixture,
+                    { op: "replace_text", address: locked.paragraphs[0].address, text: "nope" },
+                    { revisionToken: locked.revisionToken },
+                );
+            } catch (err) {
+                refusal = err;
+            }
             const elapsed = Date.now() - started;
-            // Measured at 342-359 ms across runs: the write-handle pre-flight is
-            // ~4 ms and the rest is the read that precedes it. The bound is
-            // deliberately not tight to that. Every timing in this repo was
-            // taken on a quiet machine, and Word's own shutdown has already been
-            // measured contending on per-user state when another session drives
-            // it -- so a tight bound here would fail for load rather than for
-            // regression. What must not regress is the *shape*: a refusal that
-            // never opens Word, rather than the indefinite hang a trial open
-            // gives on a held file. Three seconds is far below that and far
-            // above the noise.
+
+            holder.assertStillHeld();
+            assert.ok(refusal, "editing a locked document was not refused");
+            assert.equal(refusal.code, "file_locked", `expected file_locked, got ${refusal.code}`);
+            // A few hundred milliseconds in practice, and the spread is wide
+            // enough across runs that quoting a tight range would just be a
+            // number to go stale: the write-handle pre-flight is ~4 ms of it
+            // and the rest is the read that precedes it. The bound is
+            // deliberately nowhere near it. Every timing in this repo is
+            // typical-case and never a bound, and Word's shutdown has already
+            // been measured contending on per-user state when another session
+            // drives it -- so a tight bound here would fail for load rather
+            // than for regression. What must not regress is the *shape*: a
+            // refusal that never opens Word, rather than the indefinite hang a
+            // trial open gives on a held file. Three seconds is far below that
+            // hang and far above the noise.
             assert.ok(elapsed < 3_000, `refusing a locked document took ${elapsed}ms; it should not involve Word`);
             assert.equal(await exists(ownerFileFor(fixture)), false, "a ~$ owner file appeared");
             process.stderr.write(`  [locked document refused in ${elapsed}ms]\n`);
