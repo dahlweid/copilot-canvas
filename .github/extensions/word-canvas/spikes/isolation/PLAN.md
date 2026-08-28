@@ -1088,3 +1088,72 @@ two Word processes that had to be killed by hand.
 The owner-file check adds nothing over the handle test and depends on Word's
 odd naming rule (`~$` followed by the basename with its first two characters
 dropped). Use it for diagnostics if at all, not for control flow.
+
+## 18. Measured: read-then-address, and the read that nearly sank it
+
+The agreed addressing model is read-then-address: a read returns the document's
+structure with IDs minted for that read, plus a revision token; edits cite an ID
+and present the token, and are refused if the token no longer matches. Three
+assumptions needed testing.
+
+### 18.1 A structural read must be cheap. Naively, it is not.
+
+`probes/probe-addressing.ps1`, walking `Document.Paragraphs` and reading
+`Range.Text` and `OutlineLevel` per paragraph:
+
+| Strategy | Time | Structure returned |
+| --- | --- | --- |
+| **A** Per-paragraph property access | **3724 ms** | text + outline level |
+| **B** One `Content.Text`, split locally | **6 ms** | text only, no structure |
+| **D** One `Content.WordOpenXML`, parsed outside Word | **289 ms** | text + style + full markup |
+
+219 paragraphs. Strategy A costs roughly 17 ms per paragraph because every
+property touch is a cross-process COM call, and the cost scales with document
+length — a 1000-paragraph document would take about 17 seconds. That is not a
+routine operation, and read-then-address requires reads to be routine.
+
+Strategy D is **13x faster than A and returns strictly more information**: 103 ms
+to fetch 106 KB of WordprocessingML, 186 ms to parse it outside Word. The
+document is crossed once instead of 438 times. **Structural reads go through
+`WordOpenXML`; per-paragraph property walks are a defect.**
+
+Strategy B is worth remembering for the narrow case where only text is wanted —
+6 ms — but it carries no structure and so cannot support addressing.
+
+### 18.2 Derived identity works, but this document does not stress it
+
+Word exposes no stable paragraph identity, so IDs must be derived from content.
+In `demo.docx`, 219 paragraphs contained exactly **one** empty paragraph and
+**zero** duplicate texts, so text alone was already unique and adding a heading
+path changed nothing.
+
+That result should not be over-read. It says the scheme is viable, not that a
+disambiguator is unnecessary. A document with many empty paragraphs, repeated
+table cells, or a boilerplate footer will collide. Keep the key as
+**heading path + text + occurrence index**, with the index doing nothing on
+documents like this one and earning its place on documents that need it.
+
+The parse also surfaced a localization trap already known from styles: the
+first heading's style ID came back as `Überschrift1`, not `Heading1`. Style IDs
+inside the markup are localized just as the object model's names are, so the
+parser must resolve them via the styles part or fall back to `w:outlineLvl`
+rather than matching English names.
+
+### 18.3 The revision token behaves exactly as the model needs
+
+A SHA-256 prefix over the file, computed in **3 ms**:
+
+| Event | Token changed? |
+| --- | --- |
+| Our own edit and save | yes |
+| Save with nothing dirty | no |
+| External regeneration of the file | yes |
+
+The middle row matters: Word does not rewrite the bytes when there is nothing
+to write, so a token does not churn on inspection. The first row means the edit
+response can hand back a fresh token, so the agent is not forced to re-read
+after its own edits — only after somebody else's.
+
+That is the whole concurrency story for transient locking. We hold nothing
+between operations, so we cannot assume anything stayed put; the token is what
+converts that from a hazard into a detectable, refusable condition.

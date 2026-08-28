@@ -79,3 +79,29 @@ so it can see what it changed rather than assume.
 The canvas reloading when the file changes on disk, including when a script
 replaces it.
 _Avoid_: live (it meant pixel streaming during the spike, and now means this)
+
+### Addressing
+
+**Structure map**:
+What a read returns — the document's paragraphs with their text, style and
+heading path, each carrying an ID minted for that read. Obtained in one
+`WordOpenXML` call and parsed outside Word, never by walking paragraphs.
+_Avoid_: outline, index, model
+
+**Address**:
+An ID from a structure map, identifying the paragraph an edit applies to.
+Derived from heading path, text and occurrence index, because Word exposes no
+stable paragraph identity of its own.
+_Avoid_: selector, locator, range
+
+**Revision token**:
+A hash of the file, returned with a structure map and required by any edit. A
+mismatch means someone else changed the document, and the edit is refused
+rather than applied to the wrong place.
+_Avoid_: version, etag, checksum
+
+**Intent**:
+What the agent submits to change or author a document — headings, paragraphs,
+tables and lists — which the extension translates into COM calls. Deliberately
+not OOXML, and deliberately not prose.
+_Avoid_: command, patch, script
