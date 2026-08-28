@@ -40,19 +40,36 @@ export async function newWordPids(pidsBefore) {
  *
  * Word exits asynchronously after `Quit`: the call returns in ~120 ms but the
  * process lingers. Measured on this machine, Quit-to-exit was 2.7 s, 6.1 s and
- * 2.7 s over three runs -- so a flat settle short of that is a coin toss, and a
- * flat settle long enough to be safe wastes that long on every green run. We
- * poll instead: it returns as soon as the process is actually gone, and only
- * spends the deadline when there is something real to report.
+ * 2.7 s over three runs on an otherwise idle machine -- so a flat settle short
+ * of that is a coin toss, and a flat settle long enough to be safe wastes that
+ * long on every green run. We poll instead: it returns as soon as the process
+ * is actually gone, and only spends the deadline when there is something to
+ * report.
+ *
+ * The deadline is 90 s rather than the ~6 s the idle measurements suggest,
+ * because exit latency is not bounded by them. With a second session driving
+ * Word concurrently, one run here had a Word survive a 30 s poll and then exit
+ * on its own -- a false failure, and worse, one that would have surfaced in
+ * whichever PR happened to run while another was busy. Word's shutdown touches
+ * per-user state (Normal.dotm and friends) that concurrent instances contend
+ * for, so the tail is long and load-dependent. Polling makes the generous
+ * deadline free on green runs, so there is no reason to shave it.
  */
-export async function assertNoLeakedWord(pidsBefore, { timeoutMs = 30000, intervalMs = 250 } = {}) {
-    const deadline = Date.now() + timeoutMs;
+export async function assertNoLeakedWord(pidsBefore, { timeoutMs = 90000, intervalMs = 250 } = {}) {
+    const started = Date.now();
+    const deadline = started + timeoutMs;
     let leaked = await newWordPids(pidsBefore);
     while (leaked.length > 0 && Date.now() < deadline) {
         await new Promise((resolve) => setTimeout(resolve, intervalMs));
         leaked = await newWordPids(pidsBefore);
     }
-    assert.deepEqual(leaked, [], `leaked Word processes: ${leaked.join(", ")}`);
+    const waited = ((Date.now() - started) / 1000).toFixed(1);
+    assert.deepEqual(
+        leaked,
+        [],
+        `Word processes still running ${waited}s after teardown: ${leaked.join(", ")}. ` +
+            `These started during this test, so they are ours.`,
+    );
 }
 
 /**

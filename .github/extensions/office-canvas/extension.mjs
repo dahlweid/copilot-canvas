@@ -16,6 +16,7 @@ import { createCanvas, CanvasError, joinSession } from "@github/copilot-sdk/exte
 import { RenderCache, DocumentError, normalizeDocPath } from "./src/render-cache.mjs";
 import { ViewerInstance } from "./src/server.mjs";
 import { artifactsRoot } from "./src/store.mjs";
+import { createIdleShutdown } from "./src/word-lifecycle.mjs";
 
 /** instanceId -> ViewerInstance */
 const instances = new Map();
@@ -27,9 +28,9 @@ let cache = null;
 // serve one. Nothing would then ever shut it down -- the canvas path releases
 // Word when the last panel closes, and there is no panel. An idle timer gives
 // repeated reads a warm instance without leaving a hidden Word running for the
-// rest of the session.
+// rest of the session, and an in-flight counter keeps it from firing under a
+// tool call that is still running. See src/word-lifecycle.mjs.
 const IDLE_SHUTDOWN_MS = 60_000;
-let idleTimer = null;
 
 // `session.log` rejects asynchronously (e.g. on an unsupported level); an
 // unhandled rejection would take the whole extension process down.
@@ -37,29 +38,28 @@ const log = (message, level = "info", { ephemeral = level === "info" } = {}) => 
     void session?.log(`[office-canvas] ${message}`, { level, ephemeral })?.catch(() => {});
 };
 
-function cancelIdleShutdown() {
-    if (!idleTimer) return;
-    clearTimeout(idleTimer);
-    idleTimer = null;
-}
-
-function scheduleIdleShutdown() {
-    cancelIdleShutdown();
-    if (instances.size > 0) return; // a canvas is displaying something; it owns Word
-    idleTimer = setTimeout(() => {
-        idleTimer = null;
-        if (instances.size > 0 || !cache) return;
-        log("no canvas open and no tool activity, shutting Word down");
+const lifecycle = createIdleShutdown({
+    idleMs: IDLE_SHUTDOWN_MS,
+    isDisplaying: () => instances.size > 0,
+    dispose: async () => {
         const idle = cache;
         cache = null;
-        void idle.dispose().catch(() => {});
-    }, IDLE_SHUTDOWN_MS);
-    // Never a reason to hold the process open.
-    idleTimer.unref?.();
-}
+        await idle?.dispose();
+    },
+    log: (m) => log(m),
+});
+
+/**
+ * Wraps anything that needs Word alive for its duration.
+ *
+ * Every tool handler goes through this rather than remembering to schedule an
+ * idle shutdown in its own `finally` -- that was the original shape, and it is
+ * the shape that carried the race.
+ */
+const withWordWork = (fn) => lifecycle.run(fn);
 
 function getCache() {
-    cancelIdleShutdown();
+    lifecycle.cancel();
     if (!cache) {
         cache = new RenderCache({ cacheRoot: artifactsRoot(), log: (m) => log(m) });
     }
@@ -121,6 +121,10 @@ function asToolError(err) {
     const message = err?.message ?? "Unknown error";
     const wrapped = new Error(`${code}: ${message}`);
     wrapped.code = code;
+    // Facts the host attached to the failure, such as `writable: false` on a
+    // locked original. Dropping them here would leave the agent with a code and
+    // no way to tell why.
+    if (err?.data) wrapped.data = err.data;
     return wrapped;
 }
 
@@ -182,7 +186,14 @@ const wordCanvas = createCanvas({
 
         if (instances.size === 0) {
             // Nothing left to render for: let Word go rather than leaving a
-            // hidden process running for the rest of the session.
+            // hidden process running for the rest of the session -- unless a
+            // tool call is still using it, in which case closing the panel must
+            // not tear down the instance under it. The idle timer picks it up.
+            if (lifecycle.busy) {
+                log("last canvas closed while a tool call is running; deferring Word shutdown");
+                lifecycle.schedule();
+                return;
+            }
             log("last canvas closed, shutting Word down");
             await cache?.dispose().catch(() => {});
             cache = null;
@@ -333,6 +344,12 @@ const wordCanvas = createCanvas({
 
 // --- tools -----------------------------------------------------------------
 
+// A document with no limit returns every paragraph -- text, style id, heading
+// path and a 12-hex address each -- straight into the agent's context on the
+// first call. Paging is free here because addresses are minted across the whole
+// document regardless, and the response says how many were withheld.
+const DEFAULT_READ_LIMIT = 300;
+
 const readDocumentTool = {
     name: "read_document",
     description: [
@@ -354,7 +371,7 @@ const readDocumentTool = {
                 minimum: 1,
                 maximum: 5000,
                 description:
-                    "Maximum paragraphs to return. Addresses are always minted across the whole document, so paging never changes one.",
+                    `Maximum paragraphs to return (default ${DEFAULT_READ_LIMIT}). Addresses are always minted across the whole document, so paging never changes one; the response reports paragraphCount and truncated.`,
             },
             offset: {
                 type: "integer",
@@ -365,18 +382,17 @@ const readDocumentTool = {
         required: ["path"],
         additionalProperties: false,
     },
-    handler: async (args) => {
-        try {
-            return await getCache().readStructure(resolveInputPath(args?.path), {
-                limit: args?.limit ?? 0,
-                offset: args?.offset ?? 0,
-            });
-        } catch (err) {
-            throw asToolError(err);
-        } finally {
-            scheduleIdleShutdown();
-        }
-    },
+    handler: async (args) =>
+        withWordWork(async () => {
+            try {
+                return await getCache().readStructure(resolveInputPath(args?.path), {
+                    limit: args?.limit ?? DEFAULT_READ_LIMIT,
+                    offset: args?.offset ?? 0,
+                });
+            } catch (err) {
+                throw asToolError(err);
+            }
+        }),
 };
 
 // --- lifecycle -------------------------------------------------------------
@@ -396,7 +412,7 @@ function reapOnExit() {
 async function shutdown(signal) {
     if (shuttingDown) return;
     shuttingDown = true;
-    cancelIdleShutdown();
+    lifecycle.cancel();
     try {
         await Promise.all([...instances.values()].map((i) => i.close().catch(() => {})));
         instances.clear();

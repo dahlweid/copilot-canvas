@@ -451,3 +451,32 @@ test("an address does not depend on the paragraphs Word split it into", () => {
     ];
     assert.deepEqual(lost(addressBook(BASE), addressBook(split)), []);
 });
+
+// --- text boxes ------------------------------------------------------------
+//
+// A text box is anchored to a paragraph but holds paragraphs of its own, which
+// `collectParagraphs` does not emit -- they get no address. If their text were
+// folded into the anchor, the anchor would report text matching no single
+// editable range, and its address would move when unrelated text-box content
+// changed. Out of scope is a coherent answer; half in scope is not.
+
+const textBoxAnchor = (anchorText, boxText) =>
+    `<w:p><w:r><w:t>${anchorText}</w:t></w:r>` +
+    `<w:r><w:drawing><wp:inline><a:graphic><a:graphicData><wps:wsp><wps:txbx><w:txbxContent>` +
+    `<w:p><w:r><w:t>${boxText}</w:t></w:r></w:p>` +
+    `</w:txbxContent></wps:txbx></wps:wsp></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>`;
+
+test("text-box content is not folded into the anchoring paragraph", () => {
+    const map = buildStructureMap(bareDocument(textBoxAnchor("Anchor", "BOXTEXT")));
+    assert.equal(map.paragraphCount, 1, "the text box's own paragraph must not be addressable");
+    assert.equal(map.paragraphs[0].text, "Anchor");
+    assert.ok(!map.paragraphs[0].text.includes("BOXTEXT"));
+});
+
+test("an anchor's address does not move when text-box content changes", () => {
+    // The reason the exclusion matters: without it, editing a caption inside a
+    // floating box silently re-addresses the paragraph it happens to hang off.
+    const before = buildStructureMap(bareDocument(textBoxAnchor("Anchor", "first caption")));
+    const after = buildStructureMap(bareDocument(textBoxAnchor("Anchor", "a totally different caption")));
+    assert.equal(before.paragraphs[0].address, after.paragraphs[0].address);
+});

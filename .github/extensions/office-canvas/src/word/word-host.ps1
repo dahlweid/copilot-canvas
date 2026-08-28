@@ -71,8 +71,26 @@ function Send-Ok($id, $result) {
     Send-Message @{ id = $id; ok = $true; result = $result }
 }
 
-function Send-Fail($id, $code, $message) {
-    Send-Message @{ id = $id; ok = $false; error = @{ code = $code; message = $message } }
+function Send-Fail($id, $code, $message, $data = $null) {
+    $err = @{ code = $code; message = $message }
+    if ($null -ne $data) { $err.data = $data }
+    Send-Message @{ id = $id; ok = $false; error = $err }
+}
+
+# A typed failure.
+#
+# Every failure used to reach the caller as `word_error`, which meant the only
+# way to tell "the file is missing" from "the file is locked" from "Word itself
+# died" was to pattern-match `$_.Exception.Message` -- and those messages are
+# localized, so matching them on this German machine is matching a translation.
+# `throw` records the thrown object on `$_.TargetObject`, so the dispatch loop
+# can recover the code without parsing anything.
+#
+# `data` carries facts the caller needs *on the failure path*, which is where
+# they matter most: `writable` is the obvious one, since "the original is locked"
+# is precisely the case where a read fails and the caller wants to know why.
+function New-HostError([string]$code, [string]$message, $data = $null) {
+    return @{ __hostError = $true; code = $code; message = $message; data = $data }
 }
 
 function Get-WordPids {
@@ -222,7 +240,7 @@ function Resolve-Doc($docId) {
         Open-DocInternal $docId $saved.path $saved.workDir | Out-Null
         return $script:Docs[$docId]
     }
-    throw "No open document with id '$docId'."
+    throw (New-HostError 'no_such_document' "No open document with id '$docId'.")
 }
 
 # --- Word lifecycle ----------------------------------------------------------
@@ -242,7 +260,8 @@ function Initialize-Word {
     try {
         $script:App = New-Object -ComObject Word.Application
     } catch {
-        throw "Microsoft Word could not be started. Word must be installed to use this canvas. ($($_.Exception.Message))"
+        throw (New-HostError 'word_unavailable' `
+            "Microsoft Word could not be started. Word must be installed to use this canvas. ($($_.Exception.Message))")
     }
 
     # Ownership detection: if a brand new WINWORD process appeared we created it
@@ -321,8 +340,10 @@ function Cmd-Ping($a) {
 function Open-DocInternal([string]$docId, [string]$path, [string]$workDir, [bool]$withStats = $true) {
     Initialize-Word
 
-    if ([string]::IsNullOrWhiteSpace($path)) { throw "No document path supplied." }
-    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "File not found: $path" }
+    if ([string]::IsNullOrWhiteSpace($path)) { throw (New-HostError 'invalid_request' "No document path supplied.") }
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        throw (New-HostError 'file_not_found' "File not found: $path")
+    }
 
     if (-not (Test-Path -LiteralPath $workDir)) {
         New-Item -ItemType Directory -Force -Path $workDir | Out-Null
@@ -333,7 +354,19 @@ function Open-DocInternal([string]$docId, [string]$path, [string]$workDir, [bool
     # what makes "read-only" structurally true rather than merely intended.
     $ext = [IO.Path]::GetExtension($path)
     $copy = Join-Path $workDir ("source" + $ext)
-    Copy-Item -LiteralPath $path -Destination $copy -Force
+    try {
+        Copy-Item -LiteralPath $path -Destination $copy -Force -ErrorAction Stop
+    } catch {
+        # The copy is the first thing that touches the original, so an exclusive
+        # lock held by another process surfaces here rather than at Documents.Open
+        # -- which is the good outcome, because that is the call that hangs.
+        if (-not (Test-FileWritable $path)) {
+            throw (New-HostError 'file_locked' `
+                "Another process is holding $([IO.Path]::GetFileName($path)) open. Close it and try again." `
+                    @{ writable = $false })
+        }
+        throw (New-HostError 'copy_failed' "Could not make a working copy of the document. ($($_.Exception.Message))")
+    }
     try { Unblock-File -LiteralPath $copy -ErrorAction SilentlyContinue } catch { }
 
     Close-Doc $docId
@@ -343,7 +376,8 @@ function Open-DocInternal([string]$docId, [string]$path, [string]$workDir, [bool
         # PasswordDocument, PasswordTemplate, Revert
         $doc = $script:App.Documents.Open($copy, $false, $true, $false, $FAIL_FAST_PASSWORD, $FAIL_FAST_PASSWORD, $false)
     } catch {
-        throw "Word could not open the document. It may be password-protected or corrupt. ($($_.Exception.Message))"
+        throw (New-HostError 'document_unreadable' `
+            "Word could not open the document. It may be password-protected or corrupt. ($($_.Exception.Message))")
     }
 
     $script:Docs[$docId] = $doc
@@ -391,14 +425,29 @@ function Cmd-Structure($a) {
     $docId = [string]$a.docId
     $path = [string]$a.path
     $out = [string]$a.out
-    if ([string]::IsNullOrWhiteSpace($out)) { throw "No output path supplied for the structure read." }
-    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "File not found: $path" }
+    if ([string]::IsNullOrWhiteSpace($out)) {
+        throw (New-HostError 'invalid_request' "No output path supplied for the structure read.")
+    }
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        throw (New-HostError 'file_not_found' "File not found: $path")
+    }
 
     # Reported, not enforced: a read is served from a copy and so never needs
-    # the original. It tells the caller whether an *edit* would collide.
+    # the original. It tells the caller whether an *edit* would collide -- and it
+    # is attached to failures too, because a failed read is exactly when the
+    # caller most needs to know the original is held by someone else.
     $writable = Test-FileWritable $path
 
-    $meta = Open-DocInternal $docId $path ([string]$a.workDir) $false
+    try {
+        $meta = Open-DocInternal $docId $path ([string]$a.workDir) $false
+    } catch {
+        $thrown = $_.TargetObject
+        if ($thrown -is [hashtable] -and $thrown.__hostError) {
+            if ($null -eq $thrown.data) { $thrown.data = @{} }
+            $thrown.data.writable = $writable
+        }
+        throw
+    }
     try {
         $xml = [string](Resolve-Doc $docId).Content.WordOpenXML
     } finally {
@@ -414,7 +463,14 @@ function Cmd-Structure($a) {
     }
     # No BOM: the caller parses this as XML, and a BOM ahead of the declaration
     # is a parse error in stricter readers.
-    [IO.File]::WriteAllText($out, $xml, (New-Object System.Text.UTF8Encoding($false)))
+    try {
+        [IO.File]::WriteAllText($out, $xml, (New-Object System.Text.UTF8Encoding($false)))
+    } catch {
+        # A short write here is what produces truncated markup downstream, so it
+        # gets its own code rather than arriving as a parse failure later.
+        throw (New-HostError 'write_failed' `
+            "Could not write the document markup to $out. ($($_.Exception.Message))" @{ writable = $writable })
+    }
 
     return @{
         out         = $out
@@ -546,7 +602,7 @@ function Cmd-Outline($a) {
 function Cmd-Search($a) {
     $doc = Resolve-Doc ([string]$a.docId)
     $query = [string]$a.query
-    if ([string]::IsNullOrWhiteSpace($query)) { throw "Search query is empty." }
+    if ([string]::IsNullOrWhiteSpace($query)) { throw (New-HostError 'invalid_request' "Search query is empty.") }
 
     $limit = 200
     if ($null -ne $a.limit) { $limit = [int]$a.limit }
@@ -607,7 +663,7 @@ function Cmd-Text($a) {
     }
 
     if ($toPage -le 0 -or $toPage -gt $totalPages) { $toPage = $totalPages }
-    if ($fromPage -gt $totalPages) { throw "Page $fromPage is beyond the end of the document ($totalPages pages)." }
+    if ($fromPage -gt $totalPages) { throw (New-HostError 'page_out_of_range' "Page $fromPage is beyond the end of the document ($totalPages pages).") }
 
     $startRange = $doc.GoTo($WD_GOTO_PAGE, $WD_GOTO_ABSOLUTE, $fromPage)
     $start = [int]$startRange.Start
@@ -680,7 +736,14 @@ try {
                 default { Send-Fail $id 'unknown_command' "Unknown command '$([string]$req.cmd)'." }
             }
         } catch {
-            Send-Fail $id 'word_error' $_.Exception.Message
+            # A typed failure carries its own code; anything else is genuinely
+            # unclassified and stays `word_error`.
+            $thrown = $_.TargetObject
+            if ($thrown -is [hashtable] -and $thrown.__hostError) {
+                Send-Fail $id ([string]$thrown.code) ([string]$thrown.message) $thrown.data
+            } else {
+                Send-Fail $id 'word_error' $_.Exception.Message
+            }
         }
     }
 } finally {

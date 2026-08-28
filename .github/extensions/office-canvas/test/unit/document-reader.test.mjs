@@ -171,3 +171,191 @@ test("a directory is rejected the same way a missing file is", async () => {
         );
     });
 });
+
+// --- scratch isolation -----------------------------------------------------
+//
+// The scratch id used to be derived from the document path alone, so two
+// overlapping reads of one document shared a working directory, a source copy,
+// an output file and the host-side docId. One call's cleanup could delete the
+// other's markup mid-read, and one call's close could deregister the other's
+// document.
+
+test("two reads of the same document never share a scratch directory", async () => {
+    await withWorkspace(async ({ docPath, workRoot }) => {
+        const host = stubHost();
+        const reader = new DocumentReader({ host, workRoot });
+        await reader.read(docPath);
+        await reader.read(docPath);
+
+        assert.equal(host.calls.length, 2);
+        assert.notEqual(host.calls[0].docId, host.calls[1].docId, "docId must be unique per call");
+        assert.notEqual(host.calls[0].workDir, host.calls[1].workDir);
+        assert.notEqual(host.calls[0].out, host.calls[1].out);
+    });
+});
+
+test("concurrent reads of one document do not delete each other's markup", async () => {
+    await withWorkspace(async ({ docPath, workRoot }) => {
+        // Holds whichever read reaches the host first until the other has been
+        // all the way through its own cleanup -- the interleaving that used to
+        // lose the held read's structure.xml before it could be read back.
+        // Which one arrives first is not ours to decide, so the test must not
+        // assume it: awaiting a specific read before releasing deadlocks.
+        let release;
+        const held = new Promise((resolve) => {
+            release = resolve;
+        });
+        let call = 0;
+        const host = stubHost({
+            onCall: async () => {
+                if (call++ === 0) await held;
+            },
+        });
+        const reader = new DocumentReader({ host, workRoot });
+
+        const first = reader.read(docPath);
+        const second = reader.read(docPath);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        release();
+
+        for (const result of await Promise.all([first, second])) {
+            assert.equal(result.paragraphCount, 2);
+        }
+    });
+});
+
+test("the scratch directory is removed after a successful read", async () => {
+    await withWorkspace(async ({ docPath, workRoot }) => {
+        const host = stubHost();
+        await new DocumentReader({ host, workRoot }).read(docPath);
+        assert.ok(!existsSync(host.calls[0].workDir), "scratch left behind");
+    });
+});
+
+// --- bounded time ----------------------------------------------------------
+
+test("the first attempt gets the full startup budget and a retry gets far less", async () => {
+    await withWorkspace(async ({ docPath, workRoot }) => {
+        const host = stubHost({ failures: 1 });
+        await new DocumentReader({ host, workRoot }).read(docPath);
+
+        assert.equal(host.calls.length, 2);
+        assert.equal(host.calls[0].timeoutMs, 180_000);
+        assert.ok(
+            host.calls[1].timeoutMs <= 45_000,
+            `a retry must not cost another full budget, got ${host.calls[1].timeoutMs}ms`,
+        );
+    });
+});
+
+test("a document that keeps changing is refused without unbounded retrying", async () => {
+    await withWorkspace(async ({ docPath, workRoot }) => {
+        let n = 0;
+        const host = stubHost({ onCall: async () => writeFile(docPath, `changed ${n++}`) });
+        await assert.rejects(
+            () => new DocumentReader({ host, workRoot }).read(docPath),
+            (err) => err instanceof ReadError && err.code === "document_changed_during_read",
+        );
+        assert.equal(host.calls.length, 2, "two attempts, then refuse");
+    });
+});
+
+// --- filesystem errors must not escape untyped -------------------------------
+//
+// The revision token is the first thing a read touches on the original, before
+// Word is involved at all, so it is where an exclusive lock surfaces. It used
+// to surface as a raw `EBUSY` from the read stream: not a `ReadError`, not even
+// a `word_*` code, so a caller could not tell "locked" from anything else. A
+// consumer building edits on top has to branch on exactly this.
+
+const errnoThrower = (code) => () => {
+    const err = new Error(`simulated ${code}`);
+    err.code = code;
+    return Promise.reject(err);
+};
+
+test("an exclusively locked original is a typed file_locked error, not a raw errno", async () => {
+    await withWorkspace(async ({ docPath, workRoot }) => {
+        const reader = new DocumentReader({
+            host: stubHost(),
+            workRoot,
+            tokenOf: errnoThrower("EBUSY"),
+        });
+        const err = await reader.read(docPath).then(
+            () => null,
+            (e) => e,
+        );
+        assert.ok(err instanceof ReadError, `expected a ReadError, got ${err?.name}: ${err?.message}`);
+        assert.equal(err.code, "file_locked");
+        assert.notEqual(err.code, "EBUSY", "the raw errno must not be the code the caller sees");
+    });
+});
+
+test("a permission error is reported as locked rather than as a missing file", async () => {
+    for (const errno of ["EACCES", "EPERM"]) {
+        await withWorkspace(async ({ docPath, workRoot }) => {
+            const reader = new DocumentReader({
+                host: stubHost(),
+                workRoot,
+                tokenOf: errnoThrower(errno),
+            });
+            const err = await reader.read(docPath).then(
+                () => null,
+                (e) => e,
+            );
+            assert.equal(err.code, "file_locked", `${errno} should map to file_locked`);
+        });
+    }
+});
+
+test("a file that vanishes between the stat and the token read is file_not_found", async () => {
+    await withWorkspace(async ({ docPath, workRoot }) => {
+        const reader = new DocumentReader({
+            host: stubHost(),
+            workRoot,
+            tokenOf: errnoThrower("ENOENT"),
+        });
+        const err = await reader.read(docPath).then(
+            () => null,
+            (e) => e,
+        );
+        assert.equal(err.code, "file_not_found");
+    });
+});
+
+test("an unrecognised filesystem error still arrives typed", async () => {
+    await withWorkspace(async ({ docPath, workRoot }) => {
+        const reader = new DocumentReader({
+            host: stubHost(),
+            workRoot,
+            tokenOf: errnoThrower("EIO"),
+        });
+        const err = await reader.read(docPath).then(
+            () => null,
+            (e) => e,
+        );
+        assert.ok(err instanceof ReadError);
+        assert.equal(err.code, "document_unreadable");
+    });
+});
+
+test("a host that reports success but writes no markup is typed, not a bare ENOENT", async () => {
+    await withWorkspace(async ({ docPath, workRoot }) => {
+        // Succeeds without ever writing the output file.
+        const silentHost = {
+            calls: 0,
+            async structure() {
+                this.calls += 1;
+                return { name: "demo.docx", writable: true };
+            },
+        };
+        const reader = new DocumentReader({ host: silentHost, workRoot });
+        const err = await reader.read(docPath).then(
+            () => null,
+            (e) => e,
+        );
+        assert.ok(err instanceof ReadError, `expected a ReadError, got ${err?.name}`);
+        assert.equal(err.code, "document_unreadable");
+        assert.match(err.message, /wrote no structure/i);
+    });
+});

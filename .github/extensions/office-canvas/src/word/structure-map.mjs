@@ -48,6 +48,14 @@ const NON_TEXT = new Set([
     "instrText", // field instructions, not the field result
     "delText", // text a tracked change deleted
     "delInstrText",
+    // A text box hangs off the paragraph that anchors it, but its paragraphs are
+    // a separate story: `collectParagraphs` does not emit them, so they get no
+    // address of their own. Folding their text into the anchor would make the
+    // anchor's address move when unrelated text-box content changed, and would
+    // report `text` that matches no single editable range -- an edit replacing
+    // it would destroy the text box. Text-box content is therefore out of scope
+    // for addressing rather than half in it.
+    "txbxContent",
 ]);
 
 /**

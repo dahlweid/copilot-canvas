@@ -180,6 +180,20 @@ export function parseXml(source) {
         i = close + 1;
     }
 
+    // Truncated markup is reachable in practice: the host streams the package
+    // to a file, and a write cut short by a full disk or a killed host leaves a
+    // prefix that parses perfectly until it simply stops. Without this check the
+    // parser returns a tree that looks whole -- the paragraph being written when
+    // the file ended becomes a phantom empty paragraph, and gets a minted
+    // address like any other. Refusing is the only honest answer.
+    if (stack.length !== 1) {
+        const unclosed = stack
+            .slice(1)
+            .map((node) => node.name)
+            .join(" > ");
+        throw new XmlError(`Markup ended while still inside <${unclosed}>; the document markup is truncated.`);
+    }
+
     return root;
 }
 

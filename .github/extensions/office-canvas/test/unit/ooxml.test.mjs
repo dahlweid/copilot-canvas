@@ -119,3 +119,40 @@ test("a large document parses in linear time", () => {
     assert.equal(childrenNamed(first(root, "body"), "p").length, 20_000);
     assert.ok(Date.now() - started < 5_000, `parsing took ${Date.now() - started}ms`);
 });
+
+// --- truncated markup ------------------------------------------------------
+//
+// The host streams the OOXML package to a file. A write cut short -- a full
+// disk, a killed host mid-write -- leaves a prefix that parses cleanly right up
+// to the point it stops. Silently accepting it is worse than failing, because
+// the half-written paragraph becomes a real-looking empty one and is handed an
+// address like any other.
+
+test("markup that ends inside an element is rejected", () => {
+    assert.throws(
+        () => parseXml(`<w:body><w:p><w:r><w:t>half a sen`),
+        (err) => err instanceof XmlError && /truncated/i.test(err.message),
+    );
+});
+
+test("the rejection names the elements that were left open", () => {
+    assert.throws(
+        () => parseXml(`<w:body><w:tbl><w:tr>`),
+        (err) => err instanceof XmlError && err.message.includes("w:body > w:tbl > w:tr"),
+    );
+});
+
+test("a document truncated between paragraphs is still rejected", () => {
+    // The nastiest shape: everything closed except the body, so the paragraph
+    // count looks plausible and nothing downstream would ever question it.
+    const whole = `<w:body>${`<w:p><w:r><w:t>x</w:t></w:r></w:p>`.repeat(5)}</w:body>`;
+    const cut = whole.slice(0, whole.indexOf("</w:body>"));
+    assert.equal(childrenNamed(first(parseXml(whole), "body"), "p").length, 5);
+    assert.throws(() => parseXml(cut), XmlError);
+});
+
+test("a well-formed document with a trailing newline still parses", () => {
+    // The check must not fire on ordinary whitespace after the root element.
+    const root = parseXml(`<w:body><w:p/></w:body>\r\n`);
+    assert.equal(childrenNamed(first(root, "body"), "p").length, 1);
+});

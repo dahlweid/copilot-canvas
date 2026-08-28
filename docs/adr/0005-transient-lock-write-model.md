@@ -35,3 +35,31 @@ This is affordable only because rendering is decoupled — the canvas displays a
 exported PDF, so nothing needs the document open to keep the display alive —
 and because undo is a per-operation snapshot rather than Word's in-process undo
 stack, which does not survive the close.
+
+### Closing a document is instant; closing Word is not
+
+These are different timescales and conflating them causes real defects in both
+directions.
+
+| event                          | measured                        |
+| ------------------------------ | ------------------------------- |
+| `Document.Close()` → writable   | **0–1 ms**, released every run  |
+| `Application.Quit()` returns    | ~120 ms                         |
+| `Quit()` → process actually gone | **2.7 s, 6.1 s, 2.7 s** idle; observed >30 s under concurrent load |
+
+So the transient-lock model needs **no settling delay between operations**: once
+`Close` returns, the next operation may take the file immediately. Anything that
+sleeps between operations to "let the lock clear" is waiting for nothing.
+
+The seconds-long tail belongs to *process* teardown, and it matters in exactly
+one place: anything that re-derives a path a dying Word might still hold. A
+scratch path derived deterministically from the document path did precisely that
+— a new read could compute the same `source.docx` and ask a fresh Word to open a
+file the exiting Word still had open, which is the unbounded hang this ADR
+exists to prevent, reached from an unexpected direction. Scratch paths are now
+unique per call, which closes it.
+
+The process tail is also why a test asserting no Word was leaked must **poll**
+rather than sleep a fixed interval: the tail is load-dependent and unbounded by
+the idle measurements, so any flat settle is either a coin toss or a tax on
+every green run.

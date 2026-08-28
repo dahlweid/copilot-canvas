@@ -74,3 +74,46 @@ to what the address is made of. Two cases, both proven by test:
 Neither is silent: both are edits, so both move the revision token, and the next
 read is forced. The rule this imposes on callers is that an address may be used
 within one read-then-edit cycle and must not be cached across an edit.
+
+### Failures are typed, because the caller has to branch on them
+
+Every host failure originally collapsed to a single `word_error`. That is
+adequate for one consumer that only reports the message and hopeless for a
+consumer that must decide what to do: "the file is locked", "the file is gone",
+"the document is corrupt" and "the disk is full" all demand different
+responses, and telling them apart meant matching `$_.Exception.Message` — which
+is **localized**, so the matching works on an English machine and silently stops
+working on this German one.
+
+The codes a caller may branch on:
+
+| code                        | meaning                                                    |
+| --------------------------- | ---------------------------------------------------------- |
+| `file_not_found`            | nothing at that path                                        |
+| `file_locked`               | another process holds it *more strictly than Word does*     |
+| `document_unreadable`       | Word opened it and could not make sense of it               |
+| `copy_failed`               | the working copy could not be made                          |
+| `write_failed`              | the output could not be written                             |
+| `no_such_document`          | the document id is not registered (host restarted)          |
+| `word_unavailable`          | Word could not be started or died                           |
+| `word_timeout`              | an operation exceeded its budget                            |
+| `page_out_of_range`         | a page was asked for beyond the end                         |
+| `invalid_request`           | the arguments do not describe an operation                  |
+| `document_changed_during_read` | the file moved under the read; the map would mis-address |
+
+`file_locked` deserves care. Word opens a document with `FileShare::Read`, so a
+document **open in Word can still be read and copied** — which is the only
+reason a copy-based read works against a document the user is looking at. So
+`file_locked` does not mean "open in Word"; it means a stricter holder, and a
+message that says "close it in Word" would usually be wrong.
+
+Two shapes follow from this and are worth stating because both were originally
+backwards:
+
+- **`writable` is reported on failure, not only on success.** The case where the
+  caller most needs to know the original is locked is the case where the
+  operation failed.
+- **Filesystem errnos are translated at the boundary.** The revision token is
+  the first thing a read touches on the original — before Word is started at
+  all — so an exclusively held file produced a raw `EBUSY` that escaped the
+  entire typed vocabulary. An untyped errno is a missing code, not a detail.
