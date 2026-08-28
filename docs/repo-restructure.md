@@ -71,29 +71,32 @@ to notice.
 copilot-canvas/
 ├─ .github/
 │  ├─ extensions/                    # C1: immediate subdirs only
-│  │  ├─ word-canvas/
-│  │  │  ├─ extension.mjs            # C1: entry, exact name
-│  │  │  ├─ copilot-extension.json   # NEW — {name, version}; C4 requires it for gist install
-│  │  │  ├─ src/
-│  │  │  │  ├─ vendor/shared/        # GENERATED — see §3.1
-│  │  │  │  └─ ui/
-│  │  │  └─ test/
-│  │  │     ├─ unit/                 # Word-free  → hosted runners
-│  │  │     └─ integration/          # needs Word → self-hosted only
-│  │  ├─ excel-canvas/               # later, out of scope per PLAN.md §14.3
-│  │  └─ powerpoint-canvas/          # later
+│  │  └─ office-canvas/              # ONE extension, a canvas per app (ADR 0003)
+│  │     ├─ extension.mjs            # C1: entry, exact name
+│  │     ├─ copilot-extension.json   # NEW — {name, version}; C4 requires it for gist install
+│  │     ├─ src/
+│  │     │  ├─ word/                 # Word canvas + tools
+│  │     │  ├─ powerpoint/           # PowerPoint canvas + tools
+│  │     │  ├─ shared/               # imported directly — no vendoring, no sync
+│  │     │  └─ ui/                   # pdf.js viewer, vendored once
+│  │     └─ test/
+│  │        ├─ unit/                 # Office-free  → hosted runners
+│  │        └─ integration/          # needs Office → self-hosted only
 │  └─ workflows/
 │     ├─ validate.yml                # every push/PR, ubuntu-latest
 │     ├─ integration-windows.yml     # self-hosted + Office; nightly and manual
 │     └─ release.yml                 # on tag; packages and attaches artifacts
-├─ shared/                           # source of truth for cross-canvas code
 ├─ tools/
 │  ├─ validate-extensions.mjs
-│  ├─ sync-shared.mjs                # copies shared/ → each src/vendor/shared/
 │  └─ package-extension.mjs
 ├─ docs/
+│  └─ adr/
+├─ CONTEXT.md
 └─ README.md
 ```
+
+Excel would arrive later as `src/excel/` with its own canvas, once its display
+surface is decided — it will not be a page renderer.
 
 ### 3.1 The shared-code problem, which is the real decision
 
@@ -109,13 +112,40 @@ Three options:
 | | Approach | Verdict |
 | --- | --- | --- |
 | **a** | Duplicate shared code into each extension folder | Simple, self-contained, **drifts within weeks**. Rejected |
-| **b** | `shared/` is the source of truth; `tools/sync-shared.mjs` copies it into each `src/vendor/shared/`, and CI fails if a copy is stale | **Recommended.** Keeps folders installable standalone with one source of truth. The generated copies are committed, which is the price of C3 |
-| **c** | **One extension registering three canvases.** The SDK allows several `createCanvas` calls in one `joinSession` | Sidesteps sharing entirely. Real cost: users cannot install Word alone, and one process failure takes down all three canvases |
+| **b** | `shared/` is the source of truth; `tools/sync-shared.mjs` copies it into each `src/vendor/shared/`, and CI fails if a copy is stale | Keeps folders installable standalone with one source of truth, at the price of committing generated copies and policing staleness |
+| **c** | **One extension registering several canvases.** `joinSession` accepts `canvases: Canvas[]` | **Chosen.** Sidesteps sharing entirely — see ADR 0003 |
 
-Option **b** is the recommendation, mainly because it is reversible: collapsing three vendored
-folders into option **c** later is easy, whereas splitting a combined extension apart is not.
-The decision does not have to be made now — Excel and PowerPoint are out of scope — but the
-structure must not foreclose it, and this one does not.
+**Option c is the decision** (ADR 0003), reversing this document's earlier
+recommendation of **b**. Two things changed. Excel is deferred because a PDF
+cannot show a formula, so the near-term set is Word and PowerPoint — two
+canvases that share not "most of their substance" but effectively all of it,
+since both paginate natively and both render through the same export pipeline.
+The sync-shared machinery would exist to serve a distinction that carries no
+weight between them. And §3.2's pdf.js constraint bites hardest here: option b
+vendors pdf.js once per extension folder against a gist cap of roughly 5 MB
+that refuses binary files, while option c vendors it once.
+
+The two objections raised against **c** above are worth answering rather than
+dropping:
+
+- *"Users cannot install Word alone."* True, and acceptable — one install of
+  "Office document tools" is a better story than three, which is also what the
+  user-scope global install is for. It does impose a design requirement:
+  **no COM object may be created at startup**, so that a machine with Word but
+  no PowerPoint fails only when the PowerPoint canvas is actually used.
+- *"One process failure takes down all canvases."* Largely illusory. The risky
+  component is the Office process, which is already separate and already
+  per-application. Shared code is byte-identical under option b as well, so a
+  defect in it affects both canvases either way.
+
+The reversibility argument for **b** does not survive scrutiny either:
+splitting one extension into two is copying a folder and deleting the canvas
+registrations you do not want, which is no harder than the collapse it was
+meant to keep cheap.
+
+Under option c there is no `shared/` directory and no `sync-shared.mjs`,
+because there is nothing to sync — one folder holds the code and imports it
+normally.
 
 The "build" this repository has is therefore **copy-and-verify, not bundle.** That is the
 honest shape of it under C2.
@@ -152,7 +182,8 @@ be described as if it does.
 - Assert **no `package.json`** exists in any extension folder (C2).
 - Enforce the C4 envelope: UTF-8, per-file ≤ 1 MB, total ≤ 5 MB — so gist share cannot fail
   in a way only discovered at share time.
-- Verify `src/vendor/shared/` matches `shared/` (§3.1b).
+- Verify no file under an extension folder imports from outside it (C3), which
+  is what makes the folder installable as committed.
 - Run `test/unit/` — currently **empty**, see §4.4.
 
 ### 4.2 `integration-windows.yml` — self-hosted, Office installed
@@ -171,9 +202,10 @@ papered over with a green badge.
 
 ### 4.3 `release.yml` — on tag
 
-- Tag format `word-canvas/v1.2.0`, so extensions version independently.
+- Tag format `v1.2.0`. With a single extension there is nothing to version
+  independently; revisit only if the repo ever ships a second one.
 - Assert the tag version equals `copilot-extension.json`'s `version`.
-- Produce, per extension: a folder zip, and a flattened gist-format bundle (`/` → `\`) when it
+- Produce a folder zip, and a flattened gist-format bundle (`/` → `\`) when it
   fits inside C4.
 - Attach both to a GitHub Release.
 

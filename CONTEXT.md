@@ -1,10 +1,11 @@
 # Copilot Canvas — Office documents
 
-Agent-callable tools that read, author, and edit Word, Excel, and PowerPoint
-documents by driving the installed Office application through COM, plus a
-side-panel canvas that displays the result page-accurately.
+Agent-callable tools that read, author, and edit Word and PowerPoint documents
+by driving the installed Office application through COM, plus a side-panel
+canvas that displays the result page-accurately.
 
 The tools are the product. The canvas is how the user watches the agent work.
+Excel is deliberately out of scope for now; see ADR 0003.
 
 ## Language
 
@@ -24,19 +25,25 @@ _Avoid_: viewer, panel, editor
 ### Files and authority
 
 **Original**:
-The document file at the path the user named. The only file the user cares
-about.
+The document file at the path the user named. There is only ever this one file
+— the agent edits it in place rather than working on a duplicate.
 _Avoid_: source, target, real file
 
-**Working copy**:
-The extension's private duplicate of the original, opened by the hidden
-instance. Agent edits land here.
-_Avoid_: temp file, scratch copy
+**Operation**:
+One agent edit, bounded by open, change, save, close. The unit of locking, of
+undo, and of verification. Measured at roughly 230 ms.
+_Avoid_: transaction, command
 
-**Apply**:
-Promoting the working copy back onto the original. The only operation that
-modifies the user's file.
-_Avoid_: save, commit, sync
+**Snapshot**:
+A copy of the original taken before an operation, kept as the revert point.
+Undo restores a snapshot; it does not use Word's in-process undo stack, which
+does not survive the close.
+_Avoid_: backup, working copy
+
+**Lock window**:
+The span within an operation during which the file is open and therefore
+unwritable by anyone else. Kept as short as possible, because while it is open
+no script can regenerate the document and no other Word can open it.
 
 **Hidden instance**:
 The extension's own Office process, `Visible = false`, which no human ever
@@ -45,7 +52,7 @@ _Avoid_: background Word, server instance
 
 **User instance**:
 The user's own visible Office application, opened by "Edit in Word". Outside
-our control.
+our control, and a second writer we must detect rather than collide with.
 
 **Handoff**:
 Transfer of write authority between the agent and the user instance. Exactly

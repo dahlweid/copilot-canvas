@@ -1041,3 +1041,50 @@ already open and refuse quickly, rather than blocking**. Detecting it by
 attempting to open is exactly what hangs, so detection has to be done another
 way — testing for a writable handle, or for the `~$` lock file, before calling
 into Word.
+
+## 17. Measured: the transient-lock design is implementable
+
+§16 proposed holding the original open only for the duration of one operation.
+That design rests on two things nobody had measured: what a round trip costs,
+and whether "already open" can be detected *without* calling `Documents.Open`,
+which is the call that hangs.
+
+`probes/probe-transient-lock.ps1`, against a warm hidden instance:
+
+| Measurement | Result |
+| --- | --- |
+| open + edit + save + close, 5 runs | 236, 232, 233, 219, 219 ms |
+| mean round trip | **228 ms** |
+| detection, file free | `locked=False` in 9 ms |
+| detection, file free, owner-file check | absent |
+| detection, file held by another Word | `locked=True` in 4 ms |
+| detection, held, owner-file check | present, `~$iginal.docx` |
+
+Two things worth noting. The round trip is **228 ms, not the 586 ms** §16
+recorded for a single open — that earlier figure included the one-off cost of a
+cold process, and the same effect was already known from the 4547 ms first
+export. And the spread across five runs is 17 ms, so this is a stable cost
+rather than an average hiding a bad tail.
+
+Detection works and is effectively free. Taking a write handle returns the
+correct answer in single-digit milliseconds in both directions, with no false
+positive on a free file and no blocking on a held one. That is the property
+that matters: the thing that hangs is Word, and this test never involves Word.
+
+### 17.1 The residual race
+
+Detection and open are not atomic. Between the 4 ms check and the open, the
+user could open the document in their own Word, and we would be back in the
+indefinite hang. The window is small but the consequence is severe — a wedged
+hidden instance that only an external kill can clear, as §16 measured.
+
+So detection is a fast-reject path, not a guarantee, and it needs a second
+layer behind it: **every `Documents.Open` must be bounded by a timeout**, with
+the instance abandoned and killed if it is exceeded. The probe harness already
+demonstrates the shape — arm B of the control ran in a job with a hard timeout
+and recovered cleanly, where the original probe, which had no timeout, wedged
+two Word processes that had to be killed by hand.
+
+The owner-file check adds nothing over the handle test and depends on Word's
+odd naming rule (`~$` followed by the basename with its first two characters
+dropped). Use it for diagnostics if at all, not for control flow.
