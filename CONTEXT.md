@@ -228,12 +228,12 @@ pushes, so two worktrees never touch one branch.
 **Read the review body, not just the thread list.** Findings arrive in two
 shapes and only one of them is a thread. **Suppressed** findings — "previously
 missed, in code that hasn't changed" — appear in the body alone: no inline
-thread, no resolve button, no reply affordance, and `in_reply_to` on their ids
-returns 422. So they sit outside "address every comment, reply, repeat"
-entirely, and a PR can show zero unresolved threads while carrying the only
-finding that gates its merge. Reply to those with a top-level PR comment.
-Three of the best findings on #12 arrived this way, including the one that
-turned out to have three sites rather than one.
+thread, no resolve button, no reply affordance, and setting `in_reply_to` to
+one of their comment IDs fails with a 422. So they sit outside "address every
+comment, reply, repeat" entirely, and a PR can show zero unresolved threads
+while carrying the only finding that gates its merge. Reply to those with a
+top-level PR comment. Three of the best findings on #12 arrived this way,
+including the one that turned out to have three sites rather than one.
 
 **Six rounds, then merge.** This is a hard cap, not a target. At round six the
 PR merges with any remaining comments declined explicitly in a reply. The one
