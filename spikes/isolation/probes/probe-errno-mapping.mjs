@@ -41,12 +41,20 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function withHolder(label, share) {
     const target = path.join(dir, `${label}.txt`);
     writeFileSync(target, "hello");
-    const holder = spawn("powershell.exe", [
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-        `$fs=[IO.File]::Open('${target}','Open','ReadWrite','${share}'); Start-Sleep -Seconds 10; $fs.Close()`,
-    ]);
+    // Path and share travel in the environment rather than interpolated into
+    // the command string: a Windows profile may contain an apostrophe, which
+    // would close the PowerShell string and quietly make the holder open
+    // nothing -- turning a measurement into a fiction.
+    const holder = spawn(
+        "powershell.exe",
+        [
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "$fs=[IO.File]::Open($env:PROBE_PATH,'Open','ReadWrite',$env:PROBE_SHARE); Start-Sleep -Seconds 10; $fs.Close()",
+        ],
+        { env: { ...process.env, PROBE_PATH: target, PROBE_SHARE: share } },
+    );
     await sleep(2000);
     const r = await tokenRead(target);
     holder.kill();

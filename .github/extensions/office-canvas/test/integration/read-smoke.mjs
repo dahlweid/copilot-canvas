@@ -178,12 +178,21 @@ try {
         // this -- it always opens with FILE_SHARE_READ|WRITE|DELETE, so a
         // readFile/writeFile round trip succeeds even against a file Word has
         // open, and would prove nothing.
-        await execFileAsync("powershell.exe", [
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            `[IO.File]::Open('${fixture}', 'Open', 'ReadWrite', 'None').Close()`,
-        ]);
+        //
+        // The path travels in the environment rather than interpolated into
+        // the command: a Windows profile may contain an apostrophe (O'Brien),
+        // which would close the PowerShell string and fail the test for a
+        // quoting reason that has nothing to do with what it asserts.
+        await execFileAsync(
+            "powershell.exe",
+            [
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "[IO.File]::Open($env:PROBE_PATH, 'Open', 'ReadWrite', 'None').Close()",
+            ],
+            { env: { ...process.env, PROBE_PATH: fixture } },
+        );
 
         const handle = await readFile(fixture);
         await writeFile(fixture, handle);
@@ -246,12 +255,16 @@ try {
         // Safe despite ADR 0005: the revision token is read before Word is
         // started, so this fails fast on the filesystem and never reaches the
         // `Documents.Open` that would hang.
-        const holder = spawn("powershell.exe", [
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            `$fs=[IO.File]::Open('${fixture}','Open','ReadWrite','None'); Start-Sleep -Seconds 20; $fs.Close()`,
-        ]);
+        const holder = spawn(
+            "powershell.exe",
+            [
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "$fs=[IO.File]::Open($env:PROBE_PATH,'Open','ReadWrite','None'); Start-Sleep -Seconds 20; $fs.Close()",
+            ],
+            { env: { ...process.env, PROBE_PATH: fixture } },
+        );
         try {
             await new Promise((resolve) => setTimeout(resolve, 2000));
             const err = await cache.readStructure(fixture).then(
