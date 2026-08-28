@@ -319,11 +319,10 @@ export class WordHost {
      * `Documents.Open` hang forever rather than fail: another process holding
      * the file, and a mark-of-the-web on it. The host checks for both first,
      * but detection and open are not atomic, so the bound has to be here too.
-     */
-    /**
-     * `timeoutMs` is a parameter rather than a constant because `edit_document`
-     * spends its budget across two reads and this call, and needs to hand down
-     * what is left rather than restart the clock here.
+     *
+     * It is a parameter rather than a constant because `edit_document` spends
+     * one budget across two reads and this call, and needs to hand down what is
+     * left rather than restart the clock here.
      */
     edit({ path: docPath, wordIndex, expectedText, op, text, headingLevel, timeoutMs = STARTUP_TIMEOUT_MS }) {
         return this.#send("edit", { path: docPath, wordIndex, expectedText, op, text, headingLevel }, timeoutMs);

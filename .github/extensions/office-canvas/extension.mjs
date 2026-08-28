@@ -19,6 +19,7 @@ import { artifactsRoot } from "./src/store.mjs";
 import { createIdleShutdown } from "./src/word-lifecycle.mjs";
 import { normalizeReadArgs, DEFAULT_READ_LIMIT, MAX_READ_LIMIT } from "./src/word/read-args.mjs";
 import { MAX_HEADING_LEVEL, MIN_HEADING_LEVEL, OPERATION_NAMES } from "./src/word/edit-intent.mjs";
+import { asToolError } from "./src/tool-error.mjs";
 
 /** instanceId -> ViewerInstance */
 const instances = new Map();
@@ -117,18 +118,11 @@ async function run(fn) {
  * Tools are not canvas actions, so `CanvasError` means nothing to a tool caller.
  * The code is folded into the message instead, because that is what the agent
  * actually reads when deciding what to do next.
+ *
+ * Lives in `./src/tool-error.mjs` so it can be tested directly: this module is
+ * not importable from a test, and the defects this boundary causes are exactly
+ * the ones invisible from one layer beneath it.
  */
-function asToolError(err) {
-    const code = err?.code ?? "word_error";
-    const message = err?.message ?? "Unknown error";
-    const wrapped = new Error(`${code}: ${message}`);
-    wrapped.code = code;
-    // Facts the host attached to the failure, such as `writable: false` on a
-    // locked original. Dropping them here would leave the agent with a code and
-    // no way to tell why.
-    if (err?.data) wrapped.data = err.data;
-    return wrapped;
-}
 
 // --- canvas ----------------------------------------------------------------
 

@@ -6,10 +6,11 @@
 // test can reach, and every one of them was a surprise when first measured:
 //
 //   * An edit reaches the user's own file, in place, and the lock is gone
-//     afterwards (ADR 0005). Measured warm: ~158 ms of Word work (open 80 /
-//     edit 15 / save 63) inside ~281 ms end to end. Typical-case figures on a
-//     quiet machine, not bounds -- nothing here asserts an upper bound on
-//     Word's own timing.
+//     afterwards (ADR 0005). Measured warm: the lock is held ~300-500 ms, of
+//     which open/edit/save is only ~230 -- the rest is post-save COM reporting
+//     that happens while the document is still open. Typical-case figures on a
+//     quiet machine, not bounds; the assertions here are relational for that
+//     reason, since a threshold would only measure the runner.
 //   * A mark-of-the-web document can be edited *without* stripping its zone
 //     marker, via the Protected View route (ADR 0007). Measured: a plain
 //     `Documents.Open` on such a file hangs forever rather than failing.
@@ -131,6 +132,30 @@ try {
             `  [lock held ${result.timings.lockHeldMs}ms: open ${result.timings.openMs}, edit ${result.timings.editMs}, ` +
                 `save ${result.timings.saveMs}, release ${result.timings.releaseMs}]\n`,
         );
+
+        // ADR 0005's central claim is that the lock window is short, so the
+        // number cited as evidence for it must measure the window and not the
+        // command. It did not: `lockHeldMs` was the whole-command stopwatch,
+        // started before the pre-flight write probe and stopped after the
+        // post-close release poll, so it overstated the window -- in the
+        // flattering direction, which is the one nobody checks.
+        //
+        // These are relational, not thresholds: the machine's speed is not the
+        // property under test, and a bound would only measure the runner.
+        const t = result.timings;
+        assert.ok(
+            t.lockHeldMs < t.totalMs,
+            `lockHeldMs (${t.lockHeldMs}ms) must exclude the pre-flight and the release poll that totalMs (${t.totalMs}ms) includes`,
+        );
+        assert.ok(
+            t.lockHeldMs >= t.editMs + t.saveMs,
+            `lockHeldMs (${t.lockHeldMs}ms) must cover the edit and save it contains (${t.editMs}+${t.saveMs}ms)`,
+        );
+        assert.ok(
+            t.openMs <= t.lockHeldMs,
+            `openMs (${t.openMs}ms) happens inside the lock window (${t.lockHeldMs}ms)`,
+        );
+
         read = result.document;
     });
 

@@ -31,8 +31,8 @@ const MANIFEST_EXTENSION = ".json";
  * Monotonic within the process, so two snapshots taken in the same millisecond
  * still have a defined order.
  *
- * The timestamp alone is not enough. An edit takes about 280 ms end to end but
- * the snapshot is taken at the very start of it, so two operations queued
+ * The timestamp alone is not enough. An edit takes a few hundred milliseconds
+ * but the snapshot is taken at the very start of it, so two operations queued
  * together are snapshotted within the same millisecond routinely rather than
  * exceptionally. Without this the names tie-break on the operation name and
  * then a random nonce, which is an ordering unrelated to time -- so

@@ -3,12 +3,12 @@
 The agent edits the document the user named — not a persistent working copy —
 so there is never a question about which file is real. But it holds the file
 open only for the length of a single operation: open, edit, save, close,
-measured at **158 ms** of Word work against a warm hidden instance. Between
+measured at **roughly 250-500 ms** against a warm hidden instance. Between
 operations the file is entirely free.
 
-> This figure was originally recorded as 228 ms. That number was not wrong, it
-> measured a different thing; see the amendment at the end of this file for the
-> breakdown and for what the rest of the budget buys.
+> This figure has been corrected twice, in both directions, and the second
+> correction is the instructive one: the number reported as the lock window was
+> not measuring the lock window. See the amendment at the end of this file.
 
 The obvious alternative was to keep the document open for the session and let
 Word arbitrate access. We measured that and it does not work. Word does not
@@ -144,6 +144,15 @@ the pre-flight avoids the file-lock hang described above, and the release poll
 is what proves the lock actually went away. Optimising them out would trade
 123 ms for an unbounded wait.
 
+> **Both claims in this section were later measured and are wrong.** The 158 ms
+> is *not* the interval during which the lock is held, and the 123 ms difference
+> is *not* mostly the ADS check, the pre-flight and the release poll — those
+> three together are about 5 ms. The gap is post-save COM reporting that happens
+> while the document is still open. The paragraph above is left standing because
+> it is a good example of a plausible mechanism assembled from the components we
+> happened to have named, rather than measured; see the 2026-08-29 amendment at
+> the end of this file for the figures that replace it.
+
 One case is much more expensive and should not come as a surprise: a document
 carrying mark-of-the-web costs **2737 ms** end to end, almost all of it the
 Protected View open. That is paid once per file, and ADR 0007 explains what it
@@ -257,3 +266,55 @@ That is not a detail of this ADR's design; it is the reason the recovery
 contract is expressible at all, and a test that asserts on the editor's error
 object instead of the tool's response cannot see the difference.
 
+
+## Amendment (2026-08-29): the number reported as the lock window was not the lock window
+
+A review asked whether `lockHeldMs` measured what its name claims. It did not,
+and chasing that turned up a larger error in the opposite direction. Both are
+recorded here because the correction that matters is not the one that was found.
+
+`lockHeldMs` was the whole-command stopwatch. It started before the pre-flight
+write probe and stopped after the post-close release poll, so it included work
+done while nothing was held. That is the direction a reviewer would predict, and
+it is **worth about 5 ms** — the pre-flight is ~4 ms and the release poll
+measures 0 ms. Real, but nearly negligible.
+
+The larger error was underneath it. The figures previously quoted as the cost of
+an operation — 228 ms, then 158 ms — were the sum of `open + edit + save`. That
+sum is **not** the lock window either, and it is short of it by far more than
+the stopwatch was long:
+
+| measured, warm, per operation | ms |
+| --- | --- |
+| open | 73-185 |
+| edit | 12-182 |
+| save | 52-119 |
+| *sum of the three, the figure previously quoted* | *~200-230* |
+| **lock actually held (acquire → release)** | **252-500** |
+| release poll after `Close()` | 0 |
+
+The gap is roughly 170 ms and it is not measurement noise: after `$doc.Save()`
+the host still calls `Get-PageOf` and reads `Paragraphs.Count` to describe what
+it did. Those are cross-process COM property touches — the same class of call
+this ADR elsewhere measures at 3,724 ms for 219 paragraphs — and they happen
+while the document is still open. **Reporting is inside the lock window.**
+
+So the honest statement of this ADR's central claim is that a warm operation
+holds the file for **roughly 250-500 ms**, of which about a quarter to a half is
+spent describing the edit rather than making it. The design still holds: that is
+a short window, it is bounded, and the file is completely free between
+operations. But it is roughly double what this document claimed, and the claim
+was not wrong by accident — the three-part breakdown *looked* like a complete
+account of the operation, so no one asked what was between `save` and `close`.
+
+Two things follow, and the second is the general one:
+
+- `lockHeldMs` is now measured from immediately before `Documents.Open` to
+  immediately after the `Close()` that releases the file, and `totalMs` is
+  reported beside it as the whole command. They answer different questions.
+- **A metric named for a quantity should be tested against that quantity, not
+  just reported.** The smoke test now asserts the relationships that define the
+  field — that it is strictly less than `totalMs`, and at least the edit plus
+  the save it contains — rather than a threshold, which would only measure the
+  machine. Every previous run had printed these numbers side by side, and the
+  discrepancy was visible in all of them.

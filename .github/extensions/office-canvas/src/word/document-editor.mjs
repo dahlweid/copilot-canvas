@@ -40,22 +40,42 @@ import { fileRevisionToken, tokensMatch } from "../revision-token.mjs";
 import { describeIntent, validateIntent } from "./edit-intent.mjs";
 import { listSnapshots, revertToLatest, takeSnapshot } from "./snapshots.mjs";
 
+/**
+ * A typed edit failure.
+ *
+ * `details` is copied onto `data` as well as onto the error itself, and the
+ * `data` half is the one that matters: `asToolError` forwards only `code`,
+ * `message` and `data`, so a detail that lives solely as a top-level property
+ * reaches this module's own tests and never reaches the agent.
+ *
+ * This is deliberately fixed *here* rather than at each throw site. The bug was
+ * first found and fixed one call site at a time, which left every other
+ * `EditError` still silently losing its details -- including the expected and
+ * actual tokens on a stale-token failure, which is the error most likely to
+ * fire in normal use and the one whose details decide whether the agent should
+ * re-read or give up. A per-site fix could not close the class; a constructor
+ * can.
+ */
 export class EditError extends Error {
     constructor(code, message, details = {}) {
         super(message);
         this.name = "EditError";
         this.code = code;
         Object.assign(this, details);
+        // Only when there is something to carry, so an error without details
+        // does not arrive at the boundary with an empty object attached.
+        if (details && Object.keys(details).length > 0) this.data = { ...details };
     }
 }
 
 /**
  * Wall-clock ceiling on one `edit_document`, covering both reads and the edit.
  *
- * Five minutes is far longer than any measured edit -- 281 ms warm, 2.7 s on a
- * document carrying the mark of the web, and those are typical-case figures
- * rather than bounds -- so it is not a performance limit. It exists so a wedged
- * Word surfaces as an error the caller can act on instead of as silence.
+ * Five minutes is far longer than any measured edit -- a few hundred
+ * milliseconds warm, ~2.5 s on a document carrying the mark of the web, and
+ * those are typical-case figures rather than bounds -- so it is not a
+ * performance limit. It exists so a wedged Word surfaces as an error the caller
+ * can act on instead of as silence.
  */
 const EDIT_BUDGET_MS = 300_000;
 
@@ -398,7 +418,7 @@ export class DocumentEditor {
         this.#log(
             `edit_document: ${describeIntent(intent)} in ${path.basename(docPath)} ` +
                 `(open ${result.openMs}ms, edit ${result.editMs}ms, save ${result.saveMs}ms, ` +
-                `release ${result.releaseMs}ms, total ${result.totalMs}ms)`,
+                `release ${result.releaseMs}ms, lock held ${result.lockHeldMs}ms, total ${result.totalMs}ms)`,
         );
 
         return {
@@ -415,7 +435,13 @@ export class DocumentEditor {
                 editMs: result.editMs ?? null,
                 saveMs: result.saveMs ?? null,
                 releaseMs: result.releaseMs ?? null,
-                lockHeldMs: result.totalMs ?? null,
+                // Acquire -> release, and nothing else. Distinct from `totalMs`,
+                // which is the whole command including the pre-flight probe and
+                // the release poll. These were the same number once, which made
+                // ADR 0005's central claim -- that the window is short -- look
+                // better supported than it was.
+                lockHeldMs: result.lockHeldMs ?? null,
+                totalMs: result.totalMs ?? null,
             },
             document: after,
         };

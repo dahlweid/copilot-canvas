@@ -992,10 +992,18 @@ function Cmd-Edit($a) {
     $marked = Test-MarkOfTheWeb $path
 
     $openMs = 0
+    $lockHeldMs = 0
     $opened = $null
+
+    # The lock window starts where the file is actually acquired, not where the
+    # command was entered. The pre-flight above touches the file but never holds
+    # it, and timing both from one stopwatch is what made the reported figure
+    # overstate the window it is named for -- in a design whose entire claim is
+    # that the window is short, so the error ran in the flattering direction.
+    $lockStarted = [Diagnostics.Stopwatch]::StartNew()
     try {
         $opened = Open-OriginalForEdit $path
-        $openMs = [int]$started.ElapsedMilliseconds
+        $openMs = [int]$lockStarted.ElapsedMilliseconds
     } catch {
         return @{ status = 'open_failed'; path = $path; protectedView = $marked; detail = $_.Exception.Message }
     }
@@ -1085,6 +1093,11 @@ function Cmd-Edit($a) {
         # in the middle of a mutation. wdDoNotSaveChanges: anything worth
         # keeping was saved explicitly, and a half-applied edit must not be.
         try { $doc.Close($WD_DO_NOT_SAVE_CHANGES) } catch { }
+        # Stopped here, immediately after the close that releases the file, so
+        # the figure covers acquire -> release and nothing else. Measured at
+        # 0-1 ms, `Close()` is what ends the window; the release poll below only
+        # confirms it and must not be counted inside it.
+        $lockHeldMs = [int]$lockStarted.ElapsedMilliseconds
         try { [Runtime.InteropServices.Marshal]::ReleaseComObject($doc) | Out-Null } catch { }
     }
 
@@ -1102,6 +1115,10 @@ function Cmd-Edit($a) {
         }
         $result.releaseMs = [int]$releaseStarted.ElapsedMilliseconds
         $result.released = $released
+        $result.lockHeldMs = $lockHeldMs
+        # The whole command, pre-flight and release poll included. Reported
+        # beside `lockHeldMs` rather than as it, because they answer different
+        # questions and conflating them is what this pair exists to prevent.
         $result.totalMs = [int]$started.ElapsedMilliseconds
     }
 

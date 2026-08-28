@@ -52,12 +52,12 @@ test("names sort oldest-first as plain strings", () => {
 });
 
 test("two snapshots in the same millisecond still have a defined order", () => {
-    // The case that actually occurs: an edit is ~280 ms but its snapshot is
-    // taken at the very start, so two operations queued together are
-    // snapshotted within the same millisecond routinely. Before the counter the
-    // tie broke on operation name and then a random nonce -- an ordering with
-    // no relation to time, so `revertToLatest` could restore the older of the
-    // two and report that it had undone the newer.
+    // The case that actually occurs: an edit takes a few hundred milliseconds
+    // but its snapshot is taken at the very start, so two operations queued
+    // together are snapshotted within the same millisecond routinely. Before
+    // the counter the tie broke on operation name and then a random nonce -- an
+    // ordering with no relation to time, so `revertToLatest` could restore the
+    // older of the two and report that it had undone the newer.
     const at = new Date("2026-01-02T03:04:05.006Z");
     const first = snapshotName({ takenAt: at, op: "replace_text", token: "sha256:aa", nonce: "zzzz", seq: 7 });
     const second = snapshotName({ takenAt: at, op: "delete_paragraph", token: "sha256:bb", nonce: "aaaa", seq: 8 });
