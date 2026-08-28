@@ -74,10 +74,47 @@ is why it cannot be opened lazily on first interaction.
 **User instance**:
 The user's own visible Office application, opened by "Edit in Word". Outside
 our control, and a second writer we must detect rather than collide with.
+Launched over plain argv (`explorer.exe <path>`), never through `cmd.exe`,
+because a shell parse corrupts ordinary filenames — measured, 3 of 9, including
+one that launches a *different* path silently.
 
 **Handoff**:
 Transfer of write authority between the agent and the user instance. Exactly
 one of them holds it at any moment.
+
+### Failure
+
+Every host failure carries a typed code. The table lives in ADR 0006; these are
+the three whose plain-English reading is wrong, and which every layer must get
+right because the code is what an agent branches on and the message is what a
+user acts on.
+
+**`file_locked`**:
+The original is held **more strictly than Word itself holds it**. Measured: Word
+takes `FileShare::Read`, so a document the user has open in Word can still be
+read and copied — that case *succeeds*. "The user has it open in Word" is
+therefore provably **never** the cause, and a message saying so names the one
+condition incapable of producing the error. Worth retrying, because the holder
+may let go.
+_Avoid_: in use, open elsewhere, busy
+
+**`permission_denied`**:
+The filesystem refused, by ACL. A separate code from `file_locked` not merely
+because the platform distinguishes them — `EBUSY`/`IOException` against
+`EPERM`/`UnauthorizedAccessException`, discriminated on exception **type**, never
+message, because the machine is German — but because the remediation differs: a
+lock may clear on its own, a denied ACL will not. Never retry it.
+
+**`writable`**:
+A fact reported beside a code, never a cause inferred from one. It comes from
+taking a *write* handle, which cannot separate a sharing violation from a
+denying ACL from a read-only attribute, so it stays a single collapsed flag.
+The rule both halves share: **split where the platform distinguishes, stay
+collapsed where it does not.**
+
+Two non-failures worth naming, because both sound like failures and neither is:
+the **read-only attribute** does not block reading, and neither does `chmod`.
+No layer needs a branch for either.
 
 ### Rendering
 
