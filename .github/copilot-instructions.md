@@ -27,7 +27,8 @@ code **fails to follow** one of them.
 | Style ids copied verbatim, never constructed or matched | Word mints ids from the *localized* style name with non-ASCII dropped, so the id is `berschrift1` — not `Heading1`, not `Überschrift1`. Any construction or comparison of style ids is wrong. |
 | `edit_document` refuses to batch edits | An address is a **coordinate, not a handle**. Deleting one of a duplicate-text group silently renumbers its successors; renaming a heading moves every address beneath it. A batch API would imply a stability that does not exist. One edit per read is the contract (ADR 0006). |
 | Generous timeouts and long polling deadlines | `Documents.Open` on a locked file, or one carrying mark-of-the-web, **hangs indefinitely** rather than failing. Word's process teardown also contends on per-user state, so its tail is load-dependent and is *not* bounded by measurements taken on an idle machine. Deadlines here are deliberately generous; polling makes that free on success. |
-| `file_locked` returned for a file that is not open in Word | Word takes `FileShare::Read`, so a document open in Word **can** still be copied. `file_locked` therefore means *stricter than Word's own lock* — it does not mean "open in Word". Do not "correct" this to the intuitive reading. |
+| `file_locked` returned for a file that is not open in Word | Word takes `FileShare::Read`, so a document open in Word **can** still be read and copied — measured, that case *succeeds*. `file_locked` means *held more strictly than Word holds it*, and "the user has it open in Word" is provably never the cause. Do not "correct" this to the intuitive reading, and never advise closing Word in its message. |
+| `file_locked` and `permission_denied` split, while `writable` stays a single flag | Both follow one rule: **split where the platform distinguishes, stay collapsed where it does not.** A read handle cleanly separates the causes (`EBUSY` vs `EPERM`; `IOException` vs `UnauthorizedAccessException`) *and* they need different remediation — a lock may clear on its own and is worth retrying, an ACL will not. `Test-FileWritable` takes a *write* handle, which genuinely folds sharing violation, ACL and read-only into one observation, so it is reported as a fact beside a typed code and no cause is ever inferred from it. This is not inconsistency. |
 | Protected View used instead of clearing the zone marker | `Unblock-File` would silently delete a security marker from a user's file. The Protected View path keeps `Zone.Identifier` intact (ADR 0007). |
 | Vendored pdf.js worker committed as three split parts | Extension install enforces **1,000,000 bytes per file, 5,000,000 total** (decimal). The worker is 1,262,398 bytes. Repo-folder install never runs a packager, so the split must exist in the committed tree. |
 | `"version": 1` in `copilot-extension.json` | That field is the *manifest format* version and is parsed as a `u32`. A semver string there makes the extension uninstallable. The product version lives in `productVersion`. |
@@ -51,7 +52,17 @@ welcome and has repeatedly found genuine defects.
   derived from position spans, never from string length.
 - **Joining COM-side and file-side identity on anything translatable.** The
   application reports localized names while the file stores something else.
-  Join on structural keys, never on a display name.
+  Join on structural keys, never on a display name. The same trap applies to
+  errors: discriminate on the **exception type**, never on its message, which
+  is localized.
+- **An error message that names a cause the code cannot know.** Several bugs
+  here have been a correct code carrying a message that asserted the wrong
+  reason. If the message names a cause, that cause must be one the code
+  actually distinguished.
+- **A test that cannot fail for the reason its comment claims.** Node opens
+  files with `FILE_SHARE_READ|WRITE|DELETE`, so `readFile`/`writeFile` proves
+  nothing about exclusivity; a leak assertion that sleeps a fixed interval
+  passes on slack. Assertions must be able to fail.
 - **Leaking a Word or PowerPoint process**, or killing one we did not start.
   PowerPoint is **single-instance**: a COM-attached instance *is the user's*,
   so quitting or killing it destroys their work.
