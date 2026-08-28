@@ -1,0 +1,77 @@
+{
+  "document": "C:\\Users\\marku\\AppData\\Local\\Temp\\word-live-spike-AYmIVC\\spike.docx",
+  "measurements": {
+    "coldStartMs": 5194,
+    "captureRoundTripMs": {
+      "n": 60,
+      "min": 19.5,
+      "p50": 33.3,
+      "p95": 45.7,
+      "max": 62.1,
+      "mean": 34.3
+    },
+    "captureInProcessMs": {
+      "n": 60,
+      "min": 16,
+      "p50": 30,
+      "p95": 34,
+      "max": 43,
+      "mean": 29.2
+    },
+    "frameBytes": {
+      "n": 60,
+      "min": 66531,
+      "p50": 66531,
+      "p95": 66531,
+      "max": 66531,
+      "mean": 66531
+    },
+    "fps": 29.2,
+    "scrollMs": {
+      "n": 20,
+      "min": 3.4,
+      "p50": 5,
+      "p95": 20.2,
+      "max": 20.2,
+      "mean": 6.3
+    },
+    "scrollToFrameMs": {
+      "n": 20,
+      "min": 31.6,
+      "p50": 34.1,
+      "p95": 49.9,
+      "max": 49.9,
+      "mean": 37.5
+    },
+    "gotoPageMs": {
+      "n": 5,
+      "min": 99.4,
+      "p50": 103.5,
+      "p95": 130.3,
+      "max": 130.3,
+      "mean": 110.5
+    },
+    "resize": {
+      "requested": {
+        "width": 900,
+        "height": 1200
+      },
+      "actual": {
+        "zoom": 77,
+        "width": 900,
+        "height": 1200
+      }
+    },
+    "zoomPercent": 77
+  },
+  "window": {
+    "pageCount": 7,
+    "width": 560,
+    "pid": 20972,
+    "dpiScale": 1.25,
+    "height": 950,
+    "zoom": 46,
+    "hwnd": 33294566
+  },
+  "leakedWordProcesses": []
+}

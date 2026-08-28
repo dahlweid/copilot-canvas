@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>Word document</title>
+        <link rel="stylesheet" href="/app.css" />
+    </head>
+    <body>
+        <header class="bar" id="bar" hidden>
+            <div class="bar-main">
+                <span class="doc-name" id="docName">&nbsp;</span>
+                <span class="doc-meta" id="docMeta"></span>
+            </div>
+            <div class="bar-actions">
+                <button type="button" id="toggleSidebar" class="btn" title="Outline and search">
+                    Contents
+                </button>
+                <button type="button" id="reload" class="btn" title="Re-render from disk">Reload</button>
+                <button type="button" id="openInWord" class="btn" title="Open in Microsoft Word">
+                    Open in Word
+                </button>
+                <button type="button" id="changeDoc" class="btn" title="Open a different document">
+                    Change…
+                </button>
+            </div>
+            <div class="bar-path" id="docPath" title=""></div>
+        </header>
+
+        <div class="status" id="status" hidden></div>
+
+        <main class="layout">
+            <aside class="sidebar" id="sidebar" hidden>
+                <div class="search-row">
+                    <input
+                        type="search"
+                        id="searchInput"
+                        placeholder="Search document…"
+                        autocomplete="off"
+                        spellcheck="false"
+                    />
+                </div>
+                <div class="panel" id="searchResults" hidden></div>
+                <div class="panel" id="outline"></div>
+            </aside>
+
+            <section class="viewer" id="viewer">
+                <iframe id="pdf" title="Document" src="about:blank"></iframe>
+            </section>
+
+            <section class="picker" id="picker">
+                <div class="picker-inner">
+                    <h1>Open a Word document</h1>
+                    <p class="muted" id="engineNote">Rendered by Microsoft Word for page-accurate layout.</p>
+
+                    <form class="path-form" id="pathForm">
+                        <input
+                            type="text"
+                            id="pathInput"
+                            placeholder="C:\path\to\document.docx"
+                            autocomplete="off"
+                            spellcheck="false"
+                        />
+                        <button type="submit" class="btn primary">Open</button>
+                    </form>
+                    <p class="error" id="pickerError" hidden></p>
+
+                    <div class="list-block" id="recentsBlock" hidden>
+                        <h2>Recent</h2>
+                        <ul class="list" id="recents"></ul>
+                    </div>
+
+                    <div class="list-block" id="workspaceBlock" hidden>
+                        <h2>In this workspace</h2>
+                        <ul class="list" id="workspaceDocs"></ul>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <script type="module" src="/app.js"></script>
+    </body>
+</html>
