@@ -3,11 +3,13 @@
 **Question the plan asked:** is streaming a live, off-screen Word window into the canvas good
 enough to replace the PDF renderer — now, or later for read-write mode?
 
-**Verdict: no for v1, yes as the path to editing.** Fidelity is not the problem; it is
-excellent. The problem is that streaming buys a live window we do not yet need, and pays for
-it with a *visible* Word process, a continuous capture loop, a fiddly DPI correction, and the
-loss of everything the native PDF viewer gives us for free (text selection, Ctrl+F, print,
-zoom, page thumbnails).
+**Verdict: no for v1, yes as the path to editing.** Layout fidelity is excellent — the geometry
+comes from Word's own engine. But *colour* fidelity is not: under a dark Office theme Word
+renders the page itself dark, so a streamed frame does not match what the document prints
+(see Fidelity below). On top of that, streaming buys a live window we do not yet need, and
+pays for it with a *visible* Word process, a continuous capture loop, a fiddly DPI correction,
+and the loss of everything the native PDF viewer gives us for free (text selection, Ctrl+F,
+print, zoom, page thumbnails).
 
 Reproduce with:
 
@@ -57,17 +59,31 @@ demand).
 
 ## Fidelity
 
-**The pixels are correct.** They come from Word's own layout engine, so they are accurate by
-construction — see `frames/frame-wide.jpg`, where the page renders white with black text and
-correct pagination even though the surrounding Word chrome is in the user's dark Office theme.
-Word's dark theme applies to the application chrome, not the page.
+**Layout is correct; colour is not.** The geometry comes from Word's own layout engine, so
+pagination, line breaking and glyph positions are accurate by construction — see
+`frames/frame-wide.jpg`.
 
-This corrected an earlier wrong conclusion in this spike: intermediate frames appeared to show
-a *dark page*, which looked like a fatal fidelity divergence. It was an artefact of the zoom
-bug below — the page was scaled past the edges of the captured bitmap, so the frame was filled
-entirely with the dark area *around* the page. Once the fit was correct, the page appeared
-white. Worth recording, because the wrong version of this finding would have killed the
-approach for the wrong reason.
+**But the page renders dark, not white.** This machine's Office theme is Black
+(`HKCU\Software\Microsoft\Office\16.0\Common\UI Theme = 4`), and Word 365's dark mode applies
+to the *page*, not just the application chrome. A streamed frame therefore does not match what
+the document would print, which directly undercuts the page-accuracy goal.
+
+This corrects a wrong conclusion recorded in an earlier revision of this file, which claimed
+the dark page was an artefact of the zoom bug below and that the page "appeared white once the
+fit was correct". It does not. Re-measured on a correctly fitted window, the sampled page
+region reads `brightness ≈ 58–60` out of 255, and visual inspection of `frame-wide.jpg` shows
+light text on a dark page. Two independent Word instances — one created via COM, one launched
+directly with `CreateProcess` — render the page dark identically, so this is the normal
+behaviour of Word under a dark Office theme, not a capture artefact.
+
+Flipping `Common\UI Theme` to White (5) immediately before launching our own Word process and
+restoring it straight after does **not** fix it (measured: page still dark), so the dark-page
+setting is stored somewhere else — most likely in Office's roamed cloud settings rather than
+that local value. Finding and overriding it *for our instance only* is unresolved.
+
+This is the strongest fidelity argument for the PDF renderer: `ExportAsFixedFormat` always
+emits print colours regardless of the user's theme, so v1 is immune to this entire class of
+problem. Any future streaming renderer must solve it before it can claim page accuracy.
 
 ### The DPI trap
 
@@ -141,4 +157,5 @@ wanted later, `live-word.ps1` already exposes everything a canvas would need (`s
 
 - `frames/frame-full.jpg` — raw capture at panel size, ribbon included.
 - `frames/frame-cropped.jpg` — ribbon cropped; this is what a canvas would display.
-- `frames/frame-wide.jpg` — 900×1200, showing full chrome and a print-accurate white page.
+- `frames/frame-wide.jpg` — 900×1200, showing full chrome and the dark-rendered page under a
+  Black Office theme (the colour-fidelity problem described above).
