@@ -43,8 +43,17 @@ async function check(name, fn) {
     }
 }
 
-const powershell = (script) =>
-    execFileAsync("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script]);
+// Paths reach the script through the environment, never interpolated into it.
+// Escaping was tried first and is the wrong fix: the danger set is per-parser
+// and barely overlaps -- an apostrophe breaks a PowerShell single-quoted
+// literal and is harmless to cmd, while `&` and `^` break cmd and are harmless
+// here. Doubling apostrophes therefore looks correct right up until the path
+// reaches a different parser. Removing the interpolation removes the whole
+// class, including the next parser's set, which we do not know yet.
+const powershell = (script, vars = {}) =>
+    execFileAsync("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script], {
+        env: { ...process.env, ...vars },
+    });
 
 const makeFixture = (out, { chapters = 2, duplicates = true, table = true } = {}) =>
     execFileAsync("powershell.exe", [
@@ -277,20 +286,29 @@ try {
         // hangs indefinitely, with DisplayAlerts already off, and both processes
         // have to be killed by hand. The pre-flight write-handle probe is what
         // stops us ever making that call.
-        // FileShare::Read, not None, because that is the lock Word itself takes:
-        // a document open in Word can still be copied, which is why layer 1's
-        // copy-based read keeps working while the original is held. (With
-        // FileShare::None even the read fails, with a raw EBUSY from copyFile --
-        // a gap in layer 1's error contract, reported separately.)
+        // The holder grants FileShare::ReadWrite because that is what Word itself
+        // grants: probed, Word holds a *write* handle and shares ReadWrite. It is
+        // not FileShare::Read, and that distinction is not cosmetic here -- of the
+        // share modes a holder can take, ReadWrite is the most permissive, so it
+        // is the hardest case for a refusal to fire. A test holding a stricter
+        // mode would pass while proving strictly less.
+        //
+        // It fires anyway because Test-FileWritable opens with FileShare::None,
+        // which conflicts with any existing handle regardless of what that handle
+        // shares. So the refusal covers the case that actually happens in
+        // production -- the user has the document open in Word -- and this is the
+        // one place read and edit genuinely diverge: layer 1's copy-based read
+        // sails through this same lock, because the copy is not the original and
+        // an edit has to be.
         const holder = spawn(
             "powershell.exe",
             [
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
-                `$s=[IO.File]::Open('${fixture.replace(/'/g, "''")}',[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::Read); Start-Sleep -Seconds 25; $s.Close()`,
+                `$s=[IO.File]::Open($env:SMOKE_DOC,[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::ReadWrite); Start-Sleep -Seconds 25; $s.Close()`,
             ],
-            { stdio: "ignore" },
+            { stdio: "ignore", env: { ...process.env, SMOKE_DOC: fixture } },
         );
         try {
             // Give the holder time to actually take the handle.
@@ -341,11 +359,12 @@ try {
         const marked = path.join(docs, "downloaded.docx");
         await makeFixture(marked, { chapters: 1, duplicates: false, table: false });
         await powershell(
-            `Set-Content -LiteralPath '${marked.replace(/'/g, "''")}' -Stream Zone.Identifier -Value "[ZoneTransfer]\`r\`nZoneId=3"`,
+            `Set-Content -LiteralPath $env:SMOKE_DOC -Stream Zone.Identifier -Value "[ZoneTransfer]\`r\`nZoneId=3"`,
+            { SMOKE_DOC: marked },
         );
 
         const zoneBefore = (
-            await powershell(`Get-Content -LiteralPath '${marked.replace(/'/g, "''")}' -Stream Zone.Identifier -Raw`)
+            await powershell(`Get-Content -LiteralPath $env:SMOKE_DOC -Stream Zone.Identifier -Raw`, { SMOKE_DOC: marked })
         ).stdout;
         assert.match(zoneBefore, /ZoneId=3/, "the fixture is not actually marked");
 
@@ -365,7 +384,7 @@ try {
         assert.equal(result.paragraph.text, "Edited through Protected View.");
 
         const zoneAfter = (
-            await powershell(`Get-Content -LiteralPath '${marked.replace(/'/g, "''")}' -Stream Zone.Identifier -Raw`)
+            await powershell(`Get-Content -LiteralPath $env:SMOKE_DOC -Stream Zone.Identifier -Raw`, { SMOKE_DOC: marked })
         ).stdout;
         assert.match(zoneAfter, /ZoneId=3/, "editing stripped the file's mark of the web");
     });
