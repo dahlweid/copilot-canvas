@@ -1,13 +1,15 @@
 # Live Office Streaming — Build Plan
 
-**Status:** reviewed twice and **decided** — see §14. Streaming is *not* being built.
+**Status:** reviewed twice, decided (§14), then **reframed** (§15) — read §15 first.
 **Supersedes:** the verdict in `spikes/live-word/FINDINGS.md` ("PDF for v1, streaming is the path to editing")
 **Scope:** Word only. Excel and PowerPoint are out of scope until they have their own probes (§14.3).
 
-> **Read §14 first.** Sections 1–10 are the streaming proposal as originally drafted, kept
-> because the measurements in them are real and several are load-bearing for what was actually
-> chosen. Sections 11–13 are the three rounds of critique that dismantled the proposal, and
-> §14 is the decision that came out of it. Reading 1–10 as current guidance will mislead you.
+> **Read §15, then §14.** Sections 1–13 assume the *human* edits through the canvas. That
+> assumption is never stated and is wrong: the editor is **Copilot**, and the canvas is a
+> display and verification surface. §15 records what that deletes — the coordinate channel, the
+> consistency protocol, the typing overlay and probably the pdf.js dependency. Sections 1–10
+> are the original streaming proposal, kept for their measurements; §§11–13 are the critiques
+> that dismantled it; §14 is the decision. Reading 1–10 as current guidance will mislead you.
 
 ---
 
@@ -818,3 +820,76 @@ supported at the time.
 
 The single most useful output of this whole investigation is a number that took ten minutes to
 measure and made a month of streaming work unnecessary: **168 ms**.
+
+---
+
+## 15. The reframing: Copilot is the editor, not the user
+
+Sections 1-14 all assume the **human** edits through the canvas. That assumption is never
+stated, because it was never noticed. It is wrong, and correcting it is the largest single
+simplification in this document.
+
+**The canvas is a display and verification surface. Copilot drives the edits over COM.**
+
+### 15.1 What this deletes
+
+| Machinery | Why it existed | Status |
+| --- | --- | --- |
+| `RangeFromPoint` / `GetPoint` coordinate channel (§5.2) | Translate a human's click into a document range | **Deleted** — an agent addresses ranges semantically ("the paragraph under heading X"), never by pixel |
+| Version/consistency protocol (§12.4 item 3) | Guard against a click landing on a stale frame | **Deleted** — it existed only to protect the coordinate channel |
+| pdf.js edit-mode viewer (§11.494) | (a) scroll position, (b) client-coordinate page geometry, (c) per-page replace | **Probably deleted.** (b) was click geometry and is gone. (a) and (c) are refresh cosmetics that do not need a text layer we own. This removes option C's only new dependency |
+| Optimistic typing overlay (§5.3, §11 cost 1) | Hide re-export latency behind a keystroke echo | **Deleted** — see below |
+| Caret and selection rendering (§5.3) | A human needs to see where they are | **Deleted** — an agent has no caret |
+| The 168 ms latency budget (§11) | Had to fit between a keystroke and its echo | **Non-binding.** Agent edits are transactional; even the 664 ms full export is acceptable. The number is now a nicety, not a gate |
+| 40% dropped confirming frames (§13.4) | Broke per-keystroke echo | **Irrelevant** — there is no per-keystroke echo |
+
+Section 14.2 dropped free-form typing as a *concession*. Under this framing it is not a
+concession at all: there is no typist. The structured, range-anchored intent set in §14.2 is
+simply the natural shape of an agent API.
+
+### 15.2 Why this is the stronger product
+
+The competition is not "Word in a panel". It is **how an agent edits a `.docx` today**:
+
+| | `python-docx` / raw OOXML | Pandoc / template generation | Word over COM |
+| --- | --- | --- | --- |
+| Layout engine | none — writes XML | generates fresh | **real Word layout** |
+| Repagination, field update, TOC regeneration | ✗ | ✗ | ✓ |
+| Style resolution, cross-references, section breaks | partial, hand-modelled | ✗ | ✓ |
+| Edit an *existing* complex document without degrading it | risky — drops what it doesn't model | ✗ not applicable | ✓ |
+| Tracked changes, comments | painful | ✗ | ✓ native |
+| **Can the agent see the result?** | **✗ edits blind** | ✗ | **✓ re-export and look** |
+| Runs on Linux / CI | ✓ | ✓ | **✗ Windows + Office only** |
+| Bulk generation from scratch | fast | fast | **unmeasured, likely slower** |
+
+The decisive row is *can the agent see the result*. Every current option edits blind. This one
+closes the loop: **edit → re-export → inspect the page**. The canvas becomes the surface on
+which the agent shows its work, which is also why the display path should stay the
+print-pipeline PDF (§11) — the thing being verified should look like what prints.
+
+### 15.3 The two honest limits
+
+1. **Windows with Word installed.** `python-docx` runs anywhere. This does not. For a desktop
+   Copilot app that is acceptable; for anything server-side it is disqualifying. State it as a
+   product boundary, not a caveat.
+2. **Authoring long documents from scratch may still belong to `python-docx`.** Thousands of
+   COM round-trips are slow where XML writing is not. `Range.InsertXML` is the obvious
+   mitigation and is **unmeasured**. Until it is, claim COM wins for *editing existing
+   documents* only.
+
+Autocorrect (§13.4) survives the reframing but changes character: it is no longer a visual
+snap-back the user watches, it is a correctness issue the agent detects by reading the range
+back after writing it. That is a check, not a defect.
+
+### 15.4 Effect on the phases
+
+§14.3 stands, with phase 4 (pdf.js viewer) **struck** pending a decision on refresh cosmetics,
+and phase 5 (structured intents) promoted to the core deliverable rather than the last step.
+Phases 0-2 — security review, hidden-desktop host with Job Object lifetime, out-of-process
+dialog watchdog — are unaffected: they are about running Word safely and invisibly, which this
+reframing needs just as much.
+
+Two probes are now worth more than any further design work:
+
+- `Range.InsertXML` throughput, to settle §15.3 limit 2.
+- A read-back-after-write check on `TypeText`, to size the autocorrect problem.
