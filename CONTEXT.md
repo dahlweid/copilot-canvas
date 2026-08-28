@@ -84,11 +84,15 @@ one of them holds it at any moment.
 
 ### Failure
 
-Every host failure carries a typed code. The full table arrives with
-`read_document`, in ADR 0006 — it is not on `main` yet, so this is a forward
-reference rather than a pointer. The three below are the ones whose
-plain-English reading is wrong, and every layer must get them right because the
-code is what an agent branches on and the message is what a user acts on.
+Every host failure carries a typed code, and there are twelve:
+`file_not_found`, `file_locked`, `permission_denied`, `document_unreadable`,
+`copy_failed`, `write_failed`, `no_such_document`, `word_unavailable`,
+`word_timeout`, `page_out_of_range`, `invalid_request`,
+`document_changed_during_read`.
+
+Nine of those mean what they say. The three below do not, and every layer must
+get them right, because the code is what an agent branches on and the message is
+what a user acts on.
 
 **`file_locked`**:
 The original is held **more strictly than Word itself holds it**. Measured: Word
