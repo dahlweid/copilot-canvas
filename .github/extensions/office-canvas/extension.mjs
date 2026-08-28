@@ -17,7 +17,7 @@ import { RenderCache, DocumentError, normalizeDocPath, supportedList } from "./s
 import { ViewerInstance } from "./src/server.mjs";
 import { artifactsRoot } from "./src/store.mjs";
 import { createIdleShutdown } from "./src/word-lifecycle.mjs";
-import { normalizeReadArgs, DEFAULT_READ_LIMIT } from "./src/word/read-args.mjs";
+import { normalizeReadArgs, DEFAULT_READ_LIMIT, MAX_READ_LIMIT } from "./src/word/read-args.mjs";
 
 /** instanceId -> ViewerInstance */
 const instances = new Map();
@@ -373,7 +373,10 @@ const readDocumentTool = {
             limit: {
                 type: "integer",
                 minimum: 1,
-                maximum: 5000,
+                // Declared from the same constant the validator enforces: a
+                // declared bound the runtime does not check is a promise the
+                // contract cannot keep.
+                maximum: MAX_READ_LIMIT,
                 description:
                     `Maximum paragraphs to return (default ${DEFAULT_READ_LIMIT}). Addresses are always minted across the whole document, so paging never changes one; the response reports paragraphCount and truncated.`,
             },

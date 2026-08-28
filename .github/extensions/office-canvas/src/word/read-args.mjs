@@ -17,20 +17,34 @@
 // caller ends up believing it received a whole document that it did not, which
 // is the same failure mode paging already has to be careful about.
 //
-// Deliberately NOT enforced here: the schema's `maximum`. An over-large limit is
-// already answered correctly -- `slice` clamps, and the response reports
-// `returned` and `truncated` honestly -- so rejecting it would refuse a request
-// we can satisfy perfectly. Validate where the behaviour is wrong, not wherever
-// a bound happens to be written down.
+// The ceiling is enforced here too, and the first version of this module did not
+// enforce it -- on the argument that `slice` already answers an over-large limit
+// correctly, so rejecting one would refuse a request we can satisfy. That missed
+// what makes the bound different from an arbitrary number: the tool schema
+// *declares* `maximum: 5000`, which makes it a promise to the caller rather than
+// an internal preference. An unenforced declared bound gives the contract two
+// answers depending on whether the host pre-validates -- either the caller is
+// rejected upstream in a shape that is not our typed `invalid_request`, or the
+// declaration is simply false. That is the same defect as `limit: 0`, one level
+// up: a constraint the runtime does not enforce. The floor was fixed and the
+// ceiling left.
 //
-// This is checked here rather than left to the declared JSON schema because
-// nothing in this repo demonstrates that the extension host validates schemas
-// before dispatch. That may well be true; it is simply not something we have
-// measured, and a guard that costs three comparisons is cheaper than the
-// experiment.
+// So both bounds are checked here, and MAX_READ_LIMIT is exported for the schema
+// to declare, so the two cannot state different numbers.
+//
+// Checked at runtime rather than left to the declared schema because nothing in
+// this repo demonstrates that the extension host validates schemas before
+// dispatch. That may well be true; it is simply not something we have measured,
+// and enforcing it ourselves makes the answer the same either way.
 
 /** Paragraphs returned when the caller expresses no preference. */
 export const DEFAULT_READ_LIMIT = 300;
+
+/**
+ * Largest page a caller may ask for. Declared by the tool schema as `maximum`
+ * and enforced below; the schema imports this so the two cannot drift.
+ */
+export const MAX_READ_LIMIT = 5000;
 
 export class ReadArgsError extends Error {
     constructor(message) {
@@ -51,12 +65,17 @@ const describe = (value) => {
  * `Number.isInteger` is the whole type check: it is false for strings, booleans,
  * null, NaN, Infinity and fractions alike, so there is no separate typeof guard.
  */
-const requireInteger = (value, field, minimum, hint) => {
+const requireInteger = (value, field, { minimum, maximum = null, hint }) => {
     if (!Number.isInteger(value)) {
         throw new ReadArgsError(`\`${field}\` must be an integer, not ${describe(value)}. ${hint}`);
     }
     if (value < minimum) {
         throw new ReadArgsError(`\`${field}\` must be ${minimum} or greater, not ${value}. ${hint}`);
+    }
+    if (maximum !== null && value > maximum) {
+        throw new ReadArgsError(
+            `\`${field}\` must be ${maximum} or less, not ${value}. Page the document instead: addresses are minted across the whole of it, so paging never changes one.`,
+        );
     }
     return value;
 };
@@ -65,10 +84,12 @@ const requireInteger = (value, field, minimum, hint) => {
  * Resolves `limit`/`offset` for a structure read, or throws `invalid_request`.
  *
  * Absent (`undefined` or `null`) means "no preference" and takes the default.
- * Anything present must be a valid integer -- including 0, which is a real
- * request for zero paragraphs and not a way of asking for all of them.
+ * Anything present must be an integer within the bounds the tool schema
+ * declares: `limit` from 1 to MAX_READ_LIMIT, `offset` from 0. In particular
+ * `limit: 0` is rejected rather than treated as "no preference" -- downstream it
+ * would mean "every paragraph", which is what this module exists to prevent.
  */
-export function normalizeReadArgs(args, { defaultLimit = DEFAULT_READ_LIMIT } = {}) {
+export function normalizeReadArgs(args, { defaultLimit = DEFAULT_READ_LIMIT, maxLimit = MAX_READ_LIMIT } = {}) {
     const source = args ?? {};
     const limit = source.limit ?? null;
     const offset = source.offset ?? null;
@@ -77,7 +98,17 @@ export function normalizeReadArgs(args, { defaultLimit = DEFAULT_READ_LIMIT } = 
         limit:
             limit === null
                 ? defaultLimit
-                : requireInteger(limit, "limit", 1, `Omit \`limit\` for the default of ${defaultLimit}.`),
-        offset: offset === null ? 0 : requireInteger(offset, "offset", 0, "Omit `offset` to start at the beginning."),
+                : requireInteger(limit, "limit", {
+                      minimum: 1,
+                      maximum: maxLimit,
+                      hint: `Omit \`limit\` for the default of ${defaultLimit}.`,
+                  }),
+        offset:
+            offset === null
+                ? 0
+                : requireInteger(offset, "offset", {
+                      minimum: 0,
+                      hint: "Omit `offset` to start at the beginning.",
+                  }),
     };
 }

@@ -16,7 +16,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { DEFAULT_READ_LIMIT, ReadArgsError, normalizeReadArgs } from "../../src/word/read-args.mjs";
+import { DEFAULT_READ_LIMIT, MAX_READ_LIMIT, ReadArgsError, normalizeReadArgs } from "../../src/word/read-args.mjs";
 import { buildStructureMap } from "../../src/word/structure-map.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -45,9 +45,39 @@ test("an absent limit takes the default", () => {
 test("a present limit is honoured, including offset 0", () => {
     assert.deepEqual(normalizeReadArgs({ limit: 5, offset: 0 }), { limit: 5, offset: 0 });
     assert.deepEqual(normalizeReadArgs({ limit: 1 }), { limit: 1, offset: 0 });
-    // No upper bound is enforced: slice already answers an over-large limit
-    // correctly, so rejecting it would refuse a request we can satisfy.
-    assert.deepEqual(normalizeReadArgs({ limit: 10_000_000 }), { limit: 10_000_000, offset: 0 });
+    assert.deepEqual(normalizeReadArgs({ limit: MAX_READ_LIMIT }), { limit: MAX_READ_LIMIT, offset: 0 });
+});
+
+test("a limit above the declared maximum is rejected", () => {
+    // This test previously asserted the opposite -- that 10_000_000 was accepted
+    // -- on the argument that slice clamps it anyway, so refusing would refuse a
+    // request we can satisfy. That missed that the tool schema *declares*
+    // `maximum`, which makes the bound a promise to the caller rather than an
+    // internal preference. Unenforced, the contract answered differently
+    // depending on whether the host pre-validates: either an upstream rejection
+    // in some other shape, or a declaration that is false.
+    const err = rejects({ limit: MAX_READ_LIMIT + 1 }, "limit");
+    assert.match(err.message, new RegExp(`${MAX_READ_LIMIT} or less`));
+    rejects({ limit: 10_000_000 }, "limit");
+});
+
+test("the schema declares the same maximum the validator enforces", async () => {
+    // The bound is stated twice by necessity -- once as a JSON-schema number the
+    // model reads, once as a comparison the runtime makes. Deriving both from
+    // MAX_READ_LIMIT is what keeps them one number; this is the test that says
+    // so, in the same spirit as the supported-extension list.
+    //
+    // Scoped to read_document's own schema on purpose: the canvas actions
+    // declare numeric maximums of their own, and a file-wide assertion would
+    // fail on unrelated code -- claiming a rule over a surface this module does
+    // not own.
+    const source = await readFile(path.join(here, "..", "..", "extension.mjs"), "utf8");
+    const start = source.indexOf('name: "read_document"');
+    assert.ok(start > 0, "expected to find the read_document tool");
+    const schema = source.slice(start, source.indexOf("\n};", start));
+
+    assert.match(schema, /maximum: MAX_READ_LIMIT/, "the schema must declare the enforced constant");
+    assert.doesNotMatch(schema, /maximum: \d+/, "a literal maximum in the schema can drift from the validator");
 });
 
 test("limit: 0 is rejected rather than silently meaning everything", () => {
