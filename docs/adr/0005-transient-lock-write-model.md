@@ -194,3 +194,59 @@ this ADR will eventually ask, and one that would otherwise be answered by
 guessing at a sleep. The poll stays anyway, because it costs nothing when the
 answer is immediate and it is the only thing that would catch the day it is not.
 
+## Amendment (2026-08-28, third): the write path's error vocabulary
+
+ADR 0006 fixes a typed-error table and says not to mint new codes. The write path
+reuses it verbatim where a failure is genuinely the same event — `file_locked`,
+`permission_denied`, `file_not_found`, `word_unavailable`, `word_timeout`,
+`invalid_request` all mean on a write exactly what they mean on a read, and the
+edit path raises them unchanged.
+
+Eleven codes are new. They are not synonyms for anything in ADR 0006; each names
+a failure that **cannot occur on a read**, because it is about an edit's
+precondition or its outcome.
+
+Five are **pre-flight rejections** from `validateIntent`. They are grouped
+separately because they share a guarantee the others cannot make: they are
+raised before Word is started and before a snapshot is taken, so the document is
+untouched *by construction* rather than by inspection.
+
+| code | the request was malformed because… |
+| --- | --- |
+| `unknown_operation` | `op` is not one of the operations in `OPERATIONS` |
+| `invalid_address` | `address` is not a well-formed `p:` address |
+| `invalid_text` | `text` is absent, not a string, too long, or contains a break |
+| `invalid_heading_level` | `headingLevel` is not an integer within `MIN_HEADING_LEVEL`…`MAX_HEADING_LEVEL` |
+| `invalid_intent` | the shape is wrong — a non-object, or a field the op does not take |
+
+The remaining six are about an edit that was actually attempted:
+
+| code | means | agent's next move |
+| --- | --- | --- |
+| `stale_revision_token` | the file changed since the read that minted the address | re-read, re-address, retry |
+| `address_not_found` | **detected in-process:** the address is not in the document's current structure map at all | re-read; the paragraph is gone or its text changed |
+| `address_not_resolvable` | **detected at COM time:** the address mapped to a paragraph index, but that paragraph's text no longer matches what the address was minted from, or the index is now past the end | re-read; same cause, caught one layer later |
+| `edit_not_persisted` | Word reported success but the file is byte-for-byte unchanged | safe to retry; the original is provably untouched |
+| `edit_failed` | the host reported a failure and the outcome may be unknown | **read `data` before retrying** (see below) |
+| `no_snapshot` | `revert_document` found no recovery point for this document | nothing to revert; not an error state for the document itself |
+
+The distinction that matters most is `edit_not_persisted` versus `edit_failed`.
+The first is a *clean* refusal — the post-edit hash equals the pre-edit hash, so
+the file on disk is byte-identical to before and a retry is free. The second may
+have half-written the document, so the error carries recovery facts on `data`
+(`snapshot`, `rolledBack`, `documentUnchanged`) and the agent must consult them
+rather than blindly retrying.
+
+That two of these codes (`address_not_found` and `address_not_resolvable`) name
+the same underlying event caught at different layers is deliberate, not an
+oversight to be collapsed. They carry different evidence: the in-process one
+knows the document's paragraph count, the COM-time one knows the text it
+actually found. Merging them would discard whichever half the caller needed.
+
+Those facts live on `data` and in the message specifically because the tool
+boundary forwards only `code`, `message` and `data` — anything set as a
+top-level property of the error is silently dropped before the agent sees it.
+That is not a detail of this ADR's design; it is the reason the recovery
+contract is expressible at all, and a test that asserts on the editor's error
+object instead of the tool's response cannot see the difference.
+

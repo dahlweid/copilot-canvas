@@ -32,8 +32,14 @@ const ADDRESS_PATTERN = /^p:[0-9a-f]{12}$/;
 /** Generous, but not unbounded: a single paragraph is not a document. */
 const MAX_TEXT_LENGTH = 50_000;
 
-const MIN_HEADING_LEVEL = 0;
-const MAX_HEADING_LEVEL = 9;
+/**
+ * Exported because `edit_document`'s schema declares this same bound. L1 hit
+ * the drift version of this with `limit` -- a schema that advertised one bound
+ * while the runtime enforced another -- and fixed it by making the declared
+ * and the enforced bound one constant. Same shape here: change it once.
+ */
+export const MIN_HEADING_LEVEL = 0;
+export const MAX_HEADING_LEVEL = 9;
 
 export class EditIntentError extends Error {
     constructor(code, message) {

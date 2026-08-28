@@ -329,7 +329,8 @@ export class WordHost {
         return this.#send("edit", { path: docPath, wordIndex, expectedText, op, text, headingLevel }, timeoutMs);
     }
 
-    outline({ docId, limit }) {        return this.request("outline", { docId, limit });
+    outline({ docId, limit }) {
+        return this.request("outline", { docId, limit });
     }
 
     search({ docId, query, limit, matchCase, wholeWord }) {

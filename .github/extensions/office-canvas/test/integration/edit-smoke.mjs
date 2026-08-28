@@ -6,7 +6,10 @@
 // test can reach, and every one of them was a surprise when first measured:
 //
 //   * An edit reaches the user's own file, in place, and the lock is gone
-//     afterwards (ADR 0005). The budget is one warm operation, ~228 ms.
+//     afterwards (ADR 0005). Measured warm: ~158 ms of Word work (open 80 /
+//     edit 15 / save 63) inside ~281 ms end to end. Typical-case figures on a
+//     quiet machine, not bounds -- nothing here asserts an upper bound on
+//     Word's own timing.
 //   * A mark-of-the-web document can be edited *without* stripping its zone
 //     marker, via the Protected View route (ADR 0007). Measured: a plain
 //     `Documents.Open` on such a file hangs forever rather than failing.

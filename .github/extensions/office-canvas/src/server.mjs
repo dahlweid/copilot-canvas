@@ -278,8 +278,10 @@ export class ViewerInstance {
         // The invariant that replaces it is narrower but still holds: the hidden
         // instance holds the original only for the length of one operation, and
         // every edit is gated on a write-handle probe first. So the two can
-        // collide, and when they do the edit is refused with document_locked
-        // rather than either side corrupting the file.
+        // collide, and when they do the edit is refused with `file_locked`
+        // rather than either side corrupting the file. (`document_locked` is
+        // the host's internal status for it; the code a caller sees is
+        // `file_locked`.)
         //
         // The collision is asymmetric and only bites in this direction: a
         // document held by the user's Word still *reads* fine, because the read

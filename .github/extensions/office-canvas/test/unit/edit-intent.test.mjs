@@ -6,10 +6,15 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
     describeIntent,
     EditIntentError,
+    MAX_HEADING_LEVEL,
+    MIN_HEADING_LEVEL,
     OPERATION_NAMES,
     validateIntent,
 } from "../../src/word/edit-intent.mjs";
@@ -147,4 +152,52 @@ test("rejects a non-object intent", () => {
     for (const input of [null, undefined, "replace_text", 3, []]) {
         assert.ok(["invalid_intent", "unknown_operation"].includes(codeOf(() => validateIntent(input))));
     }
+});
+
+// --- The declared bound and the enforced bound are one constant -------------
+//
+// L1 hit the drift version of this on `limit`: the tool schema advertised one
+// bound while the runtime enforced another, so the agent was told a value was
+// legal and then refused for using it. The fix there was to export the
+// constant and consume it in the schema; these two tests are what keep that
+// true here, and they are deliberately different in kind.
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const extensionSource = await readFile(path.join(here, "..", "..", "extension.mjs"), "utf8");
+
+test("the schema's heading-level bound is derived, not restated", () => {
+    // Asserting the rendered bound equals the constant would be a tautology
+    // once it derives. So look for the defect itself -- a numeric literal in
+    // the `headingLevel` block -- the way supported-types.test.mjs does.
+    const block = extensionSource.match(/headingLevel: \{[\s\S]*?\n {12}\}/)?.[0];
+    assert.ok(block, "could not find the headingLevel schema block in extension.mjs");
+
+    assert.doesNotMatch(
+        block,
+        /(minimum|maximum): *\d/,
+        "the headingLevel schema states a numeric bound instead of deriving it from edit-intent.mjs",
+    );
+    assert.match(block, /minimum: MIN_HEADING_LEVEL/);
+    assert.match(block, /maximum: MAX_HEADING_LEVEL/);
+
+    // The description is the part the model actually reads, and it carried its
+    // own hardcoded copy of the same numbers.
+    assert.doesNotMatch(
+        block,
+        /Heading level: *\d/,
+        "the headingLevel description spells out the bound instead of deriving it",
+    );
+});
+
+test("validateIntent enforces exactly the bound the schema declares", () => {
+    // The pair, not either half: a shared constant makes the two *agree*, but
+    // only this asserts the runtime actually refuses what the schema forbids.
+    const at = (headingLevel) => () =>
+        validateIntent({ op: "set_heading_level", address: "p:0123456789ab", headingLevel });
+
+    assert.equal(at(MIN_HEADING_LEVEL)().headingLevel, MIN_HEADING_LEVEL);
+    assert.equal(at(MAX_HEADING_LEVEL)().headingLevel, MAX_HEADING_LEVEL);
+
+    assert.equal(codeOf(at(MIN_HEADING_LEVEL - 1)), "invalid_heading_level");
+    assert.equal(codeOf(at(MAX_HEADING_LEVEL + 1)), "invalid_heading_level");
 });
