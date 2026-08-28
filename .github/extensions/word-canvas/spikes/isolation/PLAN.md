@@ -1,8 +1,13 @@
 # Live Office Streaming — Build Plan
 
-**Status:** proposal, pending rubber-duck review
+**Status:** reviewed twice and **decided** — see §14. Streaming is *not* being built.
 **Supersedes:** the verdict in `spikes/live-word/FINDINGS.md` ("PDF for v1, streaming is the path to editing")
-**Scope:** Word first, Excel and PowerPoint by design
+**Scope:** Word only. Excel and PowerPoint are out of scope until they have their own probes (§14.3).
+
+> **Read §14 first.** Sections 1–10 are the streaming proposal as originally drafted, kept
+> because the measurements in them are real and several are load-bearing for what was actually
+> chosen. Sections 11–13 are the three rounds of critique that dismantled the proposal, and
+> §14 is the decision that came out of it. Reading 1–10 as current guidance will mislead you.
 
 ---
 
@@ -23,13 +28,14 @@ can be made completely invisible to the user *and still render and capture*, and
 entirely through COM across that isolation boundary. That changes the trade-off enough to
 justify rebuilding the renderer.
 
-> **Read §11 and §12 first.** A third option — keep the static, colour-correct, accessible PDF
-> as the *display* path and use the hidden live instance purely as an *edit* channel — was
-> measured after this plan was drafted and **wins**. Single-page re-export costs 168 ms and is
-> flat in page position, so it hides behind an optimistic overlay. An independent critique
-> (§12) reached the same conclusion, and re-measurement showed §6 below is wrong. §11
-> supersedes phases 3 onward; §4 (isolation) and §5 (COM edit channel) survive, because
-> option C needs both.
+> **This section's premise was overturned twice.** A third option — keep the static,
+> colour-correct, accessible PDF as the *display* path and use the hidden live instance purely
+> as an *edit* channel — was measured after this plan was drafted and **wins** (§11). Two
+> independent critiques agreed (§12, §13), and re-measurement showed §6 is wrong, §8.1 had no
+> control, and §2.1's frame-rate comparison was unnormalised. §14 records the decision:
+> single-page re-export costs **168 ms** and is flat in page position, which is what makes
+> streaming unnecessary. §4 (isolation) and §5 (COM edit channel) survive; the pixel-capture
+> work does not.
 
 ---
 
