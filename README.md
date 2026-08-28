@@ -139,6 +139,12 @@ if a `WINWORD.EXE` is left behind.
 | `src/watcher.mjs` | Change detection with settle-polling for multi-step writers |
 | `src/store.mjs` | Recents, under the user's Copilot home |
 | `src/ui/` | The viewer front-end |
+| `spikes/live-word/` | Comparison spike: streaming a live Word window instead of a PDF |
+
+`spikes/live-word/FINDINGS.md` records why the PDF renderer was chosen over pixel-streaming a
+live Word window, with measurements. Short version: streaming is fast enough (29 fps) and
+accurate, but it needs a *visible* Word window and gives up native text selection, search and
+print — a bad trade for a read-only viewer, and the obvious path to take up again for editing.
 
 When editing the extension, run `extensions_reload` before testing — and never `console.log`
 from `extension.mjs`, since stdout carries JSON-RPC. Use `session.log` instead.
