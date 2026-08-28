@@ -88,26 +88,36 @@ Failures carry a typed code, and there are **two surfaces** that emit them. A
 layer branching on a code has to know which one it is talking to, because the
 two sets barely overlap.
 
-**Extension surface** — what a tool or canvas action raises today, before any
-Word process is involved: `invalid_path`, `unsupported_type`, `file_not_found`,
-`not_open`, `invalid_query`, `invalid_json`, `payload_too_large`, plus
-`canvas_not_open` and `no_document` from canvas actions, and `internal` /
-`not_found` from the viewer's HTTP routes.
+These lists are the codes **worth branching on**, not an inventory. Hand-kept
+inventories drift — this section has already been wrong twice that way, and no
+single grep finds every site (some codes sit on a continuation line of a
+multi-line call). The source is authoritative: extension codes are the first
+argument to `new CanvasError(...)` or `new DocumentError(...)`, host codes are
+the second argument to `Send-Fail` in `word-host.ps1`.
 
-**Word host surface** — what the PowerShell host reports over the JSON protocol.
-Today it emits exactly one code, `word_error`, for everything; the typed set
-below arrives with `read_document` and is not on `main` yet:
-`file_not_found`, `file_locked`, `permission_denied`, `document_unreadable`,
-`copy_failed`, `write_failed`, `no_such_document`, `word_unavailable`,
-`word_timeout`, `page_out_of_range`, `invalid_request`,
-`document_changed_during_read`, with `word_error` kept as the fallback for
-anything with no more specific code. `word_unavailable`, `word_timeout` and
-`word_error` are also minted on the Node side when the host itself dies or
-overruns, so those three reach a caller whether or not the host is reached at
-all.
+**Extension surface** — raised by a tool, a canvas action or the viewer's HTTP
+routes, mostly before any Word process is involved: `invalid_path`,
+`unsupported_type`, `file_not_found`, `not_open`, `invalid_query`,
+`invalid_json`, `payload_too_large`, `canvas_not_open`, `no_document`,
+`page_out_of_range`, `internal`, `not_found`, and `word_canvas_error` as the
+fallback when a canvas action's Word call fails with nothing more specific.
 
-`file_not_found` is the only code common to both, and it means the same thing in
-each. Everything else is surface-specific.
+**Word host surface** — the PowerShell host over the JSON protocol. Today it
+emits **two** codes: `word_error` for any COM failure and `unknown_command` for
+a `cmd` it does not recognise, the latter being a protocol bug rather than
+anything a layer handles. Separately, `word_unavailable` and `word_timeout` are
+minted **Node-side** in `word-host.mjs` when the host dies or overruns, so they
+reach a caller without the host ever being asked.
+
+The typed set arrives with `read_document` and is **not on `main` yet**:
+`file_locked`, `permission_denied`, `document_unreadable`, `copy_failed`,
+`write_failed`, `no_such_document`, `invalid_request`,
+`document_changed_during_read` — alongside `file_not_found`, `word_unavailable`,
+`word_timeout` and `page_out_of_range`, which already exist, and `word_error`,
+which stays as the fallback rather than being replaced.
+
+`file_not_found` is the only code common to both surfaces today, and it means the
+same thing in each. Everything else is surface-specific.
 
 Most of the host's codes mean what they say. Two do not — `file_locked` and
 `permission_denied` — and a third trap is not a code at all: `writable` is a
@@ -208,3 +218,40 @@ What the agent submits to change or author a document — headings, paragraphs,
 tables and lists — which the extension translates into COM calls. Deliberately
 not OOXML, and deliberately not prose.
 _Avoid_: command, patch, script
+
+### Review
+
+Every PR gets a Copilot review. Reply to every comment, push, re-request,
+repeat. The coordinator requests and merges; the owning session replies and
+pushes, so two worktrees never touch one branch.
+
+**Six rounds, then merge.** This is a hard cap, not a target. At round six the
+PR merges with any remaining comments declined explicitly in a reply. The one
+thing that may go past six is a **correctness or data-loss defect**, and it buys
+exactly one more round — it does not reset the counter.
+
+The cap exists because the loop has no natural end. The reviewer re-scans
+unchanged code every round and surfaces different **suppressed** findings each
+time, so "0 new comments" never means "clear" — on #12, rounds four and five
+both reported zero new comments and both carried real suppressed findings. A
+reviewer that keeps finding things is not evidence the file is getting better.
+
+What the rounds were actually worth, measured on the first two PRs to run the
+full loop:
+
+| rounds | what they produced |
+| --- | --- |
+| 1–3 | the only findings that changed shipping code — including the path-quoting comment that exposed `cmd.exe /c start` corrupting 3 of 9 ordinary filenames |
+| 4–6 | documentation and contract precision: stale comments, miscounts, a schema bound the runtime did not enforce |
+| 6+ | not observed to produce anything, on a diff of +3860/−107 across 29 files |
+
+Declining is a real outcome and must be recorded as one: reply saying why, so
+the next engineer sees a decision rather than an omission. Replies are for the
+human record — Copilot cannot read them.
+
+**Lite is a floor.** Effort level is UI-only and cannot be set from the CLI;
+every review is labelled with its level, so check rather than assume. A clean
+Lite pass means the cheap checks passed, not that the code is right — an
+independent deeper pass over #16 found a critical data-loss defect that six Lite
+rounds elsewhere never approached.
+
