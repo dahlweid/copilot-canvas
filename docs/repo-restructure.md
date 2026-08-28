@@ -264,15 +264,15 @@ Do this split **before** writing `validate.yml`, otherwise the workflow is decor
 | --- | --- | --- | --- |
 | 1 | Rename the repo; update remotes and README | — | **done** |
 | 2 | Collapse to one `office-canvas` extension; move `spikes/` out; add `copilot-extension.json` | — | **done** |
-| 3 | Split tests into `unit/` and `integration/` | — | **dirs only** — `unit/` is empty |
-| 4 | `tools/validate-extensions.mjs` + `validate.yml` | 2, 3 | blocked on 3 |
+| 3 | Split tests into `unit/` and `integration/` | — | **done** — 42 Office-free tests |
+| 4 | `tools/validate-extensions.mjs` + `validate.yml` | 2, 3 | **done** — green on `ubuntu-latest` |
 | 5 | `tools/package-extension.mjs` + `release.yml` | 2 | ready |
 | 6 | Probe: does pdf.js need its binary font files? (§3.2) | — | open |
 | 7 | Self-hosted Windows+Office runner, licence permitting | licence check | open |
 
-Step 3 is the one that matters: the directories exist but `unit/` has nothing in it, so
-step 4 would produce a workflow that runs zero tests and reports green. **Write the first
-Office-free tests before writing `validate.yml`**, or the badge lies.
+Step 3 is done. It was the one that mattered: the directories existed but `unit/` had
+nothing in it, so step 4 would have produced a workflow that runs zero tests and reports
+green. §5.2 records what running them actually found.
 
 Step 7 may never be worth it. Step 6 is a decision this document deliberately leaves open
 rather than guessing at.
@@ -287,3 +287,25 @@ suites pass unchanged against the moved tree — 18/18 host, 16/16 cache, 29/29 
 `WINWORD.EXE` left behind. `node --check` passes on every `.mjs`, the manifest name matches
 its folder, no `package.json` exists in the extension (C2), and the folder now contains zero
 binary files (C4).
+
+### 5.2 Verification of steps 3–4
+
+The worry above — a workflow that runs zero tests and reports green — is answered by
+running the suite somewhere Office does not exist. **42/42 pass on Linux x86_64 (WSL,
+Node 22.11.0) with no Word and no PowerShell on `PATH`**, and the same 42 pass on Windows.
+The workflow does exactly what that check did, so the badge is load-bearing.
+
+Two things were found by writing the tests rather than by reading the code:
+
+- **`bytes=-500` was served as bytes 0–500.** A suffix range means the *last* 500 bytes
+  (RFC 9110 §14.1.2). Extracting `parseByteRange` for testability exposed it. This was
+  latent because the host's native PDF viewer never sent one; pdf.js (ADR 0004) fetches the
+  trailer that way, and would have received plausible garbage instead of an error.
+- **The C3 self-containment check missed bare `import "…"`.** It matched only the
+  `from`-bearing and dynamic forms, so a side-effect import escaping the folder passed. The
+  fault-injection test caught this on its first run — which is the argument for having
+  written it. All five import shapes are now covered.
+
+`validator.test.mjs` breaks one invariant at a time in a staged copy of the repo and asserts
+the validator rejects it *and* accepts the untouched copy, so the failures cannot be an
+artefact of everything being broken.

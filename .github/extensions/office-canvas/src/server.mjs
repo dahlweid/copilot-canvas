@@ -36,6 +36,36 @@ const json = (res, status, body) => {
     res.end(payload);
 };
 
+/**
+ * Parses a single-range HTTP `Range` header against an entity of `size` bytes.
+ *
+ * Returns `null` when the whole entity should be sent (absent, malformed, or
+ * multi-range — RFC 9110 says ignore what we cannot honour), the string
+ * `"unsatisfiable"` for a 416, or an inclusive `{ start, end }`.
+ *
+ * `bytes=-N` is a *suffix* range meaning the final N bytes, which is how PDF
+ * readers fetch the trailer to find the cross-reference table. Reading it as
+ * `0-N` returns plausible-looking bytes from the wrong end of the file.
+ */
+export function parseByteRange(headerValue, size) {
+    const match = /^bytes=(\d*)-(\d*)$/.exec((headerValue ?? "").trim());
+    if (!match) return null;
+    const [, rawStart, rawEnd] = match;
+    if (rawStart === "" && rawEnd === "") return null;
+
+    if (rawStart === "") {
+        const wanted = Number(rawEnd);
+        if (!Number.isFinite(wanted) || wanted === 0 || size === 0) return "unsatisfiable";
+        return { start: Math.max(0, size - wanted), end: size - 1 };
+    }
+
+    const start = Number(rawStart);
+    if (!Number.isFinite(start) || start >= size) return "unsatisfiable";
+    const end = rawEnd === "" ? size - 1 : Math.min(Number(rawEnd), size - 1);
+    if (!Number.isFinite(end) || end < start) return "unsatisfiable";
+    return { start, end };
+}
+
 async function readBody(req, limit = 64 * 1024) {
     const chunks = [];
     let size = 0;
@@ -318,19 +348,19 @@ export class ViewerInstance {
 
         // The embedded PDF viewer requests byte ranges; without this it either
         // refuses to load or downloads the whole file for every page jump.
-        const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range ?? "");
+        const range = parseByteRange(req.headers.range, info.size);
+        if (range === "unsatisfiable") {
+            res.writeHead(416, { "Content-Range": `bytes */${info.size}` });
+            return res.end();
+        }
         if (range) {
-            const start = range[1] ? Number(range[1]) : 0;
-            const end = range[2] ? Math.min(Number(range[2]), info.size - 1) : info.size - 1;
-            if (Number.isNaN(start) || Number.isNaN(end) || start > end || start >= info.size) {
-                res.writeHead(416, { "Content-Range": `bytes */${info.size}` });
-                return res.end();
-            }
+            const { start, end } = range;
             res.writeHead(206, {
                 ...headers,
                 "Content-Range": `bytes ${start}-${end}/${info.size}`,
                 "Content-Length": end - start + 1,
             });
+            if (req.method === "HEAD") return res.end();
             return createReadStream(file, { start, end }).pipe(res);
         }
 
