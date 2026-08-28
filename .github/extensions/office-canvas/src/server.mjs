@@ -10,7 +10,7 @@ import { readFile, readdir, stat } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { DocumentError, normalizeDocPath } from "./render-cache.mjs";
+import { DocumentError, normalizeDocPath, SUPPORTED } from "./render-cache.mjs";
 import { FileWatcher } from "./watcher.mjs";
 import { addRecent, readRecents } from "./store.mjs";
 
@@ -23,7 +23,11 @@ const MIME = {
     ".svg": "image/svg+xml",
 };
 
-const DOC_EXTENSIONS = new Set([".docx", ".docm", ".doc", ".rtf"]);
+// The picker offers exactly what the cache will open. Its own copy of this set
+// had drifted -- it omitted `.dotx`, so a template in the workspace was hidden
+// from the picker while `open_document` on the same path succeeded. Exported so
+// a unit test can assert the two stay equal.
+export const DOC_EXTENSIONS = SUPPORTED;
 const SCAN_SKIP = new Set(["node_modules", ".git", "bin", "obj", "dist", "build", ".venv", "__pycache__"]);
 
 const json = (res, status, body) => {

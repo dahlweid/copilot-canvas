@@ -36,7 +36,21 @@ export function normalizeDocPath(input) {
 
 const identityOf = (docPath) => (process.platform === "win32" ? docPath.toLowerCase() : docPath);
 
-const SUPPORTED = new Set([".docx", ".docm", ".doc", ".dotx", ".rtf"]);
+/**
+ * The extensions Word will open as a document. **The single source of truth.**
+ *
+ * Every statement of this set elsewhere -- the tool parameter descriptions the
+ * model reads, the picker's workspace scan -- is derived from it rather than
+ * restated. Three independent copies had already drifted: two tool
+ * descriptions and the picker's own set all omitted `.dotx`, so the agent was
+ * told templates were unsupported and the picker hid them, while the code
+ * opened them happily. A restatement is a copy that will drift; deriving is
+ * what makes adding an extension here update the contract everywhere.
+ */
+export const SUPPORTED = new Set([".docx", ".docm", ".doc", ".dotx", ".rtf"]);
+
+/** The supported extensions as prose, for tool descriptions and messages. */
+export const supportedList = () => [...SUPPORTED].join(", ");
 
 /** Normalizes a path and rejects anything Word will not open as a document. */
 export function requireSupported(rawPath) {
@@ -45,7 +59,7 @@ export function requireSupported(rawPath) {
     if (!SUPPORTED.has(ext)) {
         throw new DocumentError(
             "unsupported_type",
-            `${ext || "This file"} is not a Word document. Supported: ${[...SUPPORTED].join(", ")}.`,
+            `${ext || "This file"} is not a Word document. Supported: ${supportedList()}.`,
         );
     }
     return docPath;

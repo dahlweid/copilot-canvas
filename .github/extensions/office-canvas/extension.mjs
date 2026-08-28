@@ -13,7 +13,7 @@
 
 import path from "node:path";
 import { createCanvas, CanvasError, joinSession } from "@github/copilot-sdk/extension";
-import { RenderCache, DocumentError, normalizeDocPath } from "./src/render-cache.mjs";
+import { RenderCache, DocumentError, normalizeDocPath, supportedList } from "./src/render-cache.mjs";
 import { ViewerInstance } from "./src/server.mjs";
 import { artifactsRoot } from "./src/store.mjs";
 import { createIdleShutdown } from "./src/word-lifecycle.mjs";
@@ -141,7 +141,8 @@ const wordCanvas = createCanvas({
             path: {
                 type: "string",
                 description:
-                    "Absolute or workspace-relative path to a Word document (.docx, .docm, .doc, .rtf). Omit to open the canvas on its document picker.",
+                    `Absolute or workspace-relative path to a Word document (${supportedList()}). ` +
+                    `Omit to open the canvas on its document picker.`,
             },
         },
         additionalProperties: false,
@@ -364,7 +365,7 @@ const readDocumentTool = {
         properties: {
             path: {
                 type: "string",
-                description: "Absolute or workspace-relative path to a Word document (.docx, .docm, .doc, .rtf).",
+                description: `Absolute or workspace-relative path to a Word document (${supportedList()}).`,
             },
             limit: {
                 type: "integer",
