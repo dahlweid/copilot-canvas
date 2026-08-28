@@ -43,12 +43,33 @@ _Avoid_: backup, working copy
 **Lock window**:
 The span within an operation during which the file is open and therefore
 unwritable by anyone else. Kept as short as possible, because while it is open
-no script can regenerate the document and no other Word can open it.
+no script can regenerate the document and no other Office process can open it.
+A second process attempting to open a held file does not fail — it **blocks
+indefinitely with no dialog**, measured for both Word and PowerPoint, and needs
+an external kill. That is why every open is timeout-bounded and why a lock is
+detected by probing for a write handle rather than by attempting an open. The
+same silent-hang shape occurs on a file carrying a mark-of-the-web; see ADR 0005
+and ADR 0007.
 
 **Hidden instance**:
-The extension's own Office process, `Visible = false`, which no human ever
-interacts with. One per application.
+The Office process the extension drives, `Visible = false`, which no human ever
+interacts with. **Word only.** Word is multi-instance, so each COM activation
+starts a `WINWORD.EXE` that is genuinely ours to quit and, if necessary, kill.
 _Avoid_: background Word, server instance
+
+**Attached instance**:
+What a COM activation gives for PowerPoint, which registers one automation
+server per session: the object returned *is the user's PowerPoint* if one is
+running. It is not hidden and it is not ours. `Quit()` on it closes the user's
+decks and killing its pid kills their session, so neither is ever permitted.
+Distinguishing this from a hidden instance is a correctness rule, not hygiene.
+See ADR 0003.
+
+**Isolated instance**:
+A genuinely private Office process obtained by launching on a separate desktop
+and binding through `OBJID_NATIVEOM` — the only way to get one for PowerPoint.
+Costs roughly 12 s to reach a bound instance against 1 s for a COM attach, which
+is why it cannot be opened lazily on first interaction.
 
 **User instance**:
 The user's own visible Office application, opened by "Edit in Word". Outside
@@ -91,8 +112,23 @@ _Avoid_: outline, index, model
 **Address**:
 An ID from a structure map, identifying the paragraph an edit applies to.
 Derived from heading path, text and occurrence index, because Word exposes no
-stable paragraph identity of its own.
+stable paragraph identity of its own. **A coordinate, not a handle**: valid
+within one read-then-edit cycle and never cached across an edit. Deleting one of
+several identically-worded paragraphs renumbers its successors, so a stale
+address stays *valid* while pointing at different content; renaming a heading
+moves every address beneath it.
 _Avoid_: selector, locator, range
+
+**Translated identity**:
+Any name that Office localizes, which therefore differs between what COM reports
+and what the file stores. PowerPoint reports a shape as `Title 1` while the
+`.pptx` stores `Titel 1`; Word mints style ids from the localized name with
+non-ASCII dropped, so Heading 1 is `berschrift1` on disk. Two applications, two
+mechanisms, one rule: **never join COM-side and file-side identity on anything a
+human could have translated.** Join on structural keys — `p:ph/@type` for
+placeholders — and carry style ids verbatim rather than constructing or matching
+them.
+_Avoid_: display name, style name (as identifiers)
 
 **Revision token**:
 A hash of the file, returned with a structure map and required by any edit. A
