@@ -614,3 +614,201 @@ risks. Option C is therefore the stronger form of the critique's own recommendat
    pending their own geometry probes (§7's adapter seam is thinner than claimed).
 7. Build a **disposable typing/caret/selection prototype before** the production renderer, so
    the editing feel is judged before anything durable is built on it.
+
+---
+
+## 13. Second critique - the one that ran its own probes
+
+A second reviewer re-ran four independent probes on this machine rather than reasoning from
+the write-up. It reached the same destination as section 11 (build the third option) **and**
+**falsified two claims this document was making**. Its own summary:
+
+> The plan is technically more feasible than its critics claimed and less valuable than its
+> author believes.
+
+### 13.1 Claims of mine that were wrong
+
+**The hardware-acceleration result had no positive control.** Section 8.1 reported identical
+readings with acceleration ON and OFF (rightness=41.2 colours=304) and concluded the
+concern was closed. Identical *to one decimal place and to the exact distinct-colour count*
+is not corroboration - it is the signature of a setting Word never consumed. Nothing verified
+that DisableHardwareAcceleration took effect. **Section 8.1's conclusion is withdrawn.** It
+is the weakest evidence in this document, not the strongest.
+
+**R3 - the frame-rate penalty - does not exist.** I compared 61.6 ms (hidden desktop, `_WwG`
+at 900x1200) against the spike's 34.3 ms (input desktop, 560x950) without normalising for
+area. Same-harness measurements on the hidden desktop:
+
+| Capture target | Mean |
+| --- | --- |
+| 529x726 | **24.0 ms/frame** |
+| 900x1200 | **36.1 ms/frame** |
+
+Interpolated to 560x950, the hidden desktop lands near 26 ms against the spike's 29.2 ms on
+the input desktop. **There is no measurable non-input-desktop penalty. R3 and its entire
+mitigation list should be deleted.**
+
+That is the third instance in this project of a number being read without normalising a
+variable - after the acceleration control and the theme timing below. Section 2.4 diagnosed
+this codebase as over-trusting confident conclusions. It had not yet applied that to its own
+arithmetic.
+
+**My dark-mode test was contaminated.** `probe-bench.ps1` set `UI Theme = 5`, then restored
+it 3 s after `CreateProcess` - while the window was still 8 s from existing. Word had almost
+certainly not read it. Re-tested holding the value across the *entire* startup: the page is
+still dark, `brightness=49.0 colours=92`. A registry sweep found no other local dark-page
+value. The conclusion survives, but not because of my measurement. Both probes are now
+annotated in place.
+
+### 13.2 The mechanism behind the decisive result, and why it is fragile
+
+`PrintWindow` was tested flag by flag on the hidden desktop, on the top-level `OpusApp`:
+
+| Flag | Result |
+| --- | --- |
+| `0` (plain `WM_PRINT`) | `brightness=0.0 colours=1` - **pure black** |
+| `1` (`PW_CLIENTONLY`) | `brightness=0.0 colours=1` - **pure black** |
+| `2` (`PW_RENDERFULLCONTENT`) | `brightness=48.1 colours=268` - real render |
+
+Capture works **only** through the DWM-backed path. The research agent's *premise* - that
+this depends on DWM compositing - was therefore correct; only its conclusion was wrong.
+Section 2.4 recorded the lesson as "plausible secondary sources are not evidence". The
+sharper and less comfortable lesson is:
+
+> We depend on DWM compositing a desktop object that is never displayed. That is undocumented
+> behaviour, not a contract, and there is no fallback if it stops.
+
+This turns R2 from "might not generalise" into a named mechanism with predictions. DWM
+discards or parks redirection surfaces at exactly: workstation lock, session disconnect, RDP
+transitions, display sleep, GPU driver reset (TDR), and display hot-unplug. The top untested
+row in section 8.1 - locked workstation - is the single most DWM-sensitive case. That is not
+a coincidence; it is the mechanism pointing at where to look.
+
+Consequence: locked workstation, RDP disconnect and sleep/resume must be **hard gates in
+phase 1**, not matrix cells. If any fails, rank-1 isolation dies and the fallback is rank 2 -
+a genuinely visible window parked at x=30000, which `FINDINGS.md` explicitly refused to ship.
+
+### 13.3 Fidelity is a category error, not a bug
+
+Streaming captures Word's **editing view**. `ExportAsFixedFormat` renders through the
+**print pipeline**. These differ permanently and by design, so R1 is not one bug scheduled
+for phase 2 - it is the first member of an open-ended class:
+
+- the dark page (R1)
+- **spell and grammar squiggles** - visible all over `probes/probe-desktop.jpg`, which
+  section 2.1 cites *as proof the render is real*. The same artefact is simultaneously the
+  evidence and a fidelity defect
+- the **licensing nag**, also inside that same evidence frame
+- tracked-change markup, revision bars, the comment margin, text boundaries, formatting
+  marks, coauthoring presence, the caret
+- whatever Office ships next
+
+Each can be chased forever. v1's immunity is **structural**: print output has no view state.
+
+### 13.4 The typing channel is unreliable
+
+TypeText to changed-frame latency on the hidden desktop, five trials: 100.1 ms, 48.8 ms,
+42.5 ms, **no frame change**, **no frame change**. Idle frames were verified stable (two
+consecutive captures identical), so this is not hash noise. **40% of typed characters
+produced no confirming frame** within ~1.5 s. JPEG encode, HTTP and browser decode sit on
+top of that.
+
+That breaks the optimistic overlay in section 5.3 twice over. An overlay that draws text and
+advances the caret is re-implementing Word's layout engine - wrapping, kerning,
+justification, list renumbering, field updates, repagination - and every disagreement is a
+visible snap-back. Worse, **autocorrect is on by default and TypeText triggers it**, so Word
+rewrites text under the overlay as a matter of routine, not as an edge case.
+
+Credit where due: **undo granularity holds.** 5 characters via one TypeText = 1 undo step,
+and document length restored exactly. Section 5.4 stands.
+
+### 13.5 Findings the plan never considered at all
+
+| | Gap | Severity |
+| --- | --- | --- |
+| a | **The intent channel is an unauthenticated local write path.** v1 serves pixels; this plan adds POST endpoints carrying edit intents. Any local process — or any browser tab that can reach `127.0.0.1` on the port — could insert text, delete ranges and trigger a save into the user's document. Needs a per-session secret, `Origin`/`Host` validation and loopback binding, decided before phase 4. | MAJOR |
+| b | **The R5 watchdog cannot fire.** While Word shows a modal dialog the outstanding COM call blocks, and `PrintWindow` blocks with it. R5 puts the detector on a timer inside the same single-threaded host loop that is already blocked. It must live in a separate thread or process. That is an architecture change, not a detail. | MAJOR |
+| c | **EDR and antivirus.** `CreateDesktop` + a hidden GUI app + cross-process capture + COM automation is the classic hidden-desktop technique used by banking trojans. This is about the closest behavioural match to malware one could plausibly build in good faith. Get it in front of security before phase 3, not after a customer's EDR quarantines the extension. | MAJOR |
+| d | **Multiple documents.** One desktop, one Word, one `ActiveWindow` — and with no focus on a hidden desktop, `ActiveWindow` is ambiguous. Two `_WwG` children were already observed during probing. Multi-document is undesigned. | MAJOR |
+| e | **Word's own state is not ours to own.** Zoom, view mode, ruler, navigation pane, window size all change what is captured. Streaming makes every one of them part of our render contract. | MODERATE |
+
+### 13.6 What the second critique changes, on balance
+
+It cuts both ways, and the two directions must not be averaged into a mush:
+
+- **Streaming is more feasible than section 12 claimed.** R3 is deleted — there is no
+  non-input-desktop frame-rate penalty. The isolation mechanism is real and now *understood*
+  rather than merely observed.
+- **Streaming is less valuable than sections 1–10 claimed.** Fidelity is an open-ended class,
+  not a bug list (13.3); the typing channel drops 40% of confirming frames (13.4); and the
+  capture path rests on undocumented DWM behaviour with no fallback (13.2).
+
+Feasibility was never the binding constraint. **Value was.** So the extra feasibility does not
+move the decision, and the reduced value moves it further toward option C.
+
+---
+
+## 14. Decision, and the plan that follows from it
+
+### 14.1 The decision
+
+**Build option C.** Static per-page render via `ExportAsFixedFormat` as the display path; a
+hidden, isolated Word instance as the COM edit-and-query channel. Pixel streaming is not
+built, and is not a fallback — it is a different product for a case (mirroring the user's own
+live Word session) that is not a v2 requirement.
+
+This is the same conclusion section 11 reached, but **section 11's reasoning is now partly
+invalid** and should not be cited as-is:
+
+| Section 11 argument | Status after the probe re-runs |
+| --- | --- |
+| Streaming pays an R3 frame-rate penalty | **Withdrawn** — no measurable penalty exists |
+| Dark page (R1) is unsolved for streaming | Stands, and 13.3 shows it is one of a class |
+| Non-input-desktop rendering (R2) is a fatal dependency | Stands, and is now a *named* mechanism: undocumented DWM compositing (13.2) |
+| Option C keeps text, Ctrl+F, print, accessibility | Stands — and 13.3 explains *why* structurally: print output has no view state |
+| 168 ms single-page re-export makes streaming unnecessary | Stands, and is the strongest number in this document |
+
+### 14.2 The one place option C also takes damage
+
+Section 13.4 is not a streaming-only finding. The **optimistic typing overlay** appears in
+option C too (§11 cost 1), and the critique lands on it there as well: an overlay that echoes
+characters is re-implementing wrapping, kerning, justification, list renumbering and field
+updates — and **autocorrect rewrites text underneath it as routine behaviour**.
+
+The correct response is not to build the overlay better. It is to **not need it**:
+
+> **v2 does free-form typing nowhere.** The canvas offers *structured* edit intents —
+> insert/replace a range, apply formatting, accept/reject a revision, add a comment — each of
+> which is a single COM call followed by one 168 ms single-page re-export. There is no
+> per-keystroke echo, so there is no overlay, so there is nothing for autocorrect to fight.
+
+Free-form in-canvas typing becomes an explicit non-goal for v2, revisited only if structured
+editing proves insufficient in practice. This also disposes of the coordinate/version
+consistency protocol (§12.4 item 3) for v2: intents are anchored to document ranges, not to
+pixel coordinates in a frame that may be stale.
+
+### 14.3 Revised phases
+
+| Phase | Content | Gate |
+| --- | --- | --- |
+| **0** | Security review of the isolation approach (13.5c) **before** any hidden-desktop code ships. Also settle the intent-channel auth model (13.5a): per-session secret, `Origin`/`Host` checks, loopback-only bind. | Security sign-off |
+| **1** | Hidden Word host: `CreateDesktop` + Job Object lifetime (§12.4 item 5) + COM binding to *our* instance (§2.3). No capture code at all. | `Documents.Open` and `ExportAsFixedFormat` succeed on the hidden desktop under **lock, RDP disconnect and sleep/resume** — these are hard gates (13.2), though they now test *COM*, not DWM, so they should pass far more comfortably |
+| **2** | Out-of-process dialog watchdog (13.5b) + multi-document model (13.5d). | A modal dialog in Word is detected and surfaced while a COM call is blocked |
+| **3** | Single-page re-export pipeline wired to `render-cache.mjs`; page-level invalidation. | Edit → visible page refresh ≤ 250 ms end to end |
+| **4** | pdf.js edit-mode viewer (§11.494): scroll anchoring, per-page replace, text layer retained. | Scroll and zoom survive a page refresh |
+| **5** | Structured intent set over the authenticated channel. | Undo granularity: one intent = one undo step (already measured, §13.4) |
+
+Excel and PowerPoint remain **out of scope** (§12.4 item 6). Their export geometry is
+different enough that §7's adapter seam is thinner than it was written to be, and none of it
+has been probed.
+
+### 14.4 What this document is worth
+
+Three of its confident conclusions were falsified by re-measurement: the hardware-acceleration
+control, the R3 frame-rate penalty, and the dark-mode timing. Each was falsified by *running
+the probe again with one variable normalised* — never by argument. The probes in
+`probes/` are therefore the durable artefact here; the prose is a snapshot of what they
+supported at the time.
+
+The single most useful output of this whole investigation is a number that took ten minutes to
+measure and made a month of streaming work unnecessary: **168 ms**.

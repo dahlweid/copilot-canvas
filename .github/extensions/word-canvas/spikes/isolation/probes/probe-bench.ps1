@@ -114,6 +114,18 @@ $ownPid = 0
 try {
     # Word reads the Office theme at process start. Flip it to White (5) just for
     # the launch, then put the user's value straight back.
+    #
+    # WARNING - THIS PART OF THE PROBE IS UNSOUND. The restore below happens 3 s after
+    # CreateProcess, but the window is not found for another 8 s, so Word had almost
+    # certainly not read the value by the time it was put back. The "theme flip does not
+    # fix the dark page" result from this probe is therefore contaminated and proves
+    # nothing. It was later re-tested properly, holding UI Theme = 5 across the entire
+    # startup: the page is still dark (brightness 49.0, 92 colours). The conclusion happens
+    # to survive, but not because of this measurement. See probe-darkmode.ps1.
+    #
+    # WARNING 2: this launches Word with NO document. The OBJID_NATIVEOM bind is not
+    # reliable in that state - it fails E_FAIL for 20+ consecutive attempts. Launch with a
+    # document path if you need COM. See PLAN.md section 13.
     Set-ItemProperty -Path $themeKey -Name 'UI Theme' -Value 5 -Type DWord
     Rep "UI Theme forced to" 5
 
@@ -174,7 +186,7 @@ try {
 
     $opened.Close(0)
 }
-catch { R "ERROR" $_.Exception.Message }
+catch { Rep "ERROR" $_.Exception.Message }
 finally {
     if ($origTheme -ne $null) { Set-ItemProperty -Path $themeKey -Name 'UI Theme' -Value $origTheme -Type DWord }
     if ($ownPid -and (Get-Process -Id $ownPid -ErrorAction SilentlyContinue)) { Stop-Process -Id $ownPid -Force }
