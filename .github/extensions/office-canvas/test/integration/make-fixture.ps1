@@ -4,7 +4,15 @@ param(
     [Parameter(Mandatory = $true)][string]$Out,
     # More chapters => a longer document, so a test can produce a genuinely
     # different file at the same path.
-    [int]$Chapters = 3
+    [int]$Chapters = 3,
+    # Adds paragraphs with verbatim-identical text, both repeated under one
+    # heading and repeated under two different headings. Off by default so the
+    # existing suites see the document they were written against.
+    #
+    # This exists because addressing is derived -- heading path + text +
+    # occurrence index -- and the document that proved the scheme had no
+    # duplicate text at all, so the occurrence index was never actually tested.
+    [switch]$Duplicates
 )
 
 $ErrorActionPreference = 'Stop'
@@ -40,6 +48,25 @@ try {
                 $sel.TypeText("Paragraph $chapter.$section.$p - the quick brown fox jumps over the lazy dog. Umlaut check: Grosse Aepfel, Strasse, Muenchen, aeoeue.")
                 $sel.TypeParagraph()
             }
+        }
+    }
+
+    if ($Duplicates) {
+        foreach ($twin in 1..2) {
+            $sel.Style = $WD_STYLE_HEADING1
+            $sel.TypeText("Twin Chapter $twin")
+            $sel.TypeParagraph()
+
+            $sel.Style = $WD_STYLE_NORMAL
+            # Same text three times under one heading: only the occurrence index
+            # can tell these apart.
+            foreach ($repeat in 1..3) {
+                $sel.TypeText("DUPLICATE LINE: this sentence appears verbatim more than once.")
+                $sel.TypeParagraph()
+            }
+            # Empty paragraphs, which are the degenerate duplicate.
+            $sel.TypeParagraph()
+            $sel.TypeParagraph()
         }
     }
 

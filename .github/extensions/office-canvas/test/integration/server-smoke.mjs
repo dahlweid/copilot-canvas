@@ -12,6 +12,7 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { RenderCache, normalizeDocPath } from "../../src/render-cache.mjs";
 import { ViewerInstance } from "../../src/server.mjs";
+import { assertNoLeakedWord, wordPids } from "./word-pids.mjs";
 
 const execFileAsync = promisify(execFile);
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -27,15 +28,6 @@ async function check(name, fn) {
         process.stderr.write(`  FAIL ${name}\n       ${err.message}\n`);
     }
 }
-
-const wordPids = async () => {
-    const { stdout } = await execFileAsync("powershell.exe", [
-        "-NoProfile",
-        "-Command",
-        "(Get-Process -Name WINWORD -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id) -join ','",
-    ]);
-    return stdout.trim() ? stdout.trim().split(",").map(Number) : [];
-};
 
 const makeFixture = (out, chapters) =>
     execFileAsync(
@@ -376,11 +368,7 @@ try {
     await cache.dispose().catch(() => {});
 }
 
-await check("no WINWORD.EXE is left behind", async () => {
-    await new Promise((r) => setTimeout(r, 1500));
-    const leaked = (await wordPids()).filter((pid) => !pidsBefore.includes(pid));
-    assert.deepEqual(leaked, [], `leaked Word processes: ${leaked.join(", ")}`);
-});
+await check("no new WINWORD.EXE is left behind", () => assertNoLeakedWord(pidsBefore));
 
 await rm(workRoot, { recursive: true, force: true }).catch(() => {});
 

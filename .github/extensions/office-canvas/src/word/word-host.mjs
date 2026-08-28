@@ -269,6 +269,23 @@ export class WordHost {
         return this.request("export", { docId, out, from, to }, { timeoutMs: STARTUP_TIMEOUT_MS });
     }
 
+    /**
+     * Reads the document's WordprocessingML into `out` and closes it again.
+     *
+     * Bounded by the startup timeout rather than the default one because it
+     * includes a cold Word start. ADR 0005 requires every `Documents.Open` to
+     * be timeout-bounded: detection and open are not atomic, so a file that
+     * looked free can still be taken between the two, and an unbounded open
+     * against a held file hangs forever.
+     */
+    structure({ docId, path: docPath, workDir, out }) {
+        return this.request(
+            "structure",
+            { docId, path: docPath, workDir, out },
+            { timeoutMs: STARTUP_TIMEOUT_MS },
+        );
+    }
+
     outline({ docId, limit }) {
         return this.request("outline", { docId, limit });
     }

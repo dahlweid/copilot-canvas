@@ -154,6 +154,23 @@ function Get-PageOf($range) {
     try { return [int]$range.Information($WD_INFO_ACTIVE_END_PAGE_NUMBER) } catch { return 0 }
 }
 
+# Whether the file could be opened for writing right now -- 4 ms when another
+# process holds it, 9 ms when free, correct in both directions.
+#
+# ADR 0005: this is the *only* safe way to ask. Probing by asking Word to open
+# the document is precisely the call that hangs indefinitely on a held file,
+# with DisplayAlerts already off, leaving two processes to be killed by hand.
+function Test-FileWritable([string]$path) {
+    try {
+        $stream = [IO.File]::Open($path, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        $stream.Close()
+        $stream.Dispose()
+        return $true
+    } catch {
+        return $false
+    }
+}
+
 # ComputeStatistics(wdStatisticPages) returns 1 on a hidden, window-less Word
 # instance because the document is never laid out for the screen. Information()
 # reports the real paginated count, so it is the primary source here.
@@ -301,7 +318,7 @@ function Cmd-Ping($a) {
     }
 }
 
-function Open-DocInternal([string]$docId, [string]$path, [string]$workDir) {
+function Open-DocInternal([string]$docId, [string]$path, [string]$workDir, [bool]$withStats = $true) {
     Initialize-Word
 
     if ([string]::IsNullOrWhiteSpace($path)) { throw "No document path supplied." }
@@ -333,12 +350,20 @@ function Open-DocInternal([string]$docId, [string]$path, [string]$workDir) {
     $script:DocArgs[$docId] = @{ path = $path; workDir = $workDir }
 
     $item = Get-Item -LiteralPath $path
+    # Pagination and word count are a full pass over the document. The renderer
+    # needs them; a structure read does not, and pays for them in latency.
+    $pageCount = 0
+    $wordCount = 0
+    if ($withStats) {
+        $pageCount = (Get-PageCount $doc)
+        $wordCount = (Get-WordCount $doc)
+    }
     return @{
         docId       = $docId
         path        = $path
         name        = $item.Name
-        pageCount   = (Get-PageCount $doc)
-        wordCount   = (Get-WordCount $doc)
+        pageCount   = $pageCount
+        wordCount   = $wordCount
         sizeBytes   = [int64]$item.Length
         modifiedIso = $item.LastWriteTimeUtc.ToString('o')
         title       = [string](Get-DocProp $doc 'Title')
@@ -349,6 +374,58 @@ function Open-DocInternal([string]$docId, [string]$path, [string]$workDir) {
 
 function Cmd-Open($a) {
     return Open-DocInternal ([string]$a.docId) ([string]$a.path) ([string]$a.workDir)
+}
+
+# One `Content.WordOpenXML` call, written to a file, document closed at once.
+#
+# Measured (PLAN.md §18.1) on a 219-paragraph document: walking Paragraphs and
+# touching Range.Text / OutlineLevel per paragraph cost 3724 ms, because every
+# property touch is a cross-process COM call; one WordOpenXML call cost 289 ms
+# and returned strictly more -- text, style and full markup. A per-paragraph
+# property walk is a defect, not a slow path.
+#
+# The markup goes to a file rather than back through the protocol: it is
+# routinely 100 KB and can be megabytes, and JSON-escaping that onto a single
+# stdio line is pure overhead when the reader is on the same machine.
+function Cmd-Structure($a) {
+    $docId = [string]$a.docId
+    $path = [string]$a.path
+    $out = [string]$a.out
+    if ([string]::IsNullOrWhiteSpace($out)) { throw "No output path supplied for the structure read." }
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "File not found: $path" }
+
+    # Reported, not enforced: a read is served from a copy and so never needs
+    # the original. It tells the caller whether an *edit* would collide.
+    $writable = Test-FileWritable $path
+
+    $meta = Open-DocInternal $docId $path ([string]$a.workDir) $false
+    try {
+        $xml = [string](Resolve-Doc $docId).Content.WordOpenXML
+    } finally {
+        # The lock window ends the moment the markup is in hand. Nothing below
+        # this point needs Word.
+        $script:DocArgs.Remove($docId) | Out-Null
+        Close-Doc $docId
+    }
+
+    $outDir = Split-Path -Parent $out
+    if (-not [string]::IsNullOrWhiteSpace($outDir) -and -not (Test-Path -LiteralPath $outDir)) {
+        New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+    }
+    # No BOM: the caller parses this as XML, and a BOM ahead of the declaration
+    # is a parse error in stricter readers.
+    [IO.File]::WriteAllText($out, $xml, (New-Object System.Text.UTF8Encoding($false)))
+
+    return @{
+        out         = $out
+        bytes       = [int64](Get-Item -LiteralPath $out).Length
+        writable    = $writable
+        name        = $meta.name
+        sizeBytes   = $meta.sizeBytes
+        modifiedIso = $meta.modifiedIso
+        title       = $meta.title
+        author      = $meta.author
+    }
 }
 
 function Cmd-Export($a) {
@@ -588,6 +665,7 @@ try {
             switch ([string]$req.cmd) {
                 'ping' { Send-Ok $id (Cmd-Ping $cmdArgs) }
                 'open' { Send-Ok $id (Cmd-Open $cmdArgs) }
+                'structure' { Send-Ok $id (Cmd-Structure $cmdArgs) }
                 'export' { Send-Ok $id (Cmd-Export $cmdArgs) }
                 'outline' { Send-Ok $id (Cmd-Outline $cmdArgs) }
                 'search' { Send-Ok $id (Cmd-Search $cmdArgs) }

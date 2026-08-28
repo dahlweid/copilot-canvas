@@ -1,9 +1,12 @@
-// office-canvas — renders .docx files page-accurately in a side canvas.
+// office-canvas — Word document tools, plus a canvas that renders .docx files
+// page-accurately in a side panel.
 //
-// A hidden, automation-owned Microsoft Word instance is the rendering engine:
-// it exports the document to PDF, which the canvas serves over loopback to the
-// panel's native PDF viewer. Word also stays available as a live document model
-// for outline, search and text queries.
+// The tools are the product; the canvas is how the user watches. `read_document`
+// is callable with no canvas open.
+//
+// A hidden, automation-owned Microsoft Word instance does the work: it exports
+// the document to PDF, which the canvas serves over loopback to the panel's
+// native PDF viewer, and it hands back WordprocessingML for structural reads.
 //
 // Read-only by design: the user's file is never opened by Word directly, only
 // an unblocked temp copy of it.
@@ -20,13 +23,43 @@ const instances = new Map();
 let session = null;
 let cache = null;
 
+// A tool call can arrive with no canvas open, so Word may be started purely to
+// serve one. Nothing would then ever shut it down -- the canvas path releases
+// Word when the last panel closes, and there is no panel. An idle timer gives
+// repeated reads a warm instance without leaving a hidden Word running for the
+// rest of the session.
+const IDLE_SHUTDOWN_MS = 60_000;
+let idleTimer = null;
+
 // `session.log` rejects asynchronously (e.g. on an unsupported level); an
 // unhandled rejection would take the whole extension process down.
 const log = (message, level = "info", { ephemeral = level === "info" } = {}) => {
     void session?.log(`[office-canvas] ${message}`, { level, ephemeral })?.catch(() => {});
 };
 
+function cancelIdleShutdown() {
+    if (!idleTimer) return;
+    clearTimeout(idleTimer);
+    idleTimer = null;
+}
+
+function scheduleIdleShutdown() {
+    cancelIdleShutdown();
+    if (instances.size > 0) return; // a canvas is displaying something; it owns Word
+    idleTimer = setTimeout(() => {
+        idleTimer = null;
+        if (instances.size > 0 || !cache) return;
+        log("no canvas open and no tool activity, shutting Word down");
+        const idle = cache;
+        cache = null;
+        void idle.dispose().catch(() => {});
+    }, IDLE_SHUTDOWN_MS);
+    // Never a reason to hold the process open.
+    idleTimer.unref?.();
+}
+
 function getCache() {
+    cancelIdleShutdown();
     if (!cache) {
         cache = new RenderCache({ cacheRoot: artifactsRoot(), log: (m) => log(m) });
     }
@@ -76,6 +109,19 @@ async function run(fn) {
     } catch (err) {
         throw asCanvasError(err);
     }
+}
+
+/**
+ * Tools are not canvas actions, so `CanvasError` means nothing to a tool caller.
+ * The code is folded into the message instead, because that is what the agent
+ * actually reads when deciding what to do next.
+ */
+function asToolError(err) {
+    const code = err?.code ?? "word_error";
+    const message = err?.message ?? "Unknown error";
+    const wrapped = new Error(`${code}: ${message}`);
+    wrapped.code = code;
+    return wrapped;
 }
 
 // --- canvas ----------------------------------------------------------------
@@ -285,6 +331,54 @@ const wordCanvas = createCanvas({
     ],
 });
 
+// --- tools -----------------------------------------------------------------
+
+const readDocumentTool = {
+    name: "read_document",
+    description: [
+        "Reads a Word document and returns its structure map — every paragraph with its text,",
+        "resolved style, heading path and a stable address — together with a revision token for",
+        "the file. Cite an address to say which paragraph an edit applies to, and present the",
+        "token so the edit can be refused if the document changed underneath. Does not need a",
+        "canvas to be open, and does not open one.",
+    ].join(" "),
+    parameters: {
+        type: "object",
+        properties: {
+            path: {
+                type: "string",
+                description: "Absolute or workspace-relative path to a Word document (.docx, .docm, .doc, .rtf).",
+            },
+            limit: {
+                type: "integer",
+                minimum: 1,
+                maximum: 5000,
+                description:
+                    "Maximum paragraphs to return. Addresses are always minted across the whole document, so paging never changes one.",
+            },
+            offset: {
+                type: "integer",
+                minimum: 0,
+                description: "Index of the first paragraph to return, 0-based. Use with limit to page a long document.",
+            },
+        },
+        required: ["path"],
+        additionalProperties: false,
+    },
+    handler: async (args) => {
+        try {
+            return await getCache().readStructure(resolveInputPath(args?.path), {
+                limit: args?.limit ?? 0,
+                offset: args?.offset ?? 0,
+            });
+        } catch (err) {
+            throw asToolError(err);
+        } finally {
+            scheduleIdleShutdown();
+        }
+    },
+};
+
 // --- lifecycle -------------------------------------------------------------
 
 let shuttingDown = false;
@@ -302,6 +396,7 @@ function reapOnExit() {
 async function shutdown(signal) {
     if (shuttingDown) return;
     shuttingDown = true;
+    cancelIdleShutdown();
     try {
         await Promise.all([...instances.values()].map((i) => i.close().catch(() => {})));
         instances.clear();
@@ -324,6 +419,7 @@ process.on("unhandledRejection", (reason) => {
 
 session = await joinSession({
     canvases: [wordCanvas],
+    tools: [readDocumentTool],
     hooks: {
         onSessionEnd: async () => {
             await shutdown(null);
