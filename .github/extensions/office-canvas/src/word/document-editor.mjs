@@ -248,6 +248,16 @@ export class DocumentEditor {
         // paragraphs, and if that cap ever migrates into the reader, a silent
         // truncation here would surface as an unresolvable address on long
         // documents only.
+        //
+        // `limit: 0` is deliberate here even though read_document *rejects* it
+        // as `invalid_request`. The word carries two contracts separated by a
+        // boundary: to `buildStructureMap` it has always meant "return
+        // everything", while at the tool boundary it means a caller asked for a
+        // page of nothing, which read-args.mjs refuses rather than answering
+        // with the whole document. This call is on the reader side of that
+        // boundary, so it gets the internal meaning -- which is the one an
+        // address resolution needs. It is not a leftover from before the
+        // validation existed.
         const before = await this.#reader.read(docPath, { limit: 0, deadline });
 
         if (!tokensMatch(before.revisionToken, current)) {
