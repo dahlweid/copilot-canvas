@@ -12,7 +12,17 @@ param(
     # This exists because addressing is derived -- heading path + text +
     # occurrence index -- and the document that proved the scheme had no
     # duplicate text at all, so the occurrence index was never actually tested.
-    [switch]$Duplicates
+    [switch]$Duplicates,
+    # Adds a 2x2 table. Off by default so the existing suites see the document
+    # they were written against.
+    #
+    # This exists because Word's own Document.Paragraphs collection counts one
+    # extra paragraph per table row -- the end-of-row mark, which has no w:p in
+    # the markup. Measured on a fixture with a 2x2 table and a text box: the map
+    # sees 8 paragraphs and Word reports 10. Without a table in the fixture, an
+    # edit that addressed Word by document-order position would pass every test
+    # and corrupt every real document containing a table.
+    [switch]$Table
 )
 
 $ErrorActionPreference = 'Stop'
@@ -68,6 +78,31 @@ try {
             $sel.TypeParagraph()
             $sel.TypeParagraph()
         }
+    }
+
+    if ($Table) {
+        $sel.Style = $WD_STYLE_HEADING1
+        $sel.TypeText("Table Chapter")
+        $sel.TypeParagraph()
+
+        $sel.Style = $WD_STYLE_NORMAL
+        $sel.TypeText("The table below exists so the paragraph join is tested against row marks.")
+        $sel.TypeParagraph()
+
+        # Not `$table`: PowerShell variable names are case-insensitive, so that
+        # would assign a COM object to the -Table switch parameter and fail.
+        $grid = $doc.Tables.Add($sel.Range, 2, 2)
+        foreach ($row in 1..2) {
+            foreach ($col in 1..2) {
+                $grid.Cell($row, $col).Range.Text = "cell $row$col"
+            }
+        }
+        # Past the table, so anything appended afterwards is not inside it.
+        $sel.EndKey(6) | Out-Null
+        $sel.TypeParagraph()
+        $sel.Style = $WD_STYLE_NORMAL
+        $sel.TypeText("This paragraph follows the table and is offset by its row marks.")
+        $sel.TypeParagraph()
     }
 
     $sel.Style = $WD_STYLE_HEADING1

@@ -480,3 +480,93 @@ test("an anchor's address does not move when text-box content changes", () => {
     const after = buildStructureMap(bareDocument(textBoxAnchor("Anchor", "a totally different caption")));
     assert.equal(before.paragraphs[0].address, after.paragraphs[0].address);
 });
+// --- the join to Word's own paragraph numbering -----------------------------
+//
+// `index` is the paragraph's position in the map. `wordIndex` is its position
+// in `Document.Paragraphs`. They are not the same sequence, and an edit that
+// used `index` would mutate the wrong paragraph in any document containing a
+// table. Measured against Word on a fixture with a 2x2 table and a text box:
+// the map has 8 paragraphs, Word reports 10.
+//
+// Agreement on a document without tables proves nothing -- a first comparison
+// on a simple fixture returned 42 = 42 with zero mismatches while the join was
+// still wrong.
+
+const wordIndexesOf = (result) => result.paragraphs.map((p) => p.wordIndex);
+
+/** A grid table: `rows` is an array of arrays of cell texts. */
+const grid = (rows) =>
+    `<w:tbl>${rows
+        .map((cells) => `<w:tr>${cells.map((c) => `<w:tc>${paragraph(c)}</w:tc>`).join("")}</w:tr>`)
+        .join("")}</w:tbl>`;
+
+test("wordIndex tracks index exactly while there is no table", () => {
+    const result = map([H1("Intro"), paragraph("One."), paragraph("Two."), H1("Next"), paragraph("Three.")]);
+    assert.deepEqual(wordIndexesOf(result), [1, 2, 3, 4, 5]);
+    assert.deepEqual(
+        wordIndexesOf(result),
+        result.paragraphs.map((p) => p.index),
+    );
+});
+
+test("each table row costs one extra Word paragraph for its end-of-row mark", () => {
+    // Word counts the end-of-row mark as a paragraph. There is no `w:p` for it
+    // in the markup, so a document-order walk of the body under-counts by
+    // exactly one per row -- and every paragraph after the table is offset.
+    const result = map([
+        paragraph("Before."),
+        grid([
+            ["a1", "a2"],
+            ["b1", "b2"],
+        ]),
+        paragraph("After."),
+    ]);
+
+    assert.deepEqual(textsOf(result), ["Before.", "a1", "a2", "b1", "b2", "After."]);
+    //                       before  a1 a2  <row>  b1 b2  <row>  after
+    assert.deepEqual(wordIndexesOf(result), [1, 2, 3, 5, 6, 8]);
+});
+
+test("a nested table adds a row mark of its own", () => {
+    const inner = grid([["inner"]]);
+    const outer = `<w:tbl><w:tr><w:tc>${paragraph("outer")}${inner}</w:tc></w:tr></w:tbl>`;
+    const result = map([paragraph("Before."), outer, paragraph("After.")]);
+
+    assert.deepEqual(textsOf(result), ["Before.", "outer", "inner", "After."]);
+    // before(1) outer(2) inner(3) inner-row-mark(4) outer-row-mark(5) after(6)
+    assert.deepEqual(wordIndexesOf(result), [1, 2, 3, 6]);
+});
+
+test("a text box does not appear in the map and does not move the anchor's text", () => {
+    // A text box is anchored inside a body paragraph's run, but Word keeps it
+    // in a separate story: its paragraphs are absent from `Document.Paragraphs`
+    // and its text is not part of the anchor's `Range.Text`. Folding it in made
+    // the anchor's text -- and therefore its address -- move whenever the text
+    // box was edited.
+    const anchored = paragraph(null, {
+        raw: [
+            `<w:r><w:t xml:space="preserve">Anchor.</w:t></w:r>`,
+            `<w:r><mc:AlternateContent xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006">`,
+            `<mc:Fallback><w:pict><v:shape xmlns:v="urn:schemas-microsoft-com:vml"><v:textbox><w:txbxContent>`,
+            paragraph("Floating caption."),
+            `</w:txbxContent></v:textbox></v:shape></w:pict></mc:Fallback></mc:AlternateContent></w:r>`,
+        ].join(""),
+    });
+
+    const result = map([anchored, paragraph("After.")]);
+    assert.deepEqual(textsOf(result), ["Anchor.", "After."]);
+    assert.deepEqual(wordIndexesOf(result), [1, 2]);
+});
+
+test("paging does not change wordIndex any more than it changes an address", () => {
+    const body = [paragraph("Before."), grid([["a1", "a2"]]), paragraph("After.")];
+    const all = map(body);
+    const paged = map(body, { limit: 2, offset: 2 });
+
+    assert.deepEqual(
+        paged.paragraphs.map((p) => p.wordIndex),
+        all.paragraphs.slice(2, 4).map((p) => p.wordIndex),
+    );
+});
+
+

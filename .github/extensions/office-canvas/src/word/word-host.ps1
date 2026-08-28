@@ -172,6 +172,21 @@ function Get-PageOf($range) {
     try { return [int]$range.Information($WD_INFO_ACTIVE_END_PAGE_NUMBER) } catch { return 0 }
 }
 
+# The Word-side twin of `normalizeText` in structure-map.mjs, so a paragraph's
+# text read over COM can be compared with the same paragraph's text parsed out
+# of the markup.
+#
+# The extra step here is stripping control characters: Range.Text carries
+# Word's own in-band marks -- \r for the paragraph mark, \a (7) for an
+# end-of-cell mark, \v (11) for a line break -- which have no counterpart in
+# the XML the map was built from. Whitespace collapsing then matches, because
+# Word splits runs invisibly and the map already normalizes for that.
+function Get-NormalizedText([string]$value) {
+    if ([string]::IsNullOrEmpty($value)) { return '' }
+    $clean = [regex]::Replace($value, '[\u0000-\u0008\u000B\u000C\u000E-\u001F]', '')
+    return ([regex]::Replace($clean, '\s+', ' ')).Trim()
+}
+
 # Whether the file could be opened for writing right now -- 4 ms when another
 # process holds it, 9 ms when free, correct in both directions.
 #
@@ -756,6 +771,266 @@ function Cmd-Info($a) {
     }
 }
 
+# --- editing the original ----------------------------------------------------
+#
+# Everything above this line serves reads, and a read never touches the user's
+# file: Open-DocInternal works on an unblocked temp copy. An edit cannot. It
+# must open the original, which drags in two failure modes that a read never
+# meets, and *both of them hang rather than fail*:
+#
+#   1. Another process holds the file. Measured: Documents.Open never returns,
+#      with DisplayAlerts already off; both processes needed external kills.
+#   2. The file carries the mark of the web. Measured on this machine with a
+#      Zone.Identifier of ZoneId=3: Documents.Open also never returns. Word
+#      wants to route the file into Protected View, and the automation call
+#      simply blocks. It does not raise "this document is in Protected View".
+#
+# So neither can be discovered by trying. Both are checked before the open, and
+# the open itself stays inside the caller's timeout regardless (ADR 0007).
+
+$WD_STYLE_NORMAL = -1
+$WD_CHARACTER = 1
+$WD_COLLAPSE_START = 1
+
+# Reads the Zone.Identifier alternate data stream. Sub-millisecond, and it
+# cannot hang, which is the entire point: the obvious test -- ask Word to open
+# it and see what happens -- is the call that wedges.
+function Test-MarkOfTheWeb([string]$path) {
+    try {
+        $zone = Get-Content -LiteralPath $path -Stream 'Zone.Identifier' -Raw -ErrorAction Stop
+    } catch {
+        return $false
+    }
+    if ($zone -match 'ZoneId\s*=\s*(\d+)') { return ([int]$Matches[1] -ge 3) }
+    return $false
+}
+
+# Opens the user's own document for writing, and returns the Document.
+#
+# For a marked file this takes the Protected View route, which is the
+# automation equivalent of a human clicking "Enable Editing":
+# ProtectedViewWindows.Open() loads the file in the sandbox and .Edit() promotes
+# it to an ordinary editable Document. Measured: the edit lands on disk and the
+# file's Zone.Identifier is still there afterwards.
+#
+# The alternative, Unblock-File, was rejected. It deletes a security marker from
+# a file the user owns, silently and permanently, to work around a limitation of
+# ours. The Protected View path leaves the marker alone; its cost is a per-file
+# trust record under HKCU -- exactly the record clicking Enable Editing creates,
+# per-file, and clearable from the Trust Center. ADR 0007 records the trade.
+function Open-OriginalForEdit([string]$path) {
+    Initialize-Word
+
+    if (Test-MarkOfTheWeb $path) {
+        # FileName, Password, AddToRecentFiles, Repair
+        $window = $script:App.ProtectedViewWindows.Open($path, $FAIL_FAST_PASSWORD, $false, $false)
+        return @{ doc = $window.Edit(); protectedView = $true }
+    }
+
+    # FileName, ConfirmConversions, ReadOnly, AddToRecentFiles,
+    # PasswordDocument, PasswordTemplate, Revert
+    $doc = $script:App.Documents.Open($path, $false, $false, $false, $FAIL_FAST_PASSWORD, $FAIL_FAST_PASSWORD, $false)
+    return @{ doc = $doc; protectedView = $false }
+}
+
+# A paragraph's Range ends with its paragraph mark, and inside a table cell with
+# an end-of-cell mark as well. Assigning to a Range that includes those marks
+# deletes them, welding the paragraph onto the next one. Trimming them off is
+# what makes "replace the text of this paragraph" mean only that.
+function Get-TextRange($para) {
+    # Word's string and its character *model* disagree inside a table. A cell
+    # paragraph's Range.Text ends "`r" + chr(7) -- two characters in the string --
+    # but End-Start counts the end-of-cell mark as one position. Measured: a
+    # blind MoveEnd(-2) ate a real character, rewriting "cell 11" as
+    # "cell rewritten1". So derive the trim from the position span rather than
+    # from the string length, which is correct in both models.
+    $raw = [string]$para.Range.Text
+    $visible = $raw.TrimEnd("`r", [char]7, "`n")
+    $range = $para.Range
+    $drop = ($range.End - $range.Start) - $visible.Length
+    if ($drop -gt 0) { $range.MoveEnd($WD_CHARACTER, -$drop) | Out-Null }
+    return $range
+}
+
+function Set-ParagraphText($para, [string]$text) {
+    (Get-TextRange $para).Text = $text
+}
+
+# Style assignment, and the only two mechanisms that work here.
+#
+# Measured on this German Word: Range.Style = 'berschrift1' (the style id Word
+# actually writes into the file) throws, and so does Range.Style = 'Heading 1'.
+# Assigning the numeric wd* constant works, and so does assigning another
+# paragraph's Style *object*. The write side therefore never names a style.
+function Set-ParagraphHeadingLevel($para, [int]$level) {
+    if ($level -le 0) { $para.Range.Style = $WD_STYLE_NORMAL }
+    else { $para.Range.Style = (Get-HeadingStyleId $level) }
+}
+
+# What a new paragraph should look like when the caller did not say.
+#
+# Word's own behaviour when you press Enter at the end of a heading is to start
+# the next paragraph in that style's follow-on style -- body text, not another
+# heading. NextParagraphStyle is that rule, as an object, so it carries across
+# localizations without naming anything.
+function Set-InheritedStyle($target, $reference) {
+    try {
+        $next = $reference.Style.NextParagraphStyle
+        if ($null -ne $next) { $target.Range.Style = $next; return }
+    } catch { }
+    try { $target.Range.Style = $reference.Style } catch { }
+}
+
+# Applies one intent to an already-open document. Split out so the open/close
+# lock window in Cmd-Edit reads as a single unbroken sequence.
+function Invoke-EditOperation($doc, [int]$wordIndex, $a) {
+    $op = [string]$a.op
+    $para = $doc.Paragraphs.Item($wordIndex)
+
+    switch ($op) {
+        'replace_text' {
+            Set-ParagraphText $para ([string]$a.text)
+            return $wordIndex
+        }
+        'delete_paragraph' {
+            $para.Range.Delete() | Out-Null
+            return 0
+        }
+        'set_heading_level' {
+            Set-ParagraphHeadingLevel $para ([int]$a.headingLevel)
+            return $wordIndex
+        }
+        'insert_paragraph_after' {
+            $para.Range.InsertParagraphAfter()
+            $new = $doc.Paragraphs.Item($wordIndex + 1)
+            Set-ParagraphText $new ([string]$a.text)
+            if ($null -ne $a.headingLevel) { Set-ParagraphHeadingLevel $new ([int]$a.headingLevel) }
+            else { Set-InheritedStyle $new $para }
+            return ($wordIndex + 1)
+        }
+        'insert_paragraph_before' {
+            $range = $para.Range
+            $range.Collapse($WD_COLLAPSE_START)
+            $range.InsertParagraphBefore()
+            $new = $doc.Paragraphs.Item($wordIndex)
+            Set-ParagraphText $new ([string]$a.text)
+            if ($null -ne $a.headingLevel) { Set-ParagraphHeadingLevel $new ([int]$a.headingLevel) }
+            else { Set-InheritedStyle $new $doc.Paragraphs.Item($wordIndex + 1) }
+            return $wordIndex
+        }
+        default { throw "Unsupported edit operation '$op'." }
+    }
+}
+
+# One edit: open the original, change one paragraph, save, close. The lock is
+# held for that sequence and no longer (ADR 0005), and the document is never
+# registered in $script:Docs, so no later command can resolve it and silently
+# reacquire the lock.
+#
+# Failures come back as a `status` on the success channel rather than as
+# exceptions. The dispatch loop collapses every throw to a single `word_error`,
+# which would leave the caller string-matching localized German exception text
+# to tell "the file is locked" from "that paragraph is not where you think".
+function Cmd-Edit($a) {
+    $path = [string]$a.path
+    $started = [Diagnostics.Stopwatch]::StartNew()
+
+    if ([string]::IsNullOrWhiteSpace($path)) { return @{ status = 'file_not_found'; path = $path } }
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return @{ status = 'file_not_found'; path = $path } }
+
+    # Pre-flight, in this order: the lock check is 4 ms and the MOTW check is
+    # sub-millisecond, and either one hanging Word is a two-process kill.
+    if (-not (Test-FileWritable $path)) { return @{ status = 'document_locked'; path = $path } }
+    $marked = Test-MarkOfTheWeb $path
+
+    $openMs = 0
+    $opened = $null
+    try {
+        $opened = Open-OriginalForEdit $path
+        $openMs = [int]$started.ElapsedMilliseconds
+    } catch {
+        return @{ status = 'open_failed'; path = $path; protectedView = $marked; detail = $_.Exception.Message }
+    }
+
+    $doc = $opened.doc
+    $result = $null
+    try {
+        $count = [int]$doc.Paragraphs.Count
+        $wordIndex = [int]$a.wordIndex
+
+        if ($wordIndex -lt 1 -or $wordIndex -gt $count) {
+            return @{ status = 'address_not_resolvable'; reason = 'out_of_range'; wordIndex = $wordIndex; paragraphCount = $count }
+        }
+
+        # The map said this paragraph is at this position with this text. One
+        # property read confirms it before anything is mutated. Without this an
+        # address that has drifted -- a document edited outside the session
+        # between the read and the edit -- silently rewrites the wrong paragraph.
+        $expected = Get-NormalizedText ([string]$a.expectedText)
+        $actual = Get-NormalizedText ([string]$doc.Paragraphs.Item($wordIndex).Range.Text)
+        if ($expected -ne $actual) {
+            return @{
+                status         = 'address_not_resolvable'
+                reason         = 'text_mismatch'
+                wordIndex      = $wordIndex
+                paragraphCount = $count
+                expectedText   = $expected
+                actualText     = $actual
+            }
+        }
+
+        $editStarted = [Diagnostics.Stopwatch]::StartNew()
+        $touched = Invoke-EditOperation $doc $wordIndex $a
+        $editMs = [int]$editStarted.ElapsedMilliseconds
+
+        $saveStarted = [Diagnostics.Stopwatch]::StartNew()
+        $doc.Save()
+        $saveMs = [int]$saveStarted.ElapsedMilliseconds
+
+        $page = 0
+        if ($touched -gt 0 -and $touched -le [int]$doc.Paragraphs.Count) {
+            $page = Get-PageOf $doc.Paragraphs.Item($touched).Range
+        }
+
+        $result = @{
+            status         = 'edited'
+            protectedView  = [bool]$opened.protectedView
+            markOfTheWeb   = $marked
+            wordIndex      = $touched
+            paragraphCount = [int]$doc.Paragraphs.Count
+            page           = $page
+            openMs         = $openMs
+            editMs         = $editMs
+            saveMs         = $saveMs
+        }
+    } finally {
+        # The lock window ends here whatever happened above, including a throw
+        # in the middle of a mutation. wdDoNotSaveChanges: anything worth
+        # keeping was saved explicitly, and a half-applied edit must not be.
+        try { $doc.Close($WD_DO_NOT_SAVE_CHANGES) } catch { }
+        try { [Runtime.InteropServices.Marshal]::ReleaseComObject($doc) | Out-Null } catch { }
+    }
+
+    if ($null -ne $result) {
+        # Close() returning is not proof the file is released -- Quit() is known
+        # to return ~120 ms before its process actually exits. Measure it rather
+        # than assume, because the next thing the caller does is read the file
+        # to confirm the edit, and a re-open into a still-held file is the hang
+        # this whole command is built to avoid.
+        $releaseStarted = [Diagnostics.Stopwatch]::StartNew()
+        $released = $false
+        while ($releaseStarted.ElapsedMilliseconds -lt 5000) {
+            if (Test-FileWritable $path) { $released = $true; break }
+            Start-Sleep -Milliseconds 20
+        }
+        $result.releaseMs = [int]$releaseStarted.ElapsedMilliseconds
+        $result.released = $released
+        $result.totalMs = [int]$started.ElapsedMilliseconds
+    }
+
+    return $result
+}
+
 function Cmd-Close($a) {
     $docId = [string]$a.docId
     $script:DocArgs.Remove($docId) | Out-Null
@@ -784,6 +1059,7 @@ try {
                 'ping' { Send-Ok $id (Cmd-Ping $cmdArgs) }
                 'open' { Send-Ok $id (Cmd-Open $cmdArgs) }
                 'structure' { Send-Ok $id (Cmd-Structure $cmdArgs) }
+                'edit' { Send-Ok $id (Cmd-Edit $cmdArgs) }
                 'export' { Send-Ok $id (Cmd-Export $cmdArgs) }
                 'outline' { Send-Ok $id (Cmd-Outline $cmdArgs) }
                 'search' { Send-Ok $id (Cmd-Search $cmdArgs) }
