@@ -102,11 +102,33 @@ The codes a caller may branch on:
 | `invalid_request`           | the arguments do not describe an operation                  |
 | `document_changed_during_read` | the file moved under the read; the map would mis-address |
 
-`file_locked` deserves care. Word opens a document with `FileShare::Read`, so a
-document **open in Word can still be read and copied** — which is the only
-reason a copy-based read works against a document the user is looking at. So
-`file_locked` does not mean "open in Word"; it means a stricter holder, and a
-message that says "close it in Word" would usually be wrong.
+`file_locked` deserves care. Word holds a document with a **write** handle
+granting `FileShare::ReadWrite`, and both readers we use — `Copy-Item` and
+Node's read stream — also grant `ReadWrite`, so a document **open in Word can
+still be read and copied**. That is the only reason a copy-based read works
+against a document the user is looking at. So `file_locked` does not mean "open
+in Word"; it means a stricter holder, and a message that says "close it in Word"
+would usually be wrong.
+
+The mechanism is stated precisely because a plausible wrong version of it
+survived in this repo for months: "Word takes `FileShare::Read`". Same
+conclusion, wrong reason — and the wrong reason predicts that *any* reader of a
+Word-held file succeeds. It does not. A caller's `FileShare` value is what it
+grants to **others**, so a reader asking for `FileShare::Read` is refusing to
+let anyone else write, which conflicts with the write handle Word already holds.
+Measured against a real open document
+(`spikes/isolation/probes/probe-fileshare-algebra.ps1`):
+
+| reader asks                      | against a Word-held file |
+| -------------------------------- | ------------------------ |
+| read, grants `FileShare::ReadWrite` | **ok**                |
+| read, grants `FileShare::Read`      | sharing violation     |
+| read, grants `FileShare::None`      | sharing violation     |
+| `ReadWrite`, grants `None` (`Test-FileWritable`) | sharing violation |
+
+**A reader of a possibly-open document must itself grant `ReadWrite`.** The two
+candidate mechanisms agree on every reader we happened to use, and disagree only
+on the second row, which is why the wrong one went unchallenged for so long.
 
 `file_locked` and `permission_denied` are separated on measurement, not on
 intuition, and they are separated because they need different remediation — a
@@ -117,10 +139,11 @@ not. What each cause actually produces:
 | ---------------------------------- | ----------------------------------- | ----------- |
 | `FileShare::None` (exclusive lock) | `System.IO.IOException`             | `EBUSY`     |
 | ACL denying read                   | `System.UnauthorizedAccessException`| `EPERM`     |
-| `FileShare::Read` (Word's own)     | **succeeds**                        | **succeeds**|
+| holder grants `FileShare::Read`    | **succeeds**                        | **succeeds**|
+| Word's own lock (write handle, grants `ReadWrite`) | **succeeds**         | **succeeds**|
 | read-only attribute                | **succeeds**                        | **succeeds**|
 
-The bottom two rows are the ones worth remembering. A document open in Word is
+The bottom rows are the ones worth remembering. A document open in Word is
 readable, and the read-only attribute does not block reading at all — so
 neither reaches these codes, and neither is a failure.
 

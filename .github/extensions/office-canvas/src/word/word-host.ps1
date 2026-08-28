@@ -181,9 +181,13 @@ function Get-PageOf($range) {
 # True when a *write* handle can be taken. Note what that does and does not
 # mean, because the answer is reported to callers: it is false for a sharing
 # violation, but equally for an ACL that denies write and for the read-only
-# attribute. Measured: the read-only attribute and Word's own FileShare::Read
-# both still allow *reading* and copying, so `writable = $false` must never be
-# reported as "another process has it open" -- that is one of three causes.
+# attribute. Measured: the read-only attribute and Word's own lock -- a *write*
+# handle granting FileShare::ReadWrite -- both still allow *reading* and copying,
+# so `writable = $false` must never be reported as "another process has it open"
+# -- that is one of three causes. Note also that this function grants
+# FileShare::None, so it conflicts with *any* existing handle whatever that
+# handle shares: a document open in Word reports writable = $false, correctly,
+# while still being perfectly readable.
 function Test-FileWritable([string]$path) {
     try {
         $stream = [IO.File]::Open($path, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
@@ -393,13 +397,17 @@ function Open-DocInternal([string]$docId, [string]$path, [string]$workDir, [bool
         # localized, and matching them is the trap that has already cost this
         # project twice. Measured on this machine:
         #
-        #   FileShare::None (exclusive)   -> System.IO.IOException
-        #   ACL denying read              -> System.UnauthorizedAccessException
-        #   FileShare::Read (Word's own)  -> copy succeeds
-        #   read-only attribute           -> copy succeeds
+        #   FileShare::None (exclusive)      -> System.IO.IOException
+        #   ACL denying read                 -> System.UnauthorizedAccessException
+        #   Word's own lock (write handle,   -> copy succeeds
+        #     granting FileShare::ReadWrite)
+        #   read-only attribute              -> copy succeeds
         #
         # The last two are why a read works against a document the user has
-        # open, and why "read-only" is not a failure at all.
+        # open, and why "read-only" is not a failure at all. Copy-Item grants
+        # ReadWrite, which is what makes it compatible with Word's write handle;
+        # a reader granting only FileShare::Read would fail here on a file that
+        # copies fine.
         $ex = $_.Exception
         $name = [IO.Path]::GetFileName($path)
         if ($ex -is [System.UnauthorizedAccessException]) {

@@ -1175,7 +1175,7 @@ and Word are German on this machine.
 | --- | --- | --- |
 | `FileShare::None` (exclusive hold) | `EBUSY` | `System.IO.IOException` |
 | ACL denying read | `EPERM` | `System.UnauthorizedAccessException` |
-| `FileShare::Read` (**what Word itself takes**) | succeeds | succeeds |
+| Word's own lock — a **write** handle granting `ReadWrite` | succeeds | succeeds |
 | Read-only attribute | succeeds | succeeds |
 | `chmod 000` | succeeds (ignored on Windows) | — |
 
@@ -1188,11 +1188,59 @@ will not and is not. So the codes are justified.
 
 **Most things that sound like they would block a read do not block a read.** The
 read-only attribute does not. `chmod` does not. And decisively, *Word's own lock
-does not* — Word opens a document `FileShare::Read`, which is why a copy-based
-read works at all against a document the user is looking at. This is why
-`file_locked` means **"held more strictly than Word holds it"**, not "open in
-Word". A message telling a user to close Word would name the one cause that has
-been measured not to be the cause.
+does not* — Word holds a write handle granting `FileShare::ReadWrite`, and both
+our readers grant `ReadWrite` too, which is why a copy-based read works at all
+against a document the user is looking at. This is why `file_locked` means
+**"held more strictly than Word holds it"**, not "open in Word". A message
+telling a user to close Word would name the one cause that has been measured not
+to be the cause.
+
+#### 19.0.1 The correction: right conclusion, wrong mechanism, for months
+
+This table originally recorded that row as `FileShare::Read` (**what Word itself
+takes**). That is wrong, and it propagated from here into `CONTEXT.md`, ADR 0006,
+`.github/copilot-instructions.md`, `document-reader.mjs`, `word-host.ps1` and the
+read smoke test — nine sites — because it was quoted as a measured fact.
+
+It was never measured. `probe-errno-mapping.mjs` **modelled** Word with a holder
+granting `Read` and labelled that holder "Word's own lock". The label was an
+assumption wearing a measurement's clothes, and every reader in that probe grants
+`ReadWrite`, which succeeds against *either* holder. So the probe could not have
+detected its own mispremise.
+
+`probe-fileshare-algebra.ps1` separates them. It runs the same four readers
+against two synthetic holders and then against a document held by real Word:
+
+| reader asks | holder grants `Read` | Word's write handle granting `ReadWrite` | **real Word** |
+| --- | --- | --- | --- |
+| read, grants `ReadWrite` (`Copy-Item`, Node) | ok | ok | **ok** |
+| read, grants `Read` — *the discriminator* | ok | violation | **violation** |
+| read, grants `None` | violation | violation | **violation** |
+| `ReadWrite`, grants `None` (`Test-FileWritable`) | violation | violation | **violation** |
+
+Real Word matches the write-handle column on every row and contradicts the other
+on the discriminator. **Word holds a write handle and grants `ReadWrite`.**
+
+A caller's `FileShare` value is what it grants to **others**, so a reader asking
+for `FileShare::Read` refuses to let anyone else write, conflicting with the
+write handle Word already holds. **A reader of a possibly-open document must
+itself grant `ReadWrite`.**
+
+Three things generalise, and they are why this is written up rather than quietly
+corrected:
+
+- **The conclusion was never wrong, so nothing failed.** Reads of open documents
+  worked throughout. A wrong mechanism under a right conclusion is invisible to
+  every test, which is exactly the shape that survives longest.
+- **The wrong mechanism still predicts wrongly**, just not here: it predicts that
+  *any* reader of a Word-held file succeeds. Anyone who "hardened" our copy to a
+  narrower share mode would have had the documentation on their side while
+  breaking every read of an open document.
+- **A probe that models the thing under test cannot measure it.** The fix is not
+  more care in reading the probe; it is that the discriminating case must be
+  identified *before* the probe is trusted — here, the one reader whose result
+  differs between the two candidate mechanisms. A probe on which every case
+  agrees has measured nothing.
 
 ### 19.1 Where the distinction is *not* available, and stays collapsed
 

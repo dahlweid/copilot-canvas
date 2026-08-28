@@ -268,9 +268,10 @@ try {
     await check("an exclusively locked original is reported as locked, not as a generic failure", async () => {
         // The one path units cannot cover: a real sharing violation from a real
         // second process. Measured behaviour this depends on -- an exclusive
-        // hold gives EBUSY, whereas Word's own FileShare::Read does not fail at
+        // hold gives EBUSY, whereas Word's own lock (a write handle granting
+        // FileShare::ReadWrite) does not fail a ReadWrite-granting reader at
         // all -- is why `file_locked` means "stricter than Word", not "open in
-        // Word".
+        // Word". The companion check below asserts that other half.
         //
         // Safe despite ADR 0005: the revision token is read before Word is
         // started, so this fails fast on the filesystem and never reaches the
@@ -298,6 +299,42 @@ try {
                 /permission/i,
                 "a sharing violation must not be reported as a permissions problem",
             );
+        } finally {
+            holder.kill();
+            await new Promise((resolve) => setTimeout(resolve, 500));
+        }
+    });
+
+    await check("a read succeeds against a Word-like holder, so 'open in Word' is never file_locked", async () => {
+        // The load-bearing half of the `file_locked` contract, and until now
+        // the untested one. Every message and every ADR asserts that a document
+        // the user has open in Word reads fine; nothing failed if that stopped
+        // being true.
+        //
+        // The holder models Word exactly: a WRITE handle granting ReadWrite.
+        // That distinction is the point. This repo documented Word as taking
+        // `FileShare::Read` for months -- same conclusion, wrong mechanism --
+        // and the wrong one predicts that *any* reader succeeds. It does not:
+        // a reader granting only `Read` refuses to let anyone else write,
+        // conflicts with Word's write handle, and gets a sharing violation on
+        // a file `Copy-Item` copies fine. So this check is also the guard
+        // against someone "hardening" our copy to a narrower share mode: that
+        // change breaks reads of open documents and nothing else would notice.
+        const holder = spawn(
+            "powershell.exe",
+            [
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "$fs=[IO.File]::Open($env:PROBE_PATH,'Open','ReadWrite','ReadWrite'); Start-Sleep -Seconds 30; $fs.Close()",
+            ],
+            { env: { ...process.env, PROBE_PATH: fixture } },
+        );
+        try {
+            await new Promise((resolve) => setTimeout(resolve, 2000));
+            const result = await cache.readStructure(fixture);
+            assert.ok(result.paragraphCount > 0, "a read of a Word-held document returned nothing");
+            assert.ok(result.revisionToken, "a read of a Word-held document produced no revision token");
         } finally {
             holder.kill();
             await new Promise((resolve) => setTimeout(resolve, 500));
