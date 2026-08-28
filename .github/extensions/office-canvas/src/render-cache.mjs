@@ -13,6 +13,7 @@ import { mkdir, readdir, rm, stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { WordHost } from "./word/word-host.mjs";
+import { DocumentReader } from "./word/document-reader.mjs";
 
 export class DocumentError extends Error {
     constructor(code, message) {
@@ -35,11 +36,39 @@ export function normalizeDocPath(input) {
 
 const identityOf = (docPath) => (process.platform === "win32" ? docPath.toLowerCase() : docPath);
 
-const SUPPORTED = new Set([".docx", ".docm", ".doc", ".dotx", ".rtf"]);
+/**
+ * The extensions Word will open as a document. **The single source of truth.**
+ *
+ * Every statement of this set elsewhere -- the tool parameter descriptions the
+ * model reads, the picker's workspace scan -- is derived from it rather than
+ * restated. Three independent copies had already drifted: two tool
+ * descriptions and the picker's own set all omitted `.dotx`, so the agent was
+ * told templates were unsupported and the picker hid them, while the code
+ * opened them happily. A restatement is a copy that will drift; deriving is
+ * what makes adding an extension here update the contract everywhere.
+ */
+export const SUPPORTED = new Set([".docx", ".docm", ".doc", ".dotx", ".rtf"]);
+
+/** The supported extensions as prose, for tool descriptions and messages. */
+export const supportedList = () => [...SUPPORTED].join(", ");
+
+/** Normalizes a path and rejects anything Word will not open as a document. */
+export function requireSupported(rawPath) {
+    const docPath = normalizeDocPath(rawPath);
+    const ext = path.extname(docPath).toLowerCase();
+    if (!SUPPORTED.has(ext)) {
+        throw new DocumentError(
+            "unsupported_type",
+            `${ext || "This file"} is not a Word document. Supported: ${supportedList()}.`,
+        );
+    }
+    return docPath;
+}
 
 export class RenderCache {
     /** identity -> { docPath, docId, workDir, pdfDir, key, meta, pdfFile, pending } */
     #docs = new Map();
+    #reader = null;
 
     constructor({ cacheRoot, log = () => {} }) {
         this.cacheRoot = cacheRoot;
@@ -91,14 +120,7 @@ export class RenderCache {
      * returns its metadata. Safe to call repeatedly.
      */
     async open(rawPath) {
-        const docPath = normalizeDocPath(rawPath);
-        const ext = path.extname(docPath).toLowerCase();
-        if (!SUPPORTED.has(ext)) {
-            throw new DocumentError(
-                "unsupported_type",
-                `${ext || "This file"} is not a Word document. Supported: ${[...SUPPORTED].join(", ")}.`,
-            );
-        }
+        const docPath = requireSupported(rawPath);
 
         // Validate the file *before* registering any state, so a bad path never
         // leaves a half-open document behind.
@@ -127,6 +149,26 @@ export class RenderCache {
             throw err;
         }
         return this.#describe(state);
+    }
+
+    /**
+     * Reads the document's structure map and revision token.
+     *
+     * Independent of `open`: it takes no cache state, holds nothing open, and
+     * works whether or not this document is displayed in a canvas — the tools
+     * are the product, the canvas is a display surface. It shares the Word
+     * instance, so it costs a cold start only when nothing else has needed one.
+     */
+    readStructure(rawPath, options = {}) {
+        const docPath = requireSupported(rawPath);
+        if (!this.#reader) {
+            this.#reader = new DocumentReader({
+                host: this.host,
+                workRoot: this.cacheRoot,
+                log: this.log,
+            });
+        }
+        return this.#reader.read(docPath, options);
     }
 
     #describe(state) {

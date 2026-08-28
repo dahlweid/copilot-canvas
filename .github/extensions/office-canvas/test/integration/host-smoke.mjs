@@ -13,23 +13,10 @@ import path from "node:path";
 import assert from "node:assert/strict";
 
 import { WordHost } from "../../src/word/word-host.mjs";
+import { assertNoLeakedWord, killNewWord, wordPids } from "./word-pids.mjs";
 
 const execFileAsync = promisify(execFile);
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-
-async function wordPids() {
-    const { stdout } = await execFileAsync("powershell.exe", [
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-        "@(Get-Process -Name WINWORD -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id) -join ','",
-    ]);
-    return stdout
-        .trim()
-        .split(",")
-        .filter(Boolean)
-        .map((n) => Number(n));
-}
 
 const results = [];
 function check(name, fn) {
@@ -198,20 +185,7 @@ try {
         // Simulates a Word crash / stuck-dialog teardown: the bridge must
         // transparently restart and replay the open.
         await host.request("__force_kill_for_test", {}).catch(() => {});
-        const { execFileSync } = await import("node:child_process");
-        const pids = await wordPids();
-        for (const pid of pids.filter((p) => !pidsBefore.includes(p))) {
-            try {
-                execFileSync("powershell.exe", [
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-Command",
-                    `Stop-Process -Id ${pid} -Force -ErrorAction SilentlyContinue`,
-                ]);
-            } catch {
-                /* ignore */
-            }
-        }
+        killNewWord(pidsBefore, await wordPids());
         const res = await host.info({ docId });
         assert.ok(res.pageCount > 1, "expected the bridge to recover and reopen the document");
     });
@@ -224,12 +198,7 @@ try {
     await host.dispose();
 }
 
-await check("no WINWORD.EXE is left behind", async () => {
-    await new Promise((r) => setTimeout(r, 1500));
-    const after = await wordPids();
-    const leaked = after.filter((p) => !pidsBefore.includes(p));
-    assert.deepEqual(leaked, [], `leaked Word processes: ${leaked.join(", ")}`);
-});
+await check("no new WINWORD.EXE is left behind", () => assertNoLeakedWord(pidsBefore));
 
 await rm(workRoot, { recursive: true, force: true }).catch(() => {});
 

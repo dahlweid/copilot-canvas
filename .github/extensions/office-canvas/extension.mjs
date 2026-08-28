@@ -1,18 +1,23 @@
-// office-canvas — renders .docx files page-accurately in a side canvas.
+// office-canvas — Word document tools, plus a canvas that renders .docx files
+// page-accurately in a side panel.
 //
-// A hidden, automation-owned Microsoft Word instance is the rendering engine:
-// it exports the document to PDF, which the canvas serves over loopback to the
-// panel's native PDF viewer. Word also stays available as a live document model
-// for outline, search and text queries.
+// The tools are the product; the canvas is how the user watches. `read_document`
+// is callable with no canvas open.
+//
+// A hidden, automation-owned Microsoft Word instance does the work: it exports
+// the document to PDF, which the canvas serves over loopback to the panel's
+// native PDF viewer, and it hands back WordprocessingML for structural reads.
 //
 // Read-only by design: the user's file is never opened by Word directly, only
 // an unblocked temp copy of it.
 
 import path from "node:path";
 import { createCanvas, CanvasError, joinSession } from "@github/copilot-sdk/extension";
-import { RenderCache, DocumentError, normalizeDocPath } from "./src/render-cache.mjs";
+import { RenderCache, DocumentError, normalizeDocPath, supportedList } from "./src/render-cache.mjs";
 import { ViewerInstance } from "./src/server.mjs";
 import { artifactsRoot } from "./src/store.mjs";
+import { createIdleShutdown } from "./src/word-lifecycle.mjs";
+import { normalizeReadArgs, DEFAULT_READ_LIMIT, MAX_READ_LIMIT } from "./src/word/read-args.mjs";
 
 /** instanceId -> ViewerInstance */
 const instances = new Map();
@@ -20,13 +25,42 @@ const instances = new Map();
 let session = null;
 let cache = null;
 
+// A tool call can arrive with no canvas open, so Word may be started purely to
+// serve one. Nothing would then ever shut it down -- the canvas path releases
+// Word when the last panel closes, and there is no panel. An idle timer gives
+// repeated reads a warm instance without leaving a hidden Word running for the
+// rest of the session, and an in-flight counter keeps it from firing under a
+// tool call that is still running. See src/word-lifecycle.mjs.
+const IDLE_SHUTDOWN_MS = 60_000;
+
 // `session.log` rejects asynchronously (e.g. on an unsupported level); an
 // unhandled rejection would take the whole extension process down.
 const log = (message, level = "info", { ephemeral = level === "info" } = {}) => {
     void session?.log(`[office-canvas] ${message}`, { level, ephemeral })?.catch(() => {});
 };
 
+const lifecycle = createIdleShutdown({
+    idleMs: IDLE_SHUTDOWN_MS,
+    isDisplaying: () => instances.size > 0,
+    dispose: async () => {
+        const idle = cache;
+        cache = null;
+        await idle?.dispose();
+    },
+    log: (m) => log(m),
+});
+
+/**
+ * Wraps anything that needs Word alive for its duration.
+ *
+ * Every tool handler goes through this rather than remembering to schedule an
+ * idle shutdown in its own `finally` -- that was the original shape, and it is
+ * the shape that carried the race.
+ */
+const withWordWork = (fn) => lifecycle.run(fn);
+
 function getCache() {
+    lifecycle.cancel();
     if (!cache) {
         cache = new RenderCache({ cacheRoot: artifactsRoot(), log: (m) => log(m) });
     }
@@ -78,6 +112,23 @@ async function run(fn) {
     }
 }
 
+/**
+ * Tools are not canvas actions, so `CanvasError` means nothing to a tool caller.
+ * The code is folded into the message instead, because that is what the agent
+ * actually reads when deciding what to do next.
+ */
+function asToolError(err) {
+    const code = err?.code ?? "word_error";
+    const message = err?.message ?? "Unknown error";
+    const wrapped = new Error(`${code}: ${message}`);
+    wrapped.code = code;
+    // Facts the host attached to the failure, such as `writable: false` on a
+    // locked original. Dropping them here would leave the agent with a code and
+    // no way to tell why.
+    if (err?.data) wrapped.data = err.data;
+    return wrapped;
+}
+
 // --- canvas ----------------------------------------------------------------
 
 const wordCanvas = createCanvas({
@@ -91,7 +142,8 @@ const wordCanvas = createCanvas({
             path: {
                 type: "string",
                 description:
-                    "Absolute or workspace-relative path to a Word document (.docx, .docm, .doc, .rtf). Omit to open the canvas on its document picker.",
+                    `Absolute or workspace-relative path to a Word document (${supportedList()}). ` +
+                    `Omit to open the canvas on its document picker.`,
             },
         },
         additionalProperties: false,
@@ -136,7 +188,14 @@ const wordCanvas = createCanvas({
 
         if (instances.size === 0) {
             // Nothing left to render for: let Word go rather than leaving a
-            // hidden process running for the rest of the session.
+            // hidden process running for the rest of the session -- unless a
+            // tool call is still using it, in which case closing the panel must
+            // not tear down the instance under it. The idle timer picks it up.
+            if (lifecycle.busy) {
+                log("last canvas closed while a tool call is running; deferring Word shutdown");
+                lifecycle.schedule();
+                return;
+            }
             log("last canvas closed, shutting Word down");
             await cache?.dispose().catch(() => {});
             cache = null;
@@ -285,6 +344,77 @@ const wordCanvas = createCanvas({
     ],
 });
 
+// --- tools -----------------------------------------------------------------
+
+// A document with no limit returns every paragraph -- text, style id, heading
+// path and a 12-hex address each -- straight into the agent's context on the
+// first call. Paging is free here because addresses are minted across the whole
+// document regardless, and the response says how many were withheld.
+//
+// The default and the validation that protects it live in src/word/read-args.mjs,
+// so the description below and the handler cannot state different numbers.
+
+const readDocumentTool = {
+    name: "read_document",
+    description: [
+        "Reads a Word document and returns its structure map — every paragraph with its text,",
+        "resolved style, heading path and a stable address — together with a revision token for",
+        "the file. Cite an address to say which paragraph an edit applies to, and present the",
+        "token so the edit can be refused if the document changed underneath. Does not need a",
+        "canvas to be open, and does not open one.",
+    ].join(" "),
+    parameters: {
+        type: "object",
+        properties: {
+            path: {
+                type: "string",
+                description: `Absolute or workspace-relative path to a Word document (${supportedList()}).`,
+            },
+            limit: {
+                type: "integer",
+                minimum: 1,
+                // Declared from the same constant the validator enforces: a
+                // declared bound the runtime does not check is a promise the
+                // contract cannot keep.
+                maximum: MAX_READ_LIMIT,
+                description:
+                    `Maximum paragraphs to return (default ${DEFAULT_READ_LIMIT}). Addresses are always minted across the whole document, so paging never changes one; the response reports paragraphCount and truncated.`,
+            },
+            offset: {
+                type: "integer",
+                minimum: 0,
+                description: "Index of the first paragraph to return, 0-based. Use with limit to page a long document.",
+            },
+        },
+        required: ["path"],
+        additionalProperties: false,
+    },
+    handler: async (args) => {
+        // Validated before any Word work is entered. This is placement rather
+        // than a rescue: nothing on this path started Word for a bad argument
+        // before either, because `resolveInputPath` already threw ahead of
+        // `getCache()`. Keeping the checks together and ahead of `withWordWork`
+        // is what stops that from being an accident of evaluation order as more
+        // validation arrives -- L2's edit path will have considerably more.
+        let paging;
+        let docPath;
+        try {
+            paging = normalizeReadArgs(args);
+            docPath = resolveInputPath(args?.path);
+        } catch (err) {
+            throw asToolError(err);
+        }
+
+        return withWordWork(async () => {
+            try {
+                return await getCache().readStructure(docPath, paging);
+            } catch (err) {
+                throw asToolError(err);
+            }
+        });
+    },
+};
+
 // --- lifecycle -------------------------------------------------------------
 
 let shuttingDown = false;
@@ -302,6 +432,7 @@ function reapOnExit() {
 async function shutdown(signal) {
     if (shuttingDown) return;
     shuttingDown = true;
+    lifecycle.cancel();
     try {
         await Promise.all([...instances.values()].map((i) => i.close().catch(() => {})));
         instances.clear();
@@ -324,6 +455,7 @@ process.on("unhandledRejection", (reason) => {
 
 session = await joinSession({
     canvases: [wordCanvas],
+    tools: [readDocumentTool],
     hooks: {
         onSessionEnd: async () => {
             await shutdown(null);

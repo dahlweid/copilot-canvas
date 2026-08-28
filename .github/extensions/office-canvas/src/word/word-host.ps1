@@ -71,8 +71,26 @@ function Send-Ok($id, $result) {
     Send-Message @{ id = $id; ok = $true; result = $result }
 }
 
-function Send-Fail($id, $code, $message) {
-    Send-Message @{ id = $id; ok = $false; error = @{ code = $code; message = $message } }
+function Send-Fail($id, $code, $message, $data = $null) {
+    $err = @{ code = $code; message = $message }
+    if ($null -ne $data) { $err.data = $data }
+    Send-Message @{ id = $id; ok = $false; error = $err }
+}
+
+# A typed failure.
+#
+# Every failure used to reach the caller as `word_error`, which meant the only
+# way to tell "the file is missing" from "the file is locked" from "Word itself
+# died" was to pattern-match `$_.Exception.Message` -- and those messages are
+# localized, so matching them on this German machine is matching a translation.
+# `throw` records the thrown object on `$_.TargetObject`, so the dispatch loop
+# can recover the code without parsing anything.
+#
+# `data` carries facts the caller needs *on the failure path*, which is where
+# they matter most: `writable` is the obvious one, since "the original is locked"
+# is precisely the case where a read fails and the caller wants to know why.
+function New-HostError([string]$code, [string]$message, $data = $null) {
+    return @{ __hostError = $true; code = $code; message = $message; data = $data }
 }
 
 function Get-WordPids {
@@ -154,6 +172,29 @@ function Get-PageOf($range) {
     try { return [int]$range.Information($WD_INFO_ACTIVE_END_PAGE_NUMBER) } catch { return 0 }
 }
 
+# Whether the file could be opened for writing right now -- 4 ms when another
+# process holds it, 9 ms when free, correct in both directions.
+#
+# ADR 0005: this is the *only* safe way to ask. Probing by asking Word to open
+# the document is precisely the call that hangs indefinitely on a held file,
+# with DisplayAlerts already off, leaving two processes to be killed by hand.
+# True when a *write* handle can be taken. Note what that does and does not
+# mean, because the answer is reported to callers: it is false for a sharing
+# violation, but equally for an ACL that denies write and for the read-only
+# attribute. Measured: the read-only attribute and Word's own FileShare::Read
+# both still allow *reading* and copying, so `writable = $false` must never be
+# reported as "another process has it open" -- that is one of three causes.
+function Test-FileWritable([string]$path) {
+    try {
+        $stream = [IO.File]::Open($path, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        $stream.Close()
+        $stream.Dispose()
+        return $true
+    } catch {
+        return $false
+    }
+}
+
 # ComputeStatistics(wdStatisticPages) returns 1 on a hidden, window-less Word
 # instance because the document is never laid out for the screen. Information()
 # reports the real paginated count, so it is the primary source here.
@@ -205,7 +246,7 @@ function Resolve-Doc($docId) {
         Open-DocInternal $docId $saved.path $saved.workDir | Out-Null
         return $script:Docs[$docId]
     }
-    throw "No open document with id '$docId'."
+    throw (New-HostError 'no_such_document' "No open document with id '$docId'.")
 }
 
 # --- Word lifecycle ----------------------------------------------------------
@@ -225,7 +266,8 @@ function Initialize-Word {
     try {
         $script:App = New-Object -ComObject Word.Application
     } catch {
-        throw "Microsoft Word could not be started. Word must be installed to use this canvas. ($($_.Exception.Message))"
+        throw (New-HostError 'word_unavailable' `
+            "Microsoft Word could not be started. Word must be installed to use this canvas. ($($_.Exception.Message))")
     }
 
     # Ownership detection: if a brand new WINWORD process appeared we created it
@@ -301,22 +343,77 @@ function Cmd-Ping($a) {
     }
 }
 
-function Open-DocInternal([string]$docId, [string]$path, [string]$workDir) {
-    Initialize-Word
-
-    if ([string]::IsNullOrWhiteSpace($path)) { throw "No document path supplied." }
-    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "File not found: $path" }
-
-    if (-not (Test-Path -LiteralPath $workDir)) {
-        New-Item -ItemType Directory -Force -Path $workDir | Out-Null
+function Open-DocInternal([string]$docId, [string]$path, [string]$workDir, [bool]$withStats = $true) {
+    # Validate before Initialize-Word. These checks are string and filesystem
+    # work costing microseconds; Initialize-Word costs up to ~4.5 s cold.
+    #
+    # Honest scope, because the obvious claim for this ordering is wrong here:
+    # it saves no Word startup today, and measurement said so. Word is started
+    # by the bridge, not by this command -- word-host.mjs pings as soon as the
+    # host process exists, so that `ownedPid` is known on the tools-only path
+    # and the reap net is not inert. By the time any command is dispatched,
+    # cold or warm, Word is already up; reordering inside this function cannot
+    # reach that. And the shipping read path never gets here with a bad path at
+    # all: DocumentReader.read() stats the file and throws first.
+    #
+    # It is kept because the ordering is correct on its own terms and free, and
+    # because it is what makes the eager ping the *only* thing standing between
+    # a doomed request and a Word startup, rather than one of two.
+    if ([string]::IsNullOrWhiteSpace($path)) { throw (New-HostError 'invalid_request' "No document path supplied.") }
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        throw (New-HostError 'file_not_found' "File not found: $path")
     }
+
+    if ([string]::IsNullOrWhiteSpace($workDir)) {
+        throw (New-HostError 'invalid_request' "No working directory supplied.")
+    }
+    if (-not (Test-Path -LiteralPath $workDir)) {
+        try {
+            New-Item -ItemType Directory -Force -Path $workDir -ErrorAction Stop | Out-Null
+        } catch {
+            throw (New-HostError 'write_failed' "Could not create the working directory. ($($_.Exception.Message))")
+        }
+    }
+
+    Initialize-Word
 
     # Never open the user's original file: copy it, strip the mark-of-the-web
     # (Protected View refuses automation) and open the copy read-only. This is
     # what makes "read-only" structurally true rather than merely intended.
     $ext = [IO.Path]::GetExtension($path)
     $copy = Join-Path $workDir ("source" + $ext)
-    Copy-Item -LiteralPath $path -Destination $copy -Force
+    try {
+        Copy-Item -LiteralPath $path -Destination $copy -Force -ErrorAction Stop
+    } catch {
+        # The copy is the first thing that touches the original, so a failure to
+        # read it surfaces here rather than at Documents.Open -- which is the
+        # good outcome, because that is the call that hangs.
+        #
+        # Branch on the exception *type*, never the message: messages are
+        # localized, and matching them is the trap that has already cost this
+        # project twice. Measured on this machine:
+        #
+        #   FileShare::None (exclusive)   -> System.IO.IOException
+        #   ACL denying read              -> System.UnauthorizedAccessException
+        #   FileShare::Read (Word's own)  -> copy succeeds
+        #   read-only attribute           -> copy succeeds
+        #
+        # The last two are why a read works against a document the user has
+        # open, and why "read-only" is not a failure at all.
+        $ex = $_.Exception
+        $name = [IO.Path]::GetFileName($path)
+        if ($ex -is [System.UnauthorizedAccessException]) {
+            throw (New-HostError 'permission_denied' `
+                "Not allowed to read $name. This is a permissions problem, not another program holding the file." `
+                    @{ writable = $false })
+        }
+        if ($ex -is [System.IO.IOException]) {
+            throw (New-HostError 'file_locked' `
+                "Another process is holding $name open more strictly than Word does. A document merely open in Word can still be read." `
+                    @{ writable = $false })
+        }
+        throw (New-HostError 'copy_failed' "Could not make a working copy of the document. ($($ex.Message))")
+    }
     try { Unblock-File -LiteralPath $copy -ErrorAction SilentlyContinue } catch { }
 
     Close-Doc $docId
@@ -326,19 +423,28 @@ function Open-DocInternal([string]$docId, [string]$path, [string]$workDir) {
         # PasswordDocument, PasswordTemplate, Revert
         $doc = $script:App.Documents.Open($copy, $false, $true, $false, $FAIL_FAST_PASSWORD, $FAIL_FAST_PASSWORD, $false)
     } catch {
-        throw "Word could not open the document. It may be password-protected or corrupt. ($($_.Exception.Message))"
+        throw (New-HostError 'document_unreadable' `
+            "Word could not open the document. It may be password-protected or corrupt. ($($_.Exception.Message))")
     }
 
     $script:Docs[$docId] = $doc
     $script:DocArgs[$docId] = @{ path = $path; workDir = $workDir }
 
     $item = Get-Item -LiteralPath $path
+    # Pagination and word count are a full pass over the document. The renderer
+    # needs them; a structure read does not, and pays for them in latency.
+    $pageCount = 0
+    $wordCount = 0
+    if ($withStats) {
+        $pageCount = (Get-PageCount $doc)
+        $wordCount = (Get-WordCount $doc)
+    }
     return @{
         docId       = $docId
         path        = $path
         name        = $item.Name
-        pageCount   = (Get-PageCount $doc)
-        wordCount   = (Get-WordCount $doc)
+        pageCount   = $pageCount
+        wordCount   = $wordCount
         sizeBytes   = [int64]$item.Length
         modifiedIso = $item.LastWriteTimeUtc.ToString('o')
         title       = [string](Get-DocProp $doc 'Title')
@@ -349,6 +455,87 @@ function Open-DocInternal([string]$docId, [string]$path, [string]$workDir) {
 
 function Cmd-Open($a) {
     return Open-DocInternal ([string]$a.docId) ([string]$a.path) ([string]$a.workDir)
+}
+
+# One `Content.WordOpenXML` call, written to a file, document closed at once.
+#
+# Measured (PLAN.md §18.1) on a 219-paragraph document: walking Paragraphs and
+# touching Range.Text / OutlineLevel per paragraph cost 3724 ms, because every
+# property touch is a cross-process COM call; one WordOpenXML call cost 289 ms
+# and returned strictly more -- text, style and full markup. A per-paragraph
+# property walk is a defect, not a slow path.
+#
+# The markup goes to a file rather than back through the protocol: it is
+# routinely 100 KB and can be megabytes, and JSON-escaping that onto a single
+# stdio line is pure overhead when the reader is on the same machine.
+function Cmd-Structure($a) {
+    $docId = [string]$a.docId
+    $path = [string]$a.path
+    $out = [string]$a.out
+    if ([string]::IsNullOrWhiteSpace($out)) {
+        throw (New-HostError 'invalid_request' "No output path supplied for the structure read.")
+    }
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        throw (New-HostError 'file_not_found' "File not found: $path")
+    }
+
+    # Reported, not enforced: a read is served from a copy and so never needs
+    # the original. It tells the caller whether an *edit* would collide -- and it
+    # is attached to failures too, because a failed read is exactly when the
+    # caller most needs to know the original is held by someone else.
+    $writable = Test-FileWritable $path
+
+    try {
+        $meta = Open-DocInternal $docId $path ([string]$a.workDir) $false
+    } catch {
+        $thrown = $_.TargetObject
+        if ($thrown -is [hashtable] -and $thrown.__hostError) {
+            if ($null -eq $thrown.data) { $thrown.data = @{} }
+            # Only fill it in when the failure did not already say so. A deeper
+            # error knows more than this pre-flight does: it observed the actual
+            # open, whereas $writable was sampled before the attempt and the
+            # file can change hands in between. Overwriting it discarded the
+            # better answer in favour of the staler one.
+            if (-not $thrown.data.ContainsKey('writable')) {
+                $thrown.data.writable = $writable
+            }
+        }
+        throw
+    }
+    try {
+        $xml = [string](Resolve-Doc $docId).Content.WordOpenXML
+    } finally {
+        # The lock window ends the moment the markup is in hand. Nothing below
+        # this point needs Word.
+        $script:DocArgs.Remove($docId) | Out-Null
+        Close-Doc $docId
+    }
+
+    $outDir = Split-Path -Parent $out
+    if (-not [string]::IsNullOrWhiteSpace($outDir) -and -not (Test-Path -LiteralPath $outDir)) {
+        New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+    }
+    # No BOM: the caller parses this as XML, and a BOM ahead of the declaration
+    # is a parse error in stricter readers.
+    try {
+        [IO.File]::WriteAllText($out, $xml, (New-Object System.Text.UTF8Encoding($false)))
+    } catch {
+        # A short write here is what produces truncated markup downstream, so it
+        # gets its own code rather than arriving as a parse failure later.
+        throw (New-HostError 'write_failed' `
+            "Could not write the document markup to $out. ($($_.Exception.Message))" @{ writable = $writable })
+    }
+
+    return @{
+        out         = $out
+        bytes       = [int64](Get-Item -LiteralPath $out).Length
+        writable    = $writable
+        name        = $meta.name
+        sizeBytes   = $meta.sizeBytes
+        modifiedIso = $meta.modifiedIso
+        title       = $meta.title
+        author      = $meta.author
+    }
 }
 
 function Cmd-Export($a) {
@@ -469,7 +656,7 @@ function Cmd-Outline($a) {
 function Cmd-Search($a) {
     $doc = Resolve-Doc ([string]$a.docId)
     $query = [string]$a.query
-    if ([string]::IsNullOrWhiteSpace($query)) { throw "Search query is empty." }
+    if ([string]::IsNullOrWhiteSpace($query)) { throw (New-HostError 'invalid_request' "Search query is empty.") }
 
     $limit = 200
     if ($null -ne $a.limit) { $limit = [int]$a.limit }
@@ -530,7 +717,7 @@ function Cmd-Text($a) {
     }
 
     if ($toPage -le 0 -or $toPage -gt $totalPages) { $toPage = $totalPages }
-    if ($fromPage -gt $totalPages) { throw "Page $fromPage is beyond the end of the document ($totalPages pages)." }
+    if ($fromPage -gt $totalPages) { throw (New-HostError 'page_out_of_range' "Page $fromPage is beyond the end of the document ($totalPages pages).") }
 
     $startRange = $doc.GoTo($WD_GOTO_PAGE, $WD_GOTO_ABSOLUTE, $fromPage)
     $start = [int]$startRange.Start
@@ -588,6 +775,7 @@ try {
             switch ([string]$req.cmd) {
                 'ping' { Send-Ok $id (Cmd-Ping $cmdArgs) }
                 'open' { Send-Ok $id (Cmd-Open $cmdArgs) }
+                'structure' { Send-Ok $id (Cmd-Structure $cmdArgs) }
                 'export' { Send-Ok $id (Cmd-Export $cmdArgs) }
                 'outline' { Send-Ok $id (Cmd-Outline $cmdArgs) }
                 'search' { Send-Ok $id (Cmd-Search $cmdArgs) }
@@ -602,7 +790,14 @@ try {
                 default { Send-Fail $id 'unknown_command' "Unknown command '$([string]$req.cmd)'." }
             }
         } catch {
-            Send-Fail $id 'word_error' $_.Exception.Message
+            # A typed failure carries its own code; anything else is genuinely
+            # unclassified and stays `word_error`.
+            $thrown = $_.TargetObject
+            if ($thrown -is [hashtable] -and $thrown.__hostError) {
+                Send-Fail $id ([string]$thrown.code) ([string]$thrown.message) $thrown.data
+            } else {
+                Send-Fail $id 'word_error' $_.Exception.Message
+            }
         }
     }
 } finally {

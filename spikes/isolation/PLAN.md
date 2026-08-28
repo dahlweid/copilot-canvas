@@ -1157,3 +1157,49 @@ after its own edits — only after somebody else's.
 That is the whole concurrency story for transient locking. We hold nothing
 between operations, so we cannot assume anything stayed put; the token is what
 converts that from a hazard into a detectable, refusable condition.
+
+## 19. Measured: "unreadable" is two different conditions, and both runtimes can tell them apart
+
+A code review asked, correctly, whether splitting a single `file_locked` error
+into `file_locked` and `permission_denied` claims a precision Windows does not
+give us. The concern is the right one — inventing a distinction the platform
+cannot make is the same class of error as bounding a timeout with a number
+measured on a quiet machine. So it was probed rather than argued.
+
+`probes/probe-errno-mapping.mjs` measures both runtimes the read path crosses,
+because `document-reader.mjs` branches on Node's errno and `word-host.ps1`
+branches on the .NET exception type. Neither may branch on a *message*: Windows
+and Word are German on this machine.
+
+| Cause | Node read handle | PowerShell `Copy-Item` |
+| --- | --- | --- |
+| `FileShare::None` (exclusive hold) | `EBUSY` | `System.IO.IOException` |
+| ACL denying read | `EPERM` | `System.UnauthorizedAccessException` |
+| `FileShare::Read` (**what Word itself takes**) | succeeds | succeeds |
+| Read-only attribute | succeeds | succeeds |
+| `chmod 000` | succeeds (ignored on Windows) | — |
+
+Two conclusions, and the second is the more useful one.
+
+**The split is real.** Both runtimes separate a sharing violation from a
+permissions denial, cleanly and by type. The two also deserve different
+remediation: a lock may clear on its own and is worth retrying, a denied ACL
+will not and is not. So the codes are justified.
+
+**Most things that sound like they would block a read do not block a read.** The
+read-only attribute does not. `chmod` does not. And decisively, *Word's own lock
+does not* — Word opens a document `FileShare::Read`, which is why a copy-based
+read works at all against a document the user is looking at. This is why
+`file_locked` means **"held more strictly than Word holds it"**, not "open in
+Word". A message telling a user to close Word would name the one cause that has
+been measured not to be the cause.
+
+### 19.1 Where the distinction is *not* available, and stays collapsed
+
+`Test-FileWritable` opens a **write** handle, so it collapses sharing violation,
+denying ACL and read-only attribute into a single `writable: $false`. That
+ambiguity is inherent to the probe, not an oversight, and no code branches on
+it: `writable` is reported as a fact alongside a typed code, never used to infer
+a cause. The rule the review was reaching for holds — split where the platform
+distinguishes, stay collapsed where it does not — and the two halves of this
+section are the two sides of it.

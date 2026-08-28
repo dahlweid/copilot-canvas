@@ -110,6 +110,25 @@ export class WordHost {
             });
 
             this.#child = child;
+
+            // Learn which WINWORD we own as soon as the host exists, not when a
+            // canvas happens to open a document. `ownedPid` is what `#onExit`,
+            // `reapOwnedWord` and the process exit hook all reap through, and a
+            // tools-only session -- which is every session that just calls
+            // `read_document` -- never went near `openDocument`. The whole reap
+            // net was inert on exactly the path layers 2-4 use.
+            //
+            // Safe to call from inside the start: `#ensureStarted` returns early
+            // on `this.running`, which is true the moment `#child` is set above,
+            // so `ping` cannot recurse into another start.
+            try {
+                await this.ping();
+            } catch (err) {
+                // Word may genuinely be missing. The command the caller actually
+                // wanted will say so; failing the start here would only replace
+                // that message with a worse one.
+                this.log(`word-host: could not identify the Word process (${err.code ?? "error"})`);
+            }
         })();
 
         try {
@@ -143,6 +162,10 @@ export class WordHost {
             else {
                 const err = new Error(message.error?.message ?? "Unknown Word error");
                 err.code = message.error?.code ?? "word_error";
+                // Facts the host attached to the failure itself -- `writable` on
+                // a locked file, for instance. The failure path is where the
+                // caller most needs them.
+                if (message.error?.data) err.data = message.error.data;
                 entry.reject(err);
             }
         }
@@ -223,9 +246,10 @@ export class WordHost {
                 cmd !== "open" &&
                 (err.code === "word_unavailable" ||
                     err.code === "word_timeout" ||
-                    /No open document with id/i.test(message) ||
+                    err.code === "no_such_document" ||
                     // COM surfaces a dead Word as RPC_E_DISCONNECTED / 0x800706BA,
-                    // localized, so match the HRESULT rather than the text.
+                    // localized, so match the HRESULT rather than the text. This
+                    // is Word's own error, not one of ours, so it has no code.
                     /0x800706BA|0x80010108|RPC/i.test(message));
             if (!recoverable) throw err;
 
@@ -267,6 +291,19 @@ export class WordHost {
 
     exportPdf({ docId, out, from, to }) {
         return this.request("export", { docId, out, from, to }, { timeoutMs: STARTUP_TIMEOUT_MS });
+    }
+
+    /**
+     * Reads the document's WordprocessingML into `out` and closes it again.
+     *
+     * Bounded by the startup timeout rather than the default one because it
+     * includes a cold Word start. ADR 0005 requires every `Documents.Open` to
+     * be timeout-bounded: detection and open are not atomic, so a file that
+     * looked free can still be taken between the two, and an unbounded open
+     * against a held file hangs forever.
+     */
+    structure({ docId, path: docPath, workDir, out, timeoutMs = STARTUP_TIMEOUT_MS }) {
+        return this.request("structure", { docId, path: docPath, workDir, out }, { timeoutMs });
     }
 
     outline({ docId, limit }) {
