@@ -112,9 +112,13 @@ denying ACL from a read-only attribute, so it stays a single collapsed flag.
 The rule both halves share: **split where the platform distinguishes, stay
 collapsed where it does not.**
 
-Two non-failures worth naming, because both sound like failures and neither is:
-the **read-only attribute** does not block reading, and neither does `chmod`.
-No layer needs a branch for either.
+Two non-failures worth naming, because both sound like failures and neither is.
+On Windows/NTFS, which is the only platform the host runs on: the **read-only
+attribute** does not block reading, and neither does `chmod`, because Node's
+`chmod` on Windows does nothing but toggle that same attribute. (On POSIX
+`chmod` genuinely does remove read permission — the claim here is a Windows one,
+and it is worth stating that explicitly because this repo's unit tests run on
+Linux.) No layer needs a branch for either.
 
 ### Rendering
 
