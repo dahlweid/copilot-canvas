@@ -1,0 +1,72 @@
+# Review guidance for this repository
+
+This repository drives **installed Microsoft Office applications through COM** to
+read, author and edit documents, and displays the result in a Copilot canvas.
+Almost every unusual thing in this codebase exists because a probe measured the
+platform behaving in a way the obvious code does not survive.
+
+Read `CONTEXT.md` for vocabulary and `docs/adr/` for decisions. The probes that
+established each fact are committed under `spikes/` and are re-runnable.
+
+## The standard this repo holds
+
+**A claim about platform behaviour must be backed by a probe that was actually
+run.** If you flag something and the code cites a measurement, treat the
+measurement as the stronger evidence and say so rather than restating the
+general rule. If you believe a cited measurement does not support the conclusion
+drawn from it, that is a high-value finding — say it plainly.
+
+## Deliberate decisions that look like defects
+
+Please do not report these as bugs on their own. Do report a place where the
+code **fails to follow** one of them.
+
+| Looks wrong | Why it is right |
+| --- | --- |
+| Numeric `wd*` constants instead of named styles | Word's UI here is German. Both `Range.Style = 'Heading 1'` **and** the OOXML style id `'berschrift1'` throw. Only the numeric constant (`-1 - level`) or assigning another paragraph's `Style` **object** works. Naming a style is the bug. |
+| Style ids copied verbatim, never constructed or matched | Word mints ids from the *localized* style name with non-ASCII dropped, so the id is `berschrift1` — not `Heading1`, not `Überschrift1`. Any construction or comparison of style ids is wrong. |
+| `edit_document` refuses to batch edits | An address is a **coordinate, not a handle**. Deleting one of a duplicate-text group silently renumbers its successors; renaming a heading moves every address beneath it. A batch API would imply a stability that does not exist. One edit per read is the contract (ADR 0006). |
+| Generous timeouts and long polling deadlines | `Documents.Open` on a locked file, or one carrying mark-of-the-web, **hangs indefinitely** rather than failing. Word's process teardown also contends on per-user state, so its tail is load-dependent and is *not* bounded by measurements taken on an idle machine. Deadlines here are deliberately generous; polling makes that free on success. |
+| `file_locked` returned for a file that is not open in Word | Word takes `FileShare::Read`, so a document open in Word **can** still be copied. `file_locked` therefore means *stricter than Word's own lock* — it does not mean "open in Word". Do not "correct" this to the intuitive reading. |
+| Protected View used instead of clearing the zone marker | `Unblock-File` would silently delete a security marker from a user's file. The Protected View path keeps `Zone.Identifier` intact (ADR 0007). |
+| Vendored pdf.js worker committed as three split parts | Extension install enforces **1,000,000 bytes per file, 5,000,000 total** (decimal). The worker is 1,262,398 bytes. Repo-folder install never runs a packager, so the split must exist in the committed tree. |
+| `"version": 1` in `copilot-extension.json` | That field is the *manifest format* version and is parsed as a `u32`. A semver string there makes the extension uninstallable. The product version lives in `productVersion`. |
+| `console.log` avoided outside `src/ui/` | Anything on stdout corrupts the JSON-RPC channel. Under `src/ui/` it is fine — that code runs in the iframe. |
+| Integration tests that cannot run in CI | They require an installed, licensed Word. The Office-free unit tests run on `ubuntu-latest`; the integration suites are a local gate by necessity, not by neglect. |
+
+## Where the real bugs in this codebase live
+
+These are the failure modes that have actually bitten us. Scrutiny here is
+welcome and has repeatedly found genuine defects.
+
+- **Tearing down Word while work is in flight.** Idle shutdown must check the
+  in-flight counter both when *arming* the timer and again when the timer
+  **fires** — a timer armed while idle cannot see work that starts afterwards.
+  Any new disposal path (canvas close, cache eviction, error handling) must ask
+  whether work is outstanding. The one deliberate exception is `shutdown()` on
+  SIGINT/SIGTERM, where the process is going away regardless.
+- **Character arithmetic on a Word range.** Inside a table, a cell paragraph's
+  `Range.Text` ends with `\r` plus `chr(7)` — two characters in the string — but
+  `End - Start` counts the end-of-cell mark as **one** position. Trims must be
+  derived from position spans, never from string length.
+- **Joining COM-side and file-side identity on anything translatable.** The
+  application reports localized names while the file stores something else.
+  Join on structural keys, never on a display name.
+- **Leaking a Word or PowerPoint process**, or killing one we did not start.
+  PowerPoint is **single-instance**: a COM-attached instance *is the user's*,
+  so quitting or killing it destroys their work.
+- **Unbounded `Documents.Open`**, or any COM call that can hang, without a
+  timeout.
+- **Caching an address across an edit.**
+- **Assuming a read returned the whole document.** Reads are paged and default
+  to 300 paragraphs.
+
+## Conventions
+
+- Entry point must stay `.github/extensions/<name>/extension.mjs`; no
+  `package.json` and no `node_modules` — the SDK is auto-resolved, and the
+  folder must run exactly as committed.
+- Tests are split into `test/unit/` (Office-free, run in CI) and
+  `test/integration/` (`*-smoke.mjs`, need real Office).
+- Shared test helpers such as `test/integration/word-pids.mjs` must be
+  **imported**, not copied.
