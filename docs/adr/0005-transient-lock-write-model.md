@@ -194,11 +194,3 @@ this ADR will eventually ask, and one that would otherwise be answered by
 guessing at a sleep. The poll stays anyway, because it costs nothing when the
 answer is immediate and it is the only thing that would catch the day it is not.
 
-### Why read and edit have genuinely different lock stories
-
-Worth stating plainly, because it is the sentence that explains why layer 1's
-design works at all: **the copy-based read is not merely tolerable during a
-lock, it is unaffected by one, because Word's own lock permits readers.** The
-sharper corollary is the half that matters here: *the copy survives the lock
-precisely because it is not the original, and an edit has to be.* The edit path
-is not a lazier version of the read path — it is solving a different problem.
