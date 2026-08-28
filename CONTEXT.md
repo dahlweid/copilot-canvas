@@ -84,15 +84,31 @@ one of them holds it at any moment.
 
 ### Failure
 
-Every host failure carries a typed code, and there are twelve:
+Failures carry a typed code, and there are **two surfaces** that emit them. A
+layer branching on a code has to know which one it is talking to, because the
+two sets barely overlap.
+
+**Extension surface** — what a tool or canvas action raises today, before any
+Word process is involved: `invalid_path`, `unsupported_type`, `file_not_found`,
+`not_open`, `invalid_query`, `invalid_json`, `payload_too_large`, plus
+`canvas_not_open` and `no_document` from canvas actions, and `internal` /
+`not_found` from the viewer's HTTP routes.
+
+**Word host surface** — what the PowerShell host reports over the JSON protocol.
+This arrives with `read_document`, so it is not on `main` yet:
 `file_not_found`, `file_locked`, `permission_denied`, `document_unreadable`,
 `copy_failed`, `write_failed`, `no_such_document`, `word_unavailable`,
 `word_timeout`, `page_out_of_range`, `invalid_request`,
-`document_changed_during_read`.
+`document_changed_during_read`. `word_unavailable`, `word_timeout` and
+`word_error` are also minted on the Node side when the host itself dies or
+overruns.
 
-Nine of those mean what they say. The three below do not, and every layer must
-get them right, because the code is what an agent branches on and the message is
-what a user acts on.
+`file_not_found` is the only code common to both, and it means the same thing in
+each. Everything else is surface-specific.
+
+Nine of the host's twelve mean what they say. The three below do not, and every
+layer must get them right, because the code is what an agent branches on and the
+message is what a user acts on.
 
 **`file_locked`**:
 The original is held **more strictly than Word itself holds it**. Measured: Word
