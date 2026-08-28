@@ -95,20 +95,25 @@ Word process is involved: `invalid_path`, `unsupported_type`, `file_not_found`,
 `not_found` from the viewer's HTTP routes.
 
 **Word host surface** — what the PowerShell host reports over the JSON protocol.
-This arrives with `read_document`, so it is not on `main` yet:
+Today it emits exactly one code, `word_error`, for everything; the typed set
+below arrives with `read_document` and is not on `main` yet:
 `file_not_found`, `file_locked`, `permission_denied`, `document_unreadable`,
 `copy_failed`, `write_failed`, `no_such_document`, `word_unavailable`,
 `word_timeout`, `page_out_of_range`, `invalid_request`,
-`document_changed_during_read`. `word_unavailable`, `word_timeout` and
+`document_changed_during_read`, with `word_error` kept as the fallback for
+anything with no more specific code. `word_unavailable`, `word_timeout` and
 `word_error` are also minted on the Node side when the host itself dies or
-overruns.
+overruns, so those three reach a caller whether or not the host is reached at
+all.
 
 `file_not_found` is the only code common to both, and it means the same thing in
 each. Everything else is surface-specific.
 
-Nine of the host's twelve mean what they say. The three below do not, and every
-layer must get them right, because the code is what an agent branches on and the
-message is what a user acts on.
+Most of the host's codes mean what they say. Two do not — `file_locked` and
+`permission_denied` — and a third trap is not a code at all: `writable` is a
+field reported *beside* a code, which is why it is described here with them.
+Every layer must get all three right, because the code is what an agent branches
+on and the message is what a user acts on.
 
 **`file_locked`**:
 The original is held **more strictly than Word itself holds it**. Measured: Word
