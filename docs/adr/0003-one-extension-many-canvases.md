@@ -34,3 +34,46 @@ schema, and a different verification signal, without disturbing the two that
 render as pages. Only the packaging is shared, and that is the part the runtime
 forces us to share.
 
+## Amendment: PowerPoint is not automated the way Word is
+
+Added after `spikes/powerpoint` measured PowerPoint for the first time; until
+then every platform number in this repo came from Word. See
+[`spikes/powerpoint/FINDINGS.md`](../../spikes/powerpoint/FINDINGS.md).
+
+**The rendering premise is confirmed, and more strongly than for Word.**
+`ExportAsFixedFormat` on a `.pptx` produces exactly one PDF page per slide, with
+`/MediaBox` matching `PageSetup.SlideWidth/Height` to 0.000 pt, at 94–110 ms per
+slide against Word's 168 ms per page. There is no rendering reason to split the
+extension, and PowerPoint should not follow Excel out of scope.
+
+**The shared-host premise does not hold as stated.** "The hidden-COM host
+pattern" is listed among the substance Word and PowerPoint share, but the two
+applications do not expose the same process model:
+
+- Word is multi-instance. Each `New-Object -ComObject Word.Application` starts
+  its own `WINWORD.EXE`.
+- PowerPoint registers **one automation server per session**. A second
+  `New-Object` attaches to the PowerPoint already running — including the user's
+  — and launching `POWERPNT.EXE` on the current desktop hands off and exits.
+  Verified with Word as the control, so this is a property of the application
+  and not of the method.
+
+A private PowerPoint is still obtainable, by the separate-desktop launch and
+`OBJID_NATIVEOM` bind that `spikes/isolation` already uses for Word, binding on
+`mdiClass` rather than Word's `_WwG`. But it is a different mechanism with a
+different cost: **~12 s to a bound instance, against ~1 s for a COM attach.**
+
+Two consequences follow for the host, both correctness rather than hygiene:
+
+- Never call `Quit()` on a COM-attached PowerPoint and never kill its pid; both
+  destroy the user's session. `Quit()` does not terminate `POWERPNT.EXE` anyway
+  (15/15 cycles), and a killed PowerPoint makes the next launch show a modal
+  safe-mode prompt.
+- The ~12 s bind cost rules out opening an isolated instance lazily on first
+  interaction. Start it ahead of time, or serve the first render from the
+  OOXML/PDF path, which needs no PowerPoint at all.
+
+The transient-lock model in [ADR 0005](0005-transient-lock-write-model.md)
+transfers **unchanged**: a genuinely separate PowerPoint opening a held deck
+hangs silently and needs an external kill, exactly as Word does.
+
