@@ -225,6 +225,16 @@ Every PR gets a Copilot review. Reply to every comment, push, re-request,
 repeat. The coordinator requests and merges; the owning session replies and
 pushes, so two worktrees never touch one branch.
 
+**Read the review body, not just the thread list.** Findings arrive in two
+shapes and only one of them is a thread. **Suppressed** findings — "previously
+missed, in code that hasn't changed" — appear in the body alone: no inline
+thread, no resolve button, no reply affordance, and `in_reply_to` on their id
+returns 422. So they sit outside "address every comment, reply, repeat"
+entirely, and a PR can show zero unresolved threads while carrying the only
+finding that gates its merge. Reply to those with a top-level PR comment.
+Three of the best findings on #12 arrived this way, including the one that
+turned out to have three sites rather than one.
+
 **Six rounds, then merge.** This is a hard cap, not a target. At round six the
 PR merges with any remaining comments declined explicitly in a reply. The one
 thing that may go past six is a **correctness or data-loss defect**, and it buys
@@ -269,4 +279,22 @@ every review is labelled with its level, so check rather than assume. A clean
 Lite pass means the cheap checks passed, not that the code is right — an
 independent deeper pass over #16 found a critical data-loss defect that six Lite
 rounds elsewhere never approached.
+
+**Mutation-check every test before you rely on it: reintroduce the defect, run,
+confirm red.** A test that cannot fail is worse than no test, because it reads
+as evidence. This is not a caution, it is a step — two of #12's four
+test-related findings were tests that could never fail, and *both were written
+by someone who had just been told about that exact failure mode*, one of them
+in the same session in which they had criticised another test for it. The
+tautology is easy to write and invisible on inspection: asserting that every
+entry in `SUPPORTED` appears in a list built from `SUPPORTED` passes with the
+defect fully reintroduced. Knowing about the failure mode demonstrably does not
+prevent it; running the check does.
+
+The same rule catches the case where the machine, not the test, is providing the
+coverage. A green suite says nothing when **the environment cannot produce the
+input**: this account generates no apostrophe in a path, the Linux runner
+generates no exclusive lock, an idle machine generates no contended shutdown.
+That code is untested, not correct, and the suite disguises it. The tell is when
+a test's coverage depends on a property of the machine rather than on the test.
 
