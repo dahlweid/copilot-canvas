@@ -250,10 +250,12 @@ was aimed at — because that is new material the deep pass has never seen.
 A one-line comment or message fix is not that, and re-reviewing it deeply has
 never once paid.
 
-**Today the ladder's top rung is unreachable, so every round is Lite.** Effort
-level is a UI-only control on the PR's Reviewers panel; it cannot be set from
-the CLI or the REST API. Every review body states the level it ran at — always
-read it rather than assuming the requested level took effect.
+**Effort cannot be set programmatically**, so the curve's upper half is
+aspirational and every round is Lite in practice. It is a control on the PR's
+Reviewers panel and nothing else: measured across five routes, including a REST
+field that is accepted and then silently ignored. Because a request can look
+like it succeeded, **read the effort level printed in every review body** rather
+than assuming the one you asked for took effect.
 
 The cap exists because the loop has no natural end. The reviewer re-scans
 unchanged code every round and surfaces different **suppressed** findings each
@@ -274,11 +276,11 @@ Declining is a real outcome and must be recorded as one: reply saying why, so
 the next engineer sees a decision rather than an omission. Replies are for the
 human record — Copilot cannot read them.
 
-**Lite is a floor.** Effort level is UI-only and cannot be set from the CLI;
-every review is labelled with its level, so check rather than assume. A clean
-Lite pass means the cheap checks passed, not that the code is right — an
-independent deeper pass over #16 found a critical data-loss defect that six Lite
-rounds elsewhere never approached.
+**Lite is a floor.** A clean Lite pass means the cheap checks passed, not that
+the code is right — an independent deeper read of #16 found a critical
+data-loss defect that six Lite rounds elsewhere never approached. Spending
+rounds 5–6 at Lite is only defensible because the deep pass ran at 1–4; it is
+not a claim that Lite suffices.
 
 **Mutation-check every test before you rely on it: reintroduce the defect, run,
 confirm red.** A test that cannot fail is worse than no test, because it reads
