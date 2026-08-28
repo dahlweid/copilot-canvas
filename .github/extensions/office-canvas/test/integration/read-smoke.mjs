@@ -189,6 +189,28 @@ try {
         );
     });
 
+    await check("the same content authored in a separate Word run gives the same addresses", async () => {
+        // The decisive test that addresses are derived from content and nothing
+        // else. Word stamps per-session revision identifiers (w:rsidR and
+        // friends) into the markup, so a second run produces a byte-different
+        // file for identical content. Addresses must not notice; the revision
+        // token must.
+        const twin = path.join(workRoot, "docs", "twin.docx");
+        await makeFixture(twin);
+        const other = await cache.readStructure(twin);
+
+        assert.deepEqual(
+            other.paragraphs.map((p) => p.address),
+            firstRead.paragraphs.map((p) => p.address),
+            "identical content produced different addresses across two Word runs",
+        );
+        assert.ok(
+            !tokensMatch(other.revisionToken, firstRead.revisionToken),
+            "two separately authored files should not share a revision token",
+        );
+        process.stderr.write(`  [twin: same ${other.paragraphCount} addresses, token ${other.revisionToken}]\n`);
+    });
+
     await check("regenerating the document moves the revision token", async () => {
         // The behaviour optimistic concurrency depends on: an edit citing the
         // old token must be refusable after this.

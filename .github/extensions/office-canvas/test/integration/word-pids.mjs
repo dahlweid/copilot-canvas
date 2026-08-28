@@ -38,12 +38,20 @@ export async function newWordPids(pidsBefore) {
 /**
  * Asserts this test leaked no Word process.
  *
- * Word exits asynchronously after `Quit`, so a short settle avoids a false
- * failure on a process that is already on its way out.
+ * Word exits asynchronously after `Quit`: the call returns in ~120 ms but the
+ * process lingers. Measured on this machine, Quit-to-exit was 2.7 s, 6.1 s and
+ * 2.7 s over three runs -- so a flat settle short of that is a coin toss, and a
+ * flat settle long enough to be safe wastes that long on every green run. We
+ * poll instead: it returns as soon as the process is actually gone, and only
+ * spends the deadline when there is something real to report.
  */
-export async function assertNoLeakedWord(pidsBefore, { settleMs = 1500 } = {}) {
-    await new Promise((resolve) => setTimeout(resolve, settleMs));
-    const leaked = await newWordPids(pidsBefore);
+export async function assertNoLeakedWord(pidsBefore, { timeoutMs = 30000, intervalMs = 250 } = {}) {
+    const deadline = Date.now() + timeoutMs;
+    let leaked = await newWordPids(pidsBefore);
+    while (leaked.length > 0 && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, intervalMs));
+        leaked = await newWordPids(pidsBefore);
+    }
     assert.deepEqual(leaked, [], `leaked Word processes: ${leaked.join(", ")}`);
 }
 

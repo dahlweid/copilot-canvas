@@ -322,3 +322,132 @@ test("markup with no body is a typed error", () => {
 test("the section properties trailing the body are not a paragraph", () => {
     assert.equal(map([paragraph("only")]).paragraphCount, 1);
 });
+
+// --- address stability under mutation ---------------------------------------
+//
+// The assumption every layer above this one depends on: an address minted by
+// one read still names the same paragraph on the next read. What follows pins
+// both halves of that -- the edits an address survives, and the edits it does
+// not. The ones it does not survive are not silent: any edit moves the file's
+// revision token, so the agent is told to re-read rather than left addressing a
+// document that has moved underneath it.
+
+const H1 = (text) => paragraph(text, { styleId: "berschrift1" });
+
+// Deliberately duplicate-heavy: "Boilerplate." appears under two headings and
+// twice under one of them, which is the case demo.docx never had.
+const BASE = [
+    H1("Intro"),
+    paragraph("Boilerplate."),
+    paragraph("Only in the intro."),
+    H1("Terms"),
+    paragraph("Boilerplate."),
+    paragraph("Boilerplate."),
+    paragraph("Unique tail."),
+];
+
+/** address -> "headingPath|text#occurrence", for comparing two reads. */
+const addressBook = (body) =>
+    new Map(map(body).paragraphs.map((p) => [p.address, `${p.headingPath.join(">")}|${p.text}#${p.occurrence}`]));
+
+/** Addresses present in `before` that are gone in `after`. */
+const lost = (before, after) => [...before.keys()].filter((a) => !after.has(a));
+
+test("appending a paragraph at the end leaves every existing address alone", () => {
+    const after = addressBook([...BASE, paragraph("Appended.")]);
+    assert.deepEqual(lost(addressBook(BASE), after), []);
+});
+
+test("an edit in one section does not move addresses in another", () => {
+    // No positional index anywhere in the key, so an insertion above cannot
+    // shift what is below -- the failure mode that ruled out paragraph numbers.
+    const before = addressBook(BASE);
+    const after = addressBook([
+        H1("Intro"),
+        paragraph("Boilerplate."),
+        paragraph("Inserted right here."),
+        paragraph("Only in the intro."),
+        H1("Terms"),
+        paragraph("Boilerplate."),
+        paragraph("Boilerplate."),
+        paragraph("Unique tail."),
+    ]);
+    assert.deepEqual(lost(before, after), [], "an insertion under Intro moved an address under Terms");
+});
+
+test("rewriting one paragraph moves only its own address", () => {
+    const before = addressBook(BASE);
+    const after = addressBook(BASE.map((p) => (p === BASE[6] ? paragraph("Rewritten tail.") : p)));
+    const gone = lost(before, after).map((a) => before.get(a));
+    assert.deepEqual(gone, ["Terms|Unique tail.#1"]);
+});
+
+test("reordering paragraphs within a section leaves their addresses alone", () => {
+    // Position is not part of the key, so a paragraph that moves within its
+    // section keeps its address. An edit citing it still lands correctly.
+    const before = addressBook(BASE);
+    const after = addressBook([
+        H1("Intro"),
+        paragraph("Only in the intro."),
+        paragraph("Boilerplate."),
+        H1("Terms"),
+        paragraph("Unique tail."),
+        paragraph("Boilerplate."),
+        paragraph("Boilerplate."),
+    ]);
+    assert.deepEqual(lost(before, after), []);
+});
+
+test("appending to a duplicate group leaves the existing members alone", () => {
+    // Growth at the end of a run of identical text is safe: occurrences 1 and 2
+    // keep their addresses and the newcomer takes 3.
+    const before = addressBook(BASE);
+    const after = addressBook([...BASE.slice(0, 6), paragraph("Boilerplate."), ...BASE.slice(6)]);
+    assert.deepEqual(lost(before, after), []);
+    assert.equal([...after.values()].filter((v) => v.startsWith("Terms|Boilerplate.")).length, 3);
+});
+
+test("KNOWN LIMIT: deleting a member of a duplicate group renumbers the ones after it", () => {
+    // The cost of an occurrence index. Deleting the *first* "Boilerplate."
+    // under Terms makes the second one occurrence 1, so its address changes
+    // even though its text and heading did not.
+    //
+    // This is safe rather than silent: the deletion moved the file's revision
+    // token, so an edit citing the stale address is refused and the agent
+    // re-reads. It is not safe to cache an address across an edit to a
+    // duplicate group, and layer 2 should not try.
+    const before = addressBook(BASE);
+    const after = addressBook(BASE.filter((_, i) => i !== 4));
+    assert.deepEqual(
+        lost(before, after).map((a) => before.get(a)),
+        ["Terms|Boilerplate.#2"],
+        "expected exactly the trailing duplicate to be renumbered",
+    );
+});
+
+test("KNOWN LIMIT: renaming a heading moves every address beneath it", () => {
+    // The heading path is part of the key, which is what makes an address
+    // readable and scopes the occurrence counter -- and it means a retitled
+    // section invalidates its contents. Addresses outside it are untouched.
+    const before = addressBook(BASE);
+    const after = addressBook(BASE.map((p) => (p === BASE[3] ? H1("Conditions") : p)));
+    assert.deepEqual(
+        lost(before, after)
+            .map((a) => before.get(a))
+            .sort(),
+        ["Terms|Boilerplate.#1", "Terms|Boilerplate.#2", "Terms|Unique tail.#1", "|Terms#1"].sort(),
+        "the retitled heading and its contents, and nothing else",
+    );
+});
+
+test("an address does not depend on the paragraphs Word split it into", () => {
+    // Word re-splits runs on save for reasons invisible to the reader. If an
+    // address moved with them, every address would expire on every save.
+    const split = [
+        H1("Intro"),
+        paragraph(null, { raw: `<w:r><w:t xml:space="preserve">Boiler</w:t></w:r><w:r><w:t>plate.</w:t></w:r>` }),
+        paragraph("Only in the intro."),
+        ...BASE.slice(3),
+    ];
+    assert.deepEqual(lost(addressBook(BASE), addressBook(split)), []);
+});

@@ -59,3 +59,18 @@ spelling would have failed just as silently.
 An edit response returns a fresh token, so the agent is not forced to re-read
 after its own edits — only after someone else's. A save with nothing dirty does
 not change the token, so it does not churn on inspection.
+
+**An address is a coordinate, not a handle, and two mutations move it.**
+Derived addressing buys stability against the things that churn for no reason —
+re-saving, run splitting, per-session `w:rsid*` stamps, and paragraphs moving
+within their section — and the same content authored in two separate Word runs
+yields byte-different files but *identical* addresses. It cannot survive changes
+to what the address is made of. Two cases, both proven by test:
+
+- Deleting one member of a duplicate-text group **renumbers its successors**,
+  because the occurrence index counts from the top of the heading path.
+- Renaming a heading **moves every address beneath it**, plus the heading's own.
+
+Neither is silent: both are edits, so both move the revision token, and the next
+read is forced. The rule this imposes on callers is that an address may be used
+within one read-then-edit cycle and must not be cached across an edit.
