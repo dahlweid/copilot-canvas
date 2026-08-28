@@ -1,0 +1,161 @@
+name: release
+
+# Runs on a tag, on ubuntu-latest, with no Office — same envelope as
+# validate.yml. Everything here is file layout and hashing, so nothing in it
+# needs Word (docs/repo-restructure.md §1, constraint C5).
+#
+# `workflow_dispatch` runs every step except publishing, so the packaging path
+# can be exercised without cutting a release.
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # No package.json anywhere (constraint C2), so there is nothing to
+      # install and no cache key to derive.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Check extension packaging invariants (C1-C4)
+        run: node tools/validate-extensions.mjs
+
+      # `node --test <dir>` fails to resolve modules on some Node versions;
+      # the quoted glob is the form that works.
+      - name: Run Office-free unit tests
+        run: node --test ".github/extensions/office-canvas/test/unit/*.test.mjs"
+
+      # `version` in copilot-extension.json is the *manifest format* version and
+      # must be the integer 1 — install_extension parses it as a u32. The product
+      # version lives in `productVersion`, which the installer tolerates as an
+      # unknown key (both measured against the running app; see docs §3.3).
+      - name: Resolve version
+        id: version
+        run: |
+          set -euo pipefail
+          manifest=$(node -p "require('./.github/extensions/office-canvas/copilot-extension.json').productVersion")
+          echo "manifest=$manifest" >> "$GITHUB_OUTPUT"
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=v${manifest}" >> "$GITHUB_OUTPUT"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The tag is the claim and the manifest is the fact; a release whose
+      # contents disagree with its name is worse than a missing release. The
+      # packager refuses rather than reconciling them.
+      - name: Package the extension
+        run: node tools/package-extension.mjs office-canvas --out dist --expect-version "${{ steps.version.outputs.tag }}"
+
+      # Deterministic output is a claim, so it is checked rather than asserted:
+      # package a second time into a different directory and require the two to
+      # agree byte for byte, zip included.
+      - name: Verify packaging is reproducible
+        run: |
+          set -euo pipefail
+          node tools/package-extension.mjs office-canvas --out dist-check --expect-version "${{ steps.version.outputs.tag }}"
+          version="${{ steps.version.outputs.manifest }}"
+          diff -r "dist/office-canvas" "dist-check/office-canvas"
+          diff "dist/office-canvas-${version}.package.json" "dist-check/office-canvas-${version}.package.json"
+          diff "dist/office-canvas-${version}.gist.json" "dist-check/office-canvas-${version}.gist.json"
+
+      # `zip -r` walks in readdir order and stores per-file metadata, so a naive
+      # invocation is not reproducible even when its input is. A sorted file
+      # list fixes the order, -X drops the uid/gid and extra timestamp fields,
+      # and the packager has already pinned every mtime.
+      - name: Build the release zip
+        run: |
+          set -euo pipefail
+          version="${{ steps.version.outputs.manifest }}"
+          for dir in dist dist-check; do
+            ( cd "$dir" && find office-canvas -type f | LC_ALL=C sort \
+                | TZ=UTC zip -X -q -9 -@ "office-canvas-${version}.zip" )
+          done
+          a=$(sha256sum "dist/office-canvas-${version}.zip" | cut -d' ' -f1)
+          b=$(sha256sum "dist-check/office-canvas-${version}.zip" | cut -d' ' -f1)
+          if [ "$a" != "$b" ]; then
+            echo "::error::the release zip is not reproducible ($a vs $b)"
+            exit 1
+          fi
+          echo "zip sha256 $a"
+
+      - name: Summarise the artefact
+        run: |
+          set -euo pipefail
+          version="${{ steps.version.outputs.manifest }}"
+          node -e '
+            const m = require("./dist/office-canvas-" + process.argv[1] + ".package.json");
+            const pct = ((m.totalBytes / m.budget.maxTotalBytes) * 100).toFixed(1);
+            const lines = [
+              "## office-canvas " + m.version,
+              "",
+              "| | |",
+              "| --- | --- |",
+              "| files | " + m.files.length + " |",
+              "| total | " + m.totalBytes + " of " + m.budget.maxTotalBytes + " bytes (" + pct + "%) |",
+              "| largest | `" + m.budget.largestFile.path + "` — " + m.budget.largestFile.bytes +
+                " of " + m.budget.maxFileBytes + " bytes |",
+              "| headroom | " + m.budget.headroomBytes + " bytes |",
+              "| digest | `" + m.digest + "` |",
+              "",
+              "Both limits are enforced by `install_extension` on gist **and** repo-folder installs.",
+            ];
+            require("node:fs").appendFileSync(process.env.GITHUB_STEP_SUMMARY, lines.join("\n") + "\n");
+          ' "$version"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: office-canvas-${{ steps.version.outputs.manifest }}
+          path: |
+            dist/office-canvas-${{ steps.version.outputs.manifest }}.zip
+            dist/office-canvas-${{ steps.version.outputs.manifest }}.gist.json
+            dist/office-canvas-${{ steps.version.outputs.manifest }}.package.json
+          if-no-files-found: error
+
+      - name: Publish the release
+        if: steps.version.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.manifest }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          {
+            echo "Install with \`install_extension\`, pointing at this tag:"
+            echo
+            echo '```'
+            echo "https://github.com/${GITHUB_REPOSITORY}/tree/${TAG}/.github/extensions/office-canvas"
+            echo '```'
+            echo
+            echo "Or share it as a gist:"
+            echo
+            echo '```'
+            echo "gh api -X POST /gists --input office-canvas-${VERSION}.gist.json"
+            echo '```'
+            echo
+            echo "\`office-canvas-${VERSION}.package.json\` records every shipped file with its"
+            echo "sha256, the exclusions and their reasons, and size against the limits"
+            echo "\`install_extension\` enforces (1,000,000 bytes per file, 5,000,000 in total —"
+            echo "on repo-folder installs as well as gists)."
+            echo
+            echo "Rendering is verified by a human running \`test/integration/\` locally before a"
+            echo "release; no hosted runner has Word (constraint C5)."
+          } > notes.md
+          gh release create "$TAG" \
+            --title "office-canvas ${VERSION}" \
+            --notes-file notes.md \
+            "dist/office-canvas-${VERSION}.zip" \
+            "dist/office-canvas-${VERSION}.gist.json" \
+            "dist/office-canvas-${VERSION}.package.json"

@@ -1,0 +1,5 @@
+# tools/package-extension.mjs output. Regenerable from any commit, and
+# deliberately not committed: the artefact is derived from the extension
+# folder, which is the source of truth (C3).
+dist/
+dist-check/

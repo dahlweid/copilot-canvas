@@ -144,7 +144,7 @@ if a `WINWORD.EXE` is left behind.
 | File | Responsibility |
 | --- | --- |
 | `extension.mjs` | Canvas declaration, actions, lifecycle |
-| `copilot-extension.json` | Manifest: name and version |
+| `copilot-extension.json` | Manifest. `version` is the **manifest format version** and must be the number `1` — `install_extension` parses it as a u32. The product version lives in `productVersion`. |
 | `src/word/word-host.ps1` | The Word COM host — every automation quirk lives here |
 | `src/word/word-host.mjs` | Node side of the bridge: framing, restart, teardown |
 | `src/render-cache.mjs` | Temp copy, PDF export, cache keyed by path + mtime + size |

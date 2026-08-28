@@ -9,7 +9,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { cp, mkdtemp, rm, writeFile, readFile, appendFile } from "node:fs/promises";
+import { cp, mkdtemp, rm, stat, writeFile, readFile, appendFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -122,7 +122,11 @@ test("a relative import inside the extension is allowed", async () => {
 
 test("a manifest name that disagrees with its folder is rejected", async () => {
     await rejects(
-        (ext) => writeFile(path.join(ext, "copilot-extension.json"), JSON.stringify({ name: "wrong", version: "1.0.0" })),
+        (ext) =>
+            writeFile(
+                path.join(ext, "copilot-extension.json"),
+                JSON.stringify({ name: "wrong", version: 1, productVersion: "1.0.0" }),
+            ),
         /does not match its folder/,
     );
 });
@@ -131,9 +135,50 @@ test("a missing manifest is rejected", async () => {
     await rejects((ext) => rm(path.join(ext, "copilot-extension.json")), /copilot-extension\.json missing/);
 });
 
-test("a non-semver version is rejected", async () => {
+// The bug this pins was real: the manifest carried `"version": "1.0.0"`, the
+// in-place loader accepted it, and `install_extension` refused the whole
+// extension with `invalid type: string "1.0.0", expected u32`. So the extension
+// ran perfectly in the dev checkout and could not be installed by anyone.
+test("a semver string in `version` is rejected — the installer parses it as u32", async () => {
     await rejects(
-        (ext) => writeFile(path.join(ext, "copilot-extension.json"), JSON.stringify({ name: "office-canvas", version: "1" })),
+        (ext) =>
+            writeFile(
+                path.join(ext, "copilot-extension.json"),
+                JSON.stringify({ name: "office-canvas", version: "1.0.0", productVersion: "1.0.0" }),
+            ),
+        /manifest version must be the number 1/,
+    );
+});
+
+test("`version` must be 1 exactly, not merely a number", async () => {
+    await rejects(
+        (ext) =>
+            writeFile(
+                path.join(ext, "copilot-extension.json"),
+                JSON.stringify({ name: "office-canvas", version: 2, productVersion: "1.0.0" }),
+            ),
+        /manifest version must be the number 1/,
+    );
+});
+
+test("a non-semver productVersion is rejected", async () => {
+    await rejects(
+        (ext) =>
+            writeFile(
+                path.join(ext, "copilot-extension.json"),
+                JSON.stringify({ name: "office-canvas", version: 1, productVersion: "1" }),
+            ),
+        /not semver/,
+    );
+});
+
+test("a missing productVersion is rejected — release tagging has no other source", async () => {
+    await rejects(
+        (ext) =>
+            writeFile(
+                path.join(ext, "copilot-extension.json"),
+                JSON.stringify({ name: "office-canvas", version: 1 }),
+            ),
         /not semver/,
     );
 });
@@ -149,8 +194,49 @@ test("a binary file in the extension is rejected", async () => {
 test("a file over the per-file size limit is rejected", async () => {
     await rejects(
         (ext) => writeFile(path.join(ext, "src", "huge.mjs"), "// filler\n".repeat(120_000)),
-        /C4 limit 1 MB/,
+        /C4 limit 1000000/,
     );
+});
+
+// The two tests below pin the per-file cap to the decimal 1,000,000 that
+// install_extension actually enforces, measured against the running app. They
+// exist to stop someone "tidying" the constant back to 1024*1024: that is the
+// bug they replaced, and it left a 48,576-byte window in which a file passed
+// validation and then failed at install. Asserting the constant alone would
+// not catch it — only straddling the boundary does.
+test("a file of exactly the per-file limit is accepted", async () => {
+    const root = await stageRepo();
+    try {
+        await writeFile(path.join(root, EXT, "src", "edge.mjs"), "/".repeat(999_999) + "\n");
+        assert.equal((await stat(path.join(root, EXT, "src", "edge.mjs"))).size, 1_000_000, "fixture must be exact");
+        const result = await runValidator(root);
+        assert.equal(result.ok, true, `1,000,000 bytes must pass:\n${result.output}`);
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test("a file one byte over the per-file limit is rejected", async () => {
+    await rejects(async (ext) => {
+        const file = path.join(ext, "src", "edge.mjs");
+        await writeFile(file, "/".repeat(1_000_000) + "\n");
+        assert.equal((await stat(file)).size, 1_000_001, "fixture must be exact");
+    }, /C4 limit 1000000/);
+});
+
+test("the total limit is the decimal 5,000,000, not 5 MiB", async () => {
+    // 5 MiB is 5,242,880. A tree between the two sizes passes a binary-constant
+    // validator and is then refused by the installer.
+    const root = await stageRepo();
+    const filler = "/".repeat(999_998) + "\n";
+    try {
+        for (let i = 0; i < 5; i++) await writeFile(path.join(root, EXT, "src", `bulk${i}.mjs`), filler);
+        const result = await runValidator(root);
+        assert.equal(result.ok, false, "a tree over 5,000,000 bytes must be rejected");
+        assert.match(result.output, /exceeds the C4 limit of 5000000/);
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
 });
 
 test("a syntax error is rejected", async () => {
