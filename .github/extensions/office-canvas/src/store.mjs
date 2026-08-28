@@ -7,7 +7,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 
-const EXTENSION_NAME = "word-canvas";
+const EXTENSION_NAME = "office-canvas";
 const MAX_RECENTS = 15;
 
 export function copilotHome() {

@@ -1,5 +1,5 @@
 // Smoke test for the Word bridge. Run with:
-//   node .github/extensions/word-canvas/test/host-smoke.mjs
+//   node .github/extensions/office-canvas/test/integration/host-smoke.mjs
 //
 // Requires Word. Generates its own fixture, exercises every host command, and
 // asserts that no WINWORD.EXE is left behind.
@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
 
-import { WordHost } from "../src/word-host.mjs";
+import { WordHost } from "../../src/word/word-host.mjs";
 
 const execFileAsync = promisify(execFile);
 const HERE = path.dirname(fileURLToPath(import.meta.url));

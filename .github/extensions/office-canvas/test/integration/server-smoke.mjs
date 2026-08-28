@@ -1,7 +1,7 @@
 // Smoke test for the per-instance viewer server: HTTP API, PDF serving with
 // byte ranges, SSE, and live reload when the document is rewritten on disk.
 //
-// Run: node .github/extensions/word-canvas/test/server-smoke.mjs
+// Run: node .github/extensions/office-canvas/test/integration/server-smoke.mjs
 
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
@@ -10,8 +10,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
-import { RenderCache, normalizeDocPath } from "../src/render-cache.mjs";
-import { ViewerInstance } from "../src/server.mjs";
+import { RenderCache, normalizeDocPath } from "../../src/render-cache.mjs";
+import { ViewerInstance } from "../../src/server.mjs";
 
 const execFileAsync = promisify(execFile);
 const HERE = path.dirname(fileURLToPath(import.meta.url));

@@ -1,4 +1,4 @@
-// word-canvas — renders .docx files page-accurately in a side canvas.
+// office-canvas — renders .docx files page-accurately in a side canvas.
 //
 // A hidden, automation-owned Microsoft Word instance is the rendering engine:
 // it exports the document to PDF, which the canvas serves over loopback to the
@@ -23,7 +23,7 @@ let cache = null;
 // `session.log` rejects asynchronously (e.g. on an unsupported level); an
 // unhandled rejection would take the whole extension process down.
 const log = (message, level = "info", { ephemeral = level === "info" } = {}) => {
-    void session?.log(`[word-canvas] ${message}`, { level, ephemeral })?.catch(() => {});
+    void session?.log(`[office-canvas] ${message}`, { level, ephemeral })?.catch(() => {});
 };
 
 function getCache() {
@@ -319,7 +319,7 @@ process.on("SIGINT", () => void shutdown("SIGINT"));
 // stderr goes to the extension log file; a stray rejection should show up there
 // rather than killing the provider and taking every open canvas with it.
 process.on("unhandledRejection", (reason) => {
-    process.stderr.write(`[word-canvas] unhandled rejection: ${reason?.stack ?? reason}\n`);
+    process.stderr.write(`[office-canvas] unhandled rejection: ${reason?.stack ?? reason}\n`);
 });
 
 session = await joinSession({
