@@ -580,7 +580,7 @@ measured the wrong thing. (`probes/probe-caret.ps1`)
 
 | Range | `GetPoint` result | Reading |
 | --- | --- | --- |
-| collapsed at 120 | `x=4356 y=625 **w=0** h=46` | a true zero-width caret |
+| collapsed at 120 | `x=4356 y=625 w=0 h=46` — **zero width** | a true zero-width caret |
 | collapsed at 121 | `x=4367 y=625 w=0 h=46` | **11 px apart — per-glyph precision** |
 | span 120–140 (one line) | `x=4356 w=213 h=46` | correct single-line extent |
 | span 120–400 (multi-line) | `x=4224 w=811 h=235` | **a bounding box — critique correct** |
