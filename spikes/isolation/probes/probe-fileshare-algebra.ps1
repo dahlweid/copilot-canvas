@@ -26,7 +26,17 @@ function Try-Open {
         $h.Dispose()
         return 'ok'
     } catch [System.IO.IOException] {
-        return 'sharing violation'
+        # Do not label every IOException a sharing violation. This probe is
+        # cited as evidence, so a mislabelled row would not fail -- it would
+        # fabricate a measurement, which is worse. Only ERROR_SHARING_VIOLATION
+        # (32) and ERROR_LOCK_VIOLATION (33) are the thing under test; anything
+        # else surfaces its HRESULT so it cannot be mistaken for a result.
+        $hr = $_.Exception.HResult
+        switch ($hr) {
+            0x80070020 { return 'sharing violation' }
+            0x80070021 { return 'lock violation' }
+            default    { return ('IOException 0x{0:X8}' -f $hr) }
+        }
     } catch {
         return $_.Exception.GetType().Name
     }
@@ -43,9 +53,15 @@ Write-Output ''
 Write-Output '=== PART A: sharing algebra against a synthetic holder ==='
 Write-Output ''
 
+# Two candidate models, plus the exact configuration read-smoke.mjs uses as its
+# stand-in for Word. That third row exists so the evidence and the regression
+# guard are demonstrably the same experiment: a reviewer noticed the probe held
+# `Write` while the test held `ReadWrite`, which was a real inconsistency even
+# though it turns out not to change a single cell.
 $holders = @(
-    @{ Label = 'holder: READ handle granting Read   (what our docs claim Word does)'; Access = 'Read'; Share = 'Read' },
-    @{ Label = 'holder: WRITE handle granting ReadWrite (what L2 claims Word does)'; Access = 'Write'; Share = 'ReadWrite' }
+    @{ Label = 'holder: READ handle granting Read       (what our docs claimed Word does)'; Access = 'Read'; Share = 'Read' },
+    @{ Label = 'holder: WRITE handle granting ReadWrite (what Word actually does)'; Access = 'Write'; Share = 'ReadWrite' },
+    @{ Label = 'holder: READWRITE handle granting ReadWrite (what read-smoke.mjs holds)'; Access = 'ReadWrite'; Share = 'ReadWrite' }
 )
 
 foreach ($holder in $holders) {

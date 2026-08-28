@@ -282,7 +282,7 @@ try {
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
-                "$fs=[IO.File]::Open($env:PROBE_PATH,'Open','ReadWrite','None'); Start-Sleep -Seconds 20; $fs.Close()",
+                "$fs=[IO.File]::Open($env:PROBE_PATH,'Open','ReadWrite','None'); while ($true) { Start-Sleep -Seconds 5 }",
             ],
             { env: { ...process.env, PROBE_PATH: fixture } },
         );
@@ -311,28 +311,38 @@ try {
         // the user has open in Word reads fine; nothing failed if that stopped
         // being true.
         //
-        // The holder models Word exactly: a WRITE handle granting ReadWrite.
-        // That distinction is the point. This repo documented Word as taking
-        // `FileShare::Read` for months -- same conclusion, wrong mechanism --
-        // and the wrong one predicts that *any* reader succeeds. It does not:
-        // a reader granting only `Read` refuses to let anyone else write,
-        // conflicts with Word's write handle, and gets a sharing violation on
-        // a file `Copy-Item` copies fine. So this check is also the guard
-        // against someone "hardening" our copy to a narrower share mode: that
-        // change breaks reads of open documents and nothing else would notice.
+        // The holder models Word exactly: a handle with **write** access,
+        // granting ReadWrite. That distinction is the point. This repo
+        // documented Word as taking `FileShare::Read` for months -- same
+        // conclusion, wrong mechanism -- and the wrong one predicts that *any*
+        // reader succeeds. It does not: a reader granting only `Read` refuses
+        // to let anyone else write, conflicts with Word's write handle, and
+        // gets a sharing violation on a file `Copy-Item` copies fine. So this
+        // check is also the guard against someone "hardening" our copy to a
+        // narrower share mode: that change breaks reads of open documents and
+        // nothing else would notice.
+        //
+        // The holder waits to be killed rather than sleeping a fixed span. A
+        // timed hold would release mid-read on a loaded machine and the
+        // assertion would then pass without the lock ever being contended --
+        // green on slack rather than on behaviour, which is the exact defect
+        // already found in this repo's leak assertions. Timings here are
+        // typical-case, never bounds.
         const holder = spawn(
             "powershell.exe",
             [
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
-                "$fs=[IO.File]::Open($env:PROBE_PATH,'Open','ReadWrite','ReadWrite'); Start-Sleep -Seconds 30; $fs.Close()",
+                "$fs=[IO.File]::Open($env:PROBE_PATH,'Open','ReadWrite','ReadWrite'); while ($true) { Start-Sleep -Seconds 5 }",
             ],
             { env: { ...process.env, PROBE_PATH: fixture } },
         );
         try {
             await new Promise((resolve) => setTimeout(resolve, 2000));
+            assert.equal(holder.exitCode, null, "the holder died before the read, so nothing was contended");
             const result = await cache.readStructure(fixture);
+            assert.equal(holder.exitCode, null, "the holder released during the read, so nothing was contended");
             assert.ok(result.paragraphCount > 0, "a read of a Word-held document returned nothing");
             assert.ok(result.revisionToken, "a read of a Word-held document produced no revision token");
         } finally {
