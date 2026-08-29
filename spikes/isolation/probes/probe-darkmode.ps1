@@ -57,10 +57,51 @@ try {
 }
 catch { Rep "ERROR" $_.Exception.Message.Split([char]10)[0] }
 finally {
-    try { $word.Quit(0) } catch { }
+    # Quit(), never Quit(<arg>): under Windows PowerShell 5.1 -- the runtime every
+    # .ps1 here runs under -- the argument form throws and the Word survives, and
+    # process exit does not reap it either (probe-quit0-leak.ps1). The catch
+    # reports rather than swallows; a silent swallow is what hid this for months.
+    try { $word.Quit() } catch { Rep "Quit() FAILED (Word may leak)" $_.Exception.Message.Split([char]10)[0] }
     try { [Runtime.InteropServices.Marshal]::ReleaseComObject($word) | Out-Null } catch { }
-    Start-Sleep -Seconds 2
-    foreach ($p in $owned) { if (Get-Process -Id $p -ErrorAction SilentlyContinue) { Stop-Process -Id $p -Force } }
+    # Application.Quit() returns long before its process exits (measured 2.7-6.1 s
+    # idle, longer under load -- ADR 0005), so a fixed 2 s sleep made this sweep
+    # the actual reaper on every run and hid whether Quit() worked at all. Poll to
+    # a generous deadline instead; on success that costs only the real exit time.
+    #
+    # One deadline for the whole set, not one per pid. A per-pid deadline would
+    # multiply an already generous budget by N; reusing a single deadline *inside*
+    # a per-pid loop -- which is what this did first -- is worse, because every pid
+    # after the first inherits only what its predecessors did not spend and can be
+    # killed after a fraction of it while the label claims the full budget. Poll
+    # the set, record when each pid actually went, and derive every label from that
+    # record: a probe that prints a duration it did not measure has fabricated a
+    # measurement, which is the one thing an instrument may never do.
+    $deadline = (Get-Date).AddSeconds(30)
+    $started = Get-Date
+    $exitedAfterMs = @{}
+    while ($true) {
+        foreach ($p in $owned) {
+            if (-not $exitedAfterMs.ContainsKey($p)) {
+                # Name-checked, so a recycled pid cannot read as a survivor.
+                $proc = Get-Process -Id $p -ErrorAction SilentlyContinue
+                if (-not $proc -or $proc.ProcessName -ne 'WINWORD') {
+                    $exitedAfterMs[$p] = [int]((Get-Date) - $started).TotalMilliseconds
+                }
+            }
+        }
+        if ($exitedAfterMs.Count -eq $owned.Count -or (Get-Date) -ge $deadline) { break }
+        Start-Sleep -Milliseconds 250
+    }
+    $waitedMs = [int]((Get-Date) - $started).TotalMilliseconds
+    foreach ($p in $owned) {
+        if ($exitedAfterMs.ContainsKey($p)) {
+            Rep "exited on Quit()" ("pid {0} after {1} ms" -f $p, $exitedAfterMs[$p])
+        }
+        else {
+            Stop-Process -Id $p -Force -ErrorAction SilentlyContinue
+            Rep ("STILL ALIVE after {0} ms, killed" -f $waitedMs) $p
+        }
+    }
 }
 
 # The theme itself is a per-user registry value Word reads at startup. Report, never change.
