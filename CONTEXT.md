@@ -536,10 +536,25 @@ are provenance, not paths a reader of `main` can open.
   matching sites can fail an unrelated test and be recorded as `KILLED`, which is
   the one direction of this defect that reports good news. **It has a real
   instance** (#26): a mutant scored `KILLED` by two assertions that both read
-  *"the bait paragraph is missing"* — the bait never matched because its character
-  corrupted crossing stdin, so the assertion actually under test never ran. The
-  kill was attributed to assertions that did not execute. It surfaced in a
+  *"the bait paragraph is missing"*, so the assertion actually under test never
+  ran and the kill was attributed to assertions that did not execute. It
+  surfaced in a
   *hand-run* check, which is the one context with no runner to classify it.
+
+  **And its cause was reported as two-way when the evidence showed three**, which
+  is the more useful half. The first explanation — the bait corrupted crossing
+  stdin (#40) — was present, sufficient, and stopped the search. Nobody asked what
+  *else* produces that message. A **successful** substitution does: the test
+  located each bait by its own first twelve characters, and for all three baits
+  that prefix spans the substitution site (`He said "hel`, `A dash -- li`,
+  `Copyright (c`). Word rewriting the bait destroys the locator, so the two
+  assertions that name the defect were unreachable **for the case they exist to
+  catch**, on any Word in any locale — independently of the encoding defect and
+  of the arms that rewrite nothing. **A sufficient cause is not an exclusive
+  one**, and a first explanation that fits is exactly what stops the second from
+  being looked for. Fixed by anchoring on an autocorrect-invariant token, with the
+  anchor shape enforced mechanically so a weak anchor is a hard failure rather
+  than a silent narrowing.
 - **The runner never started.** `mutate-create.ps1` (#26) resolves paths relative
   to the extension root and exits 1 when invoked from the repo root. It fails
   *loudly* and is still dangerous, because "gate ran, gate red" and "gate never
@@ -566,6 +581,12 @@ branches were covered by an assertion that could not say which one had done the
 work. The remedy there is **attribution**, not a stronger assertion. Note also
 what did *not* catch it: the two-independent-records discriminator, because there
 was no second record of the quantity to disagree with the first.
+
+Auditing for it is cheaper than it looks, and the mechanical check is the one to
+reach for: **does any asserted outcome have more than one producer?** Counting
+raise sites per error code is a grep and needs no judgement, where "is this test
+attributing correctly" needs plenty. Where every code has exactly one raise site,
+the shape is impossible by construction.
 
 **"The remedy is cheaper than the measurement" assumes you already know which
 remedy you need.** Recorded because it was wrong here, in coordination advice I
@@ -599,6 +620,12 @@ expiry must be safe**, not a bound that must hold — here, falling through to a
 identity-proving kill. Nudging such a number upward is the move that looks
 measured and still straddles.
 
+**And that fix is only half a fix without the one above it.** A budget whose
+expiry is safe is safe only if the kill it falls through to cannot hit a
+recycled pid — so pinning the handle is not a separate tidy-up, it is the
+precondition that makes safe expiry actually safe. Adopt them together; read
+separately, each looks optional.
+
 **An instrument that measures correctly and reports illegibly is still a wrong
 answer.** The autocorrect probe on #26 (not on `main`, so it is named here as
 provenance only) runs each arm in a child
@@ -631,6 +658,20 @@ list that started this had no citation, so nothing was even eligible. The second
 half is caught by asking *"is this a measurement or a memory?"*, which is a
 habit and not a gate. And a guard that cannot fire today is still worth keeping
 if it is labelled as one — the label is the part that has to be true.
+
+**There is a third kind, and neither remedy reaches it: a sound measurement
+whose recommendation ranges past what was measured.** The `Quit()`-to-exit probe
+measured teardown correctly, twice, with its conditions recorded beside the
+figures — and then concluded that the variance "argues for a deadline far
+outside the distribution", which ranges over a **client-side timeout the probe
+never observed and had no way to observe**. Re-running does not catch it: the
+measurement re-runs green. Noticing does not catch it either: the prose does cite
+a real measurement, and cites it accurately. The failure is at the edge of scope
+rather than in the number or in the memory. Two of the three corrections against
+that probe are now about its prose rather than its figures, which is the pattern
+and not a coincidence. **Measuring soundly does not license recommending past the
+edge of what was measured, and nothing about a correct measurement flags when its
+prose has stepped over that edge.**
 
 **What travels is rarely the measurement; it is a one-line summary of the
 measurement, and a summary is exactly what discards a scope.** #36 declined a
