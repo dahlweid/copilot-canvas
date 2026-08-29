@@ -374,6 +374,24 @@ everywhere else here, since a set of runs that all agree has measured nothing.
 test failure are both `conclusion: failure`.** The field everyone reads cannot
 separate them.
 
+**And the same run list will report that the outage has changed shape, if you
+let an absence speak.** Hours into it I re-checked, saw nothing newer than
+11:06, and reported that runs had stopped being *created* at all — a worsening,
+"a change from failing in 2 s". Nothing had changed. Every run this repo
+produces is `event=pull_request` or a push to `main`; the workflow has no
+schedule and no other trigger, so nothing but a push can create a row. The gap
+was the gap between my own pushes, and each run had in fact been created within
+five seconds of its commit (`13:12:08+02:00` → `11:12:13Z`). The shape was
+constant throughout: row created promptly, job never started, `steps: 0`,
+cause on the check-run annotation.
+
+That is this section's own failure in a quieter field. I modelled a mechanism —
+an escalating block — from `created_at` alone, while `event` sat unread in the
+same objects and the push history sat in `git log`. **An absence in a list is
+evidence about the trigger before it is evidence about the system**, and here I
+owned the trigger. One field settles it: *what would have had to happen for a
+row to appear?*
+
 **Then I transported that finding across six pull requests without checking it
 on any of them.** Having established the phantom record on #36 and #47, I
 broadcast *"round N is not consumed"* to every session in the stack. It is true
