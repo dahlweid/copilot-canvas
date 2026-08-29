@@ -8,8 +8,15 @@
 // the document to PDF, which the canvas serves over loopback to the panel's
 // native PDF viewer, and it hands back WordprocessingML for structural reads.
 //
-// Read-only by design: the user's file is never opened by Word directly, only
-// an unblocked temp copy of it.
+// Reads are read-only by design: the user's file is never opened by Word for a
+// read, only an unblocked temp copy of it. Edits are not, and cannot be -- an
+// edit must touch the original, so it opens it directly for one operation and
+// closes it again (ADR 0005), with an on-disk snapshot taken first.
+//
+// This header said the file is *never* opened directly, full stop. That was
+// true until `edit_document` shipped in this same file, and it is the kind of
+// line a reader trusts precisely because it sits at the top and reads like a
+// guarantee.
 
 import path from "node:path";
 import { createCanvas, CanvasError, joinSession } from "@github/copilot-sdk/extension";

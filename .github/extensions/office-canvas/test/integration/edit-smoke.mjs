@@ -30,6 +30,7 @@ import { fileURLToPath } from "node:url";
 
 import { RenderCache } from "../../src/render-cache.mjs";
 import { fileRevisionToken, tokensMatch } from "../../src/revision-token.mjs";
+import { asToolError } from "../../src/tool-error.mjs";
 import { assertNoLeakedWord, wordPids } from "./word-pids.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -361,6 +362,70 @@ try {
         const second = await cache.revertDocument(fixture, { revisionToken: result.document.revisionToken });
         assert.equal(second.snapshotsRemaining, result.snapshotsRemaining - 1);
         read = second.document;
+    });
+
+    await check("a restore that cannot run is typed, and says the document is intact", async () => {
+        // The recovery path's own failure mode. Reaching it needs contention on
+        // the *snapshot*, not on the document: the writable pre-flight at the
+        // top of revert() refuses a held document before `revertToLatest` runs,
+        // so holding the document would test the pre-flight and never this.
+        //
+        // Asserted through `asToolError`, because that is the boundary the agent
+        // stands at, and an error that is correct one layer beneath it is a
+        // defect this repo has already shipped once.
+        const root = path.join(workRoot, "artifacts", "snapshots");
+        const snapshots = [];
+        for (const sub of await readdir(root)) {
+            const dir = path.join(root, sub);
+            for (const name of await readdir(dir)) {
+                if (!name.endsWith(".snapshot")) continue;
+                const manifest = JSON.parse(await readFile(path.join(dir, `${name}.json`), "utf8"));
+                if (manifest.documentPath === fixture) snapshots.push(path.join(dir, name));
+            }
+        }
+        snapshots.sort();
+        const snapshot = snapshots.at(-1);
+        assert.ok(snapshot, "no snapshot of the fixture to contend for");
+
+        const holder = await holdFile(snapshot, "None");
+        const before = await fileRevisionToken(fixture);
+        let thrown = null;
+        try {
+            await cache.revertDocument(fixture, { revisionToken: before });
+        } catch (err) {
+            thrown = err;
+        } finally {
+            holder.assertStillHeld();
+            holder.kill();
+        }
+
+        assert.ok(thrown, "a revert whose snapshot could not be read reported success");
+        const wire = asToolError(thrown);
+        assert.equal(wire.code, "revert_failed", `unexpected code ${wire.code}: ${wire.message}`);
+        assert.equal(wire.data?.step, "copy");
+        assert.equal(wire.data?.errno, "EBUSY", `unexpected errno ${wire.data?.errno}`);
+        assert.equal(wire.data?.documentUnchanged, true);
+        assert.equal(wire.data?.snapshotRetained, true);
+
+        // The two claims on `data`, checked rather than trusted -- they are the
+        // whole reason this failure is safe to retry.
+        assert.ok(tokensMatch(before, await fileRevisionToken(fixture)), "the document changed despite the failure");
+        assert.ok(await exists(snapshot), "the failed revert discarded the snapshot it could not read");
+
+        // Nothing was consumed, so the document is still revertable afterwards.
+        // `kill()` returns before the handle is gone, so wait on the handle
+        // rather than on the signal -- the release end of a hold is no more
+        // self-evident than the acquisition end.
+        for (let i = 0; i < 100; i++) {
+            try {
+                await readFile(snapshot);
+                break;
+            } catch {
+                await new Promise((r) => setTimeout(r, 50));
+            }
+        }
+        const recovered = await cache.revertDocument(fixture, { revisionToken: before });
+        read = recovered.document;
     });
 
     await check("a stale revision token is refused before Word is touched", async () => {

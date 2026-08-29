@@ -222,11 +222,24 @@ export async function revertToLatest({ root, docPath }) {
     }
 
     const staging = `${docPath}.revert-${process.pid.toString(36)}${(nextSequence() % 1000).toString(36)}.tmp`;
+    // The two steps fail for unrelated reasons and want different remediation,
+    // and only the throw site knows which one ran. Measured on this machine:
+    // reading a held snapshot gives EBUSY (copyfile), while replacing the
+    // document gives EPERM (rename) for *every* cause -- a holder, a read-only
+    // attribute, a denying ACL alike. So the errno alone cannot say which side
+    // failed, let alone why, and `step` is recorded rather than reconstructed.
     try {
         await copyFile(newest.file, staging);
+    } catch (err) {
+        await rm(staging, { force: true }).catch(() => {});
+        err.step = "copy";
+        throw err;
+    }
+    try {
         await rename(staging, docPath);
     } catch (err) {
         await rm(staging, { force: true }).catch(() => {});
+        err.step = "replace";
         throw err;
     }
 

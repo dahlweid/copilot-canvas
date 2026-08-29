@@ -38,7 +38,7 @@ import path from "node:path";
 
 import { fileRevisionToken, tokensMatch } from "../revision-token.mjs";
 import { describeIntent, validateIntent } from "./edit-intent.mjs";
-import { listSnapshots, revertToLatest, takeSnapshot } from "./snapshots.mjs";
+import { listSnapshots, revertToLatest, SnapshotError, takeSnapshot } from "./snapshots.mjs";
 
 /**
  * A typed edit failure.
@@ -584,7 +584,13 @@ export class DocumentEditor {
             );
         }
 
-        const { restored, remaining } = await revertToLatest({ root: this.#snapshotRoot, docPath });
+        let restored;
+        let remaining;
+        try {
+            ({ restored, remaining } = await revertToLatest({ root: this.#snapshotRoot, docPath }));
+        } catch (err) {
+            throw await this.#restoreFailure(err, docPath);
+        }
         const after = await this.#reader.read(docPath, { limit: 0 });
 
         this.#log(`revert_document: restored ${restored.name} over ${path.basename(docPath)}`);
@@ -605,6 +611,70 @@ export class DocumentEditor {
 
     history(docPath) {
         return listSnapshots({ root: this.#snapshotRoot, docPath });
+    }
+
+    /**
+     * Translates a failed restore into this layer's vocabulary.
+     *
+     * `revert()` is the recovery path, so a raw errno escaping here is the worst
+     * place for one: the caller cannot tell whether to retry, whether the
+     * document came back, or whether it is now damaged. Two of those are
+     * answerable without inspecting the error at all, from `revertToLatest`'s
+     * ordering. It stages a copy and renames it over the document, and deletes
+     * the snapshot only once that rename has returned -- so on *any* throw the
+     * document still holds its pre-revert bytes and the snapshot is still there
+     * to retry from. Both facts go on `data`, where `asToolError` will forward
+     * them; they are more use to a caller than the errno is.
+     *
+     * The errno is reported but deliberately not mapped from. Measured on this
+     * machine, `rename` answers EPERM for an exclusive holder, a Word-like
+     * holder, a read-only attribute and a denying ACL alike, and never EBUSY --
+     * so the obvious mapping of EPERM to `permission_denied` would tell the
+     * caller "this will not clear, do not retry" about a document the user
+     * merely has open in Word, which is the misdiagnosis a translation here
+     * exists to prevent. EBUSY does occur, but on the other side: it is what
+     * reading a held *snapshot* gives, which is not a locked document either.
+     *
+     * The discriminator is a second observable instead -- whether the document
+     * can be opened for writing now. As on the edit path that probe cannot
+     * separate a holder from a write-protected file, so the message states what
+     * was observed and never asserts why.
+     */
+    async #restoreFailure(err, docPath) {
+        if (err instanceof EditError) return err;
+
+        const name = path.basename(docPath);
+        const data = {
+            step: err?.step ?? null,
+            errno: err?.code ?? null,
+            syscall: err?.syscall ?? null,
+            systemMessage: err?.message ?? String(err),
+            documentUnchanged: true,
+            snapshotRetained: true,
+        };
+
+        if (err instanceof SnapshotError) {
+            return new EditError(err.code, err.message, data);
+        }
+
+        if (err?.step === "replace" && !(await isWritable(docPath))) {
+            return new EditError(
+                "file_locked",
+                `${name} could not be replaced with its snapshot, and it cannot be opened for writing now. Another ` +
+                    `program may be holding it, or it may be protected against writing. The document still holds its ` +
+                    `pre-revert bytes and the snapshot was kept, so the revert can be retried.`,
+                data,
+            );
+        }
+
+        const where = err?.step === "copy" ? "reading the snapshot" : "replacing the document";
+        return new EditError(
+            "revert_failed",
+            `${name} could not be reverted: ${data.errno ?? "an unrecognized error"} while ${where}. The document ` +
+                `still holds its pre-revert bytes and the snapshot was kept, so nothing was lost and the revert can ` +
+                `be retried.`,
+            data,
+        );
     }
 }
 

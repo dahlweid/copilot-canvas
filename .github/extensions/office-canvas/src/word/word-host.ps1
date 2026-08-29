@@ -12,9 +12,22 @@
 #   * Numeric wd*/mso* constants only. Localized Word UIs do not have
 #     "Heading 1" and string style names throw.
 #   * Macros are force-disabled before any document is opened.
-#   * Only an unblocked temp copy is ever opened, never the user's original.
+#   * Reads only ever open an unblocked temp copy, never the user's original.
+#     Edits are the deliberate exception: they must touch the original, so they
+#     open it directly, one operation at a time, and close it before returning
+#     (ADR 0005). This line used to say the original is *never* opened, which
+#     `edit_document` made false -- a safety rule stating something the file's
+#     own code does not do is worse than no rule, because it is the one a
+#     reader trusts without checking.
 #   * A Word instance we did not create is never quit and never hidden.
-#   * Global Application.Options are never modified; they persist for the user.
+#   * Global Application.Options are never modified. The reason is *not* that
+#     they persist for the user: measured, they are per-process -- toggled off
+#     in one instance, a fresh second process still read the original values,
+#     and the HKCU Word\Options key stayed absent throughout, including after
+#     both instances quit. So our hidden Word cannot reach the user's settings
+#     by construction, and this rule is belt-and-braces rather than the thing
+#     standing between them and a changed Word. Keep the rule; it costs nothing
+#     and the isolation is a measured property of Word, not a guarantee we own.
 
 param(
     # Directory used to record which WINWORD process this host owns, so an
