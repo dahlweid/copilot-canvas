@@ -689,6 +689,25 @@ are provenance, not paths a reader of `main` can open.
   and both mutants went from `KILLED` to `SURVIVED` with no change to the test.
   Generalises past this one file: **mutating a tracked config file by moving or
   editing the working copy is inert the moment that file is committed.**
+
+The remedy common to these three is to treat the mutant itself as the thing
+under test: assert that the mutation was applied, and that the *specific* test
+you expect to go red is the one that did. A gate that only counts failures
+cannot tell a killed mutant from an unrelated breakage.
+
+**And a surviving mutant is not always a missing test.** Sometimes it is two
+branches being proved by one shared assertion: deleting a null-identity guard
+reddened nothing because the test asserted a *shared* outcome — the Word is still
+alive — which a second, independent guard satisfied on its own (#36). Both
+branches were covered by an assertion that could not say which one had done the
+work. The remedy there is **attribution**, not a stronger assertion. Note also
+what did *not* catch it: the two-independent-records discriminator, because there
+was no second record of the quantity to disagree with the first.
+
+**The same shape occurs outside the mutation gate, and the instrument is
+whatever the step actually depends on.** Three more, each of which completed and
+reported:
+
 - **The harness could not run the subject.** Word probes launched through
   `Start-Job` wedged: every arm that reached `Document.SaveAs2` hung
   indefinitely, twice, costing two full probe runs before the harness rather
@@ -710,20 +729,20 @@ are provenance, not paths a reader of `main` can open.
   and the guard would have died silently. It is the inverse of two live guards
   masking a weak test — one live and one dead, with the dead one the more
   plausible-looking of the pair.
-
-The remedy common to all three is to treat the mutant itself as the thing under
-test: assert that the mutation was applied, and that the *specific* test you
-expect to go red is the one that did. A gate that only counts failures cannot
-tell a killed mutant from an unrelated breakage.
-
-**And a surviving mutant is not always a missing test.** Sometimes it is two
-branches being proved by one shared assertion: deleting a null-identity guard
-reddened nothing because the test asserted a *shared* outcome — the Word is still
-alive — which a second, independent guard satisfied on its own (#36). Both
-branches were covered by an assertion that could not say which one had done the
-work. The remedy there is **attribution**, not a stronger assertion. Note also
-what did *not* catch it: the two-independent-records discriminator, because there
-was no second record of the quantity to disagree with the first.
+- **The range never reached git.** A runbook step said *"count the commits you
+  expect"* — `git rev-list --count $fp..HEAD`. In PowerShell that returns **0**
+  on a branch with commits to count, and **exits 0 without a word**. Reproduced
+  here: a variable expansion abutting `..` is split, so git receives **two**
+  arguments, `<sha>` and `..HEAD`. The wreckage is still valid git —
+  `<sha> ^HEAD HEAD` — and since a fork point is by definition reachable from
+  `HEAD`, **0 is the honest answer to the question that was actually asked.**
+  Two things make this worse than an ordinary quoting bug. `${fp}..HEAD` splits
+  too, so the reflex fix does nothing; and `main..$br` does **not** split, so
+  the form everyone types daily is safe and the hazard only appears once the
+  variable moves to the **left** of the range — which is precisely what a reader
+  does when substituting a shell variable into a documented
+  `<old-head>..HEAD`. Quote the whole range, and state the expected count next
+  to the command so a `0` reads as wrong rather than as *already done*.
 
 **And when a convention gets rediscovered, that is evidence the first guard was
 unfindable.** `param([string] $Doc)` type-constrains that name for the whole
