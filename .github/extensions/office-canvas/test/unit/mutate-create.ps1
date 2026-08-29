@@ -63,6 +63,15 @@ $mutants = @(
        from  = 'description: `Absolute or workspace-relative path to create (${creatableList()}).'
        to    = 'description: `Absolute or workspace-relative path to create (.docx).' }
 
+    # Round 3 of review found this message opened with the bare extension --
+    # ".rtf cannot be created" -- which reads as though the extension were the
+    # thing being created, and never named the file. An agent that authored
+    # several documents in one turn cannot tell from that which call to change.
+    @{ name = 'unsupported_type refusal does not name the file it refused'
+       file = 'src/word/document-author.mjs'
+       from  = 'Cannot create ${docPath}: create_document does not write ${ext} files. It writes ${creatableList()}.'
+       to    = '${ext} cannot be created. create_document writes ${creatableList()}.' }
+
     @{ name = 'exception type set top-level, dropped at the tool boundary'
        file = 'src/word/document-author.mjs'
        from  = '                { data: { exception: result.exception ?? null, detail: result.detail ?? null, leftBehind } },'

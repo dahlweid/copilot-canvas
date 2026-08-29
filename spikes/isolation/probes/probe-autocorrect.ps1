@@ -136,16 +136,44 @@ function Compare-Saved($a, [string] $file, $expected) {
     foreach ($text in $expected) {
         $got = ([string]$check.Paragraphs.Item($j).Range.Text).TrimEnd("`r", [char]7, "`n")
         if ($got -ceq $text) {
-            "  [verbatim ] $text"
+            "  [verbatim ] $(Show-Escaped $text)"
         } else {
-            "  [REWRITTEN] asked: $text"
-            "              got:   $got"
+            "  [REWRITTEN] asked: $(Show-Escaped $text)"
+            "              got:   $(Show-Escaped $got)"
             $rewritten++
         }
         $j++
     }
     "  paragraphs rewritten: $rewritten of $($expected.Count)"
     $check.Close($WD_DO_NOT_SAVE)
+}
+
+# Render a string so a non-ASCII character survives being printed. THIS IS NOT
+# COSMETIC. Everything below exists to find out which character Word substituted,
+# and the console cannot show one: stdout here is CP850, and reading it back
+# elsewhere as Windows-1252 turns U+00A9 into a cedilla. Worse, a curly quote and
+# an en dash have no CP850 mapping at all and best-fit to '"' and '-', so a
+# rewritten line prints identical to the line it replaced and the substitution
+# this probe was written to catch reads as a no-op.
+#
+# The comparisons themselves are sound -- they are -ceq against the live COM
+# string and never went near the console. It is only the report that was lossy,
+# which is the more dangerous of the two: an earlier revision of this probe
+# printed the copyright sign as a cedilla, and a comment in word-host.ps1 came from
+# that output, describing the result as "(c) as a symbol" because the author
+# could not see what it was. Measuring correctly and reporting illegibly is
+# still a wrong answer at the far end. (That earlier output rendered the
+# copyright sign as a cedilla; this comment does not reproduce it, because this
+# file must stay ASCII-only -- Windows PowerShell reads a BOM-less UTF-8 .ps1 as
+# ANSI, so the character would be corrupted here too.)
+function Show-Escaped([string] $s) {
+    $sb = New-Object System.Text.StringBuilder
+    foreach ($ch in $s.ToCharArray()) {
+        $code = [int][char]$ch
+        if ($code -ge 32 -and $code -le 126) { [void]$sb.Append($ch) }
+        else { [void]$sb.AppendFormat('<U+{0:X4}>', $code) }
+    }
+    return $sb.ToString()
 }
 
 # The same comparison against a live document, without going through disk.
@@ -159,10 +187,10 @@ function Compare-Live($document, $expected) {
     foreach ($text in $expected) {
         $got = ([string]$document.Paragraphs.Item($j).Range.Text).TrimEnd("`r", [char]7, "`n")
         if ($got -ceq $text) {
-            "  [verbatim ] $text"
+            "  [verbatim ] $(Show-Escaped $text)"
         } else {
-            "  [REWRITTEN] asked: $text"
-            "              got:   $got"
+            "  [REWRITTEN] asked: $(Show-Escaped $text)"
+            "              got:   $(Show-Escaped $got)"
             $rewritten++
         }
         $j++
@@ -373,7 +401,7 @@ try {
             foreach ($needle in 'teh', '(c)', '(C)') {
                 $hit = $null
                 try { $hit = $app.AutoCorrect.Entries.Item($needle) } catch { }
-                if ($null -ne $hit) { "  '$needle' -> '$($hit.Value)'" } else { "  '$needle' -> <no entry>" }
+                if ($null -ne $hit) { "  '$needle' -> '$(Show-Escaped $hit.Value)'" } else { "  '$needle' -> <no entry>" }
             }
             "AutoCorrect entry count: $($app.AutoCorrect.Entries.Count)"
             # A sample of what this Word's list actually contains, so a future
@@ -383,7 +411,7 @@ try {
             $shown = 0
             for ($k = 1; $k -le $app.AutoCorrect.Entries.Count -and $shown -lt 20; $k++) {
                 $e = $app.AutoCorrect.Entries.Item($k)
-                if ($e.Name -cmatch '^[ -~]{1,10}$') { "  '$($e.Name)' -> '$($e.Value)'"; $shown++ }
+                if ($e.Name -cmatch '^[ -~]{1,10}$') { "  '$($e.Name)' -> '$(Show-Escaped $e.Value)'"; $shown++ }
             }
             Step 'entries read'
 

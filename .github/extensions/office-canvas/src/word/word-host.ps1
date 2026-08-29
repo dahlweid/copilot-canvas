@@ -430,10 +430,28 @@ function Resolve-Doc($docId) {
 
 # Autocorrect suppression. A correctness control, not a preference.
 #
-# Autocorrect rewrites inserted text and raises nothing: straight quotes come
-# back curly, "--" becomes a dash, "(c)" becomes (c) as a symbol. There is no
-# error to catch and no return value to check, so a document authored through it
-# can differ from what was asked for with nothing anywhere reporting that.
+# Autocorrect rewrites inserted text and raises nothing. Measured on this Word
+# by arm H of spikes/isolation/probes/probe-autocorrect.ps1, which forces the
+# rewrite with Content.AutoFormat() and reports codepoints rather than glyphs:
+#
+#   She said "hello" and left.  ->  She said U+201E hello U+201C and left.
+#   width -- height             ->  width U+2014 height, and the spaces are eaten
+#   (c) 2026                    ->  U+00A9 2026
+#
+# Named by codepoint deliberately. An earlier version of this comment said
+# '"--" becomes a dash' and '"(c)" becomes (c) as a symbol', which is circular
+# and, on the dash, wrong -- it is an em dash, not the en dash the test file
+# also claimed. That was not carelessness: the probe printed its results through
+# a CP850 console read back as Windows-1252, so the copyright sign arrived as a
+# cedilla and the curly quotes best-fitted to plain ASCII quotes, making a
+# rewritten line look identical to the line it replaced. The instrument measured
+# correctly and reported illegibly, and the comment was written from the report.
+# The probe now escapes non-ASCII before printing, which is why the codepoints
+# above can be stated at all.
+#
+# There is no error to catch and no return value to check, so a document
+# authored through it can differ from what was asked for with nothing anywhere
+# reporting that.
 #
 # Two things were measured before this was written
 # (spikes/isolation/probes/probe-autocorrect.ps1, arms C and A/B/E/F/G/H):

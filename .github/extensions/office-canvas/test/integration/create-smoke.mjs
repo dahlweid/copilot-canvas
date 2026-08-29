@@ -53,21 +53,47 @@ async function check(name, fn) {
  *
  * This is a deliberate, measured restriction and not laziness. Arm H of
  * spikes/isolation/probes/probe-autocorrect.ps1 forces autocorrect to run
- * (`Content.AutoFormat()`) over six bait strings and records which are rewritten:
- * quotes become curly, `--` becomes an en dash, `(c)` becomes ©. The other three
- * baits -- a lowercase sentence start, a doubled initial capital, and the classic
- * `teh` typo -- come back **unchanged even with autocorrect fully on**, because
- * this Word's list is German: 402 entries, no `teh`.
+ * (`Content.AutoFormat()`) over six bait strings and records which are rewritten.
+ * Measured, on this Word, with the exact codepoints it produced:
+ *
+ *   She said "hello" and left.  ->  She said \u201Ehello\u201C and left.
+ *   width -- height             ->  width\u2014height
+ *   (c) 2026                    ->  \u00A9 2026
+ *
+ * The other three baits -- a lowercase sentence start, a doubled initial capital,
+ * and the classic `teh` typo -- come back **unchanged even with autocorrect fully
+ * on**, because this Word's list is German: 402 entries, and `teh` is confirmed
+ * `<no entry>`.
  *
  * So an assertion that `teh` survives, or that a lowercase `i` stays lowercase,
  * passes on a machine where autocorrect is switched on and doing its worst. It
  * would be a test whose coverage depends on a property of the machine rather
  * than on the code -- the exact shape this repo has twice mistaken for a pass.
  * Adding a bait here requires arm H to rewrite it first.
+ *
+ * Two corrections that came out of re-running arm H, both of which had been
+ * carried from what an *English* Word does rather than measured on this one:
+ *
+ *   - The opening quote here is \u201E (low-9), not \u201C. This list previously
+ *     named \u201C and \u201D. \u201D is not produced by this Word at all, and
+ *     \u201E -- the one character a German Word actually opens with -- was
+ *     absent. The assertion would still have failed on the closing \u201C, so
+ *     this was a narrowed net rather than a hole, but it was a net woven to the
+ *     wrong locale while the file above claimed every bait was verified live.
+ *   - `--` becomes an em dash \u2014, not an en dash, and it eats the spaces on
+ *     either side. The doc above said en dash.
+ *
+ * \u2013 and \u201D are retained below and are explicitly NOT measured here:
+ * they are what other locales produce, kept so the assertion does not silently
+ * narrow to this machine. Every other codepoint in this list was observed.
  */
 const VERBATIM_BAITS = [
-    { text: `He said "hello" to her.`, mustNotContain: ["\u201c", "\u201d"], what: "smart quotes" },
-    { text: "A dash -- like this.", mustNotContain: ["\u2013", "\u2014"], what: "an en or em dash" },
+    {
+        text: `He said "hello" to her.`,
+        mustNotContain: ["\u201e", "\u201c", "\u201d"],
+        what: "smart quotes",
+    },
+    { text: "A dash -- like this.", mustNotContain: ["\u2014", "\u2013"], what: "an em or en dash" },
     { text: "Copyright (c) 2024.", mustNotContain: ["\u00a9"], what: "a copyright sign" },
 ];
 

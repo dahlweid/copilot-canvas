@@ -145,7 +145,9 @@ export class DocumentAuthor {
         if (!CREATABLE.has(ext)) {
             throw new CreateError(
                 "unsupported_type",
-                `${ext || "That path"} cannot be created. create_document writes ${creatableList()}.`,
+                ext
+                    ? `Cannot create ${docPath}: create_document does not write ${ext} files. It writes ${creatableList()}.`
+                    : `Cannot create ${docPath}: the path has no file extension. create_document writes ${creatableList()}.`,
             );
         }
         return docPath;

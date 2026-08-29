@@ -18,7 +18,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { DocumentAuthor } from "../../src/word/document-author.mjs";
+import { DocumentAuthor, creatableList } from "../../src/word/document-author.mjs";
 import { asToolError } from "../../src/tool-error.mjs";
 import { fileRevisionToken } from "../../src/revision-token.mjs";
 
@@ -182,6 +182,27 @@ test("only extensions SaveAs2's format matches are creatable", async () => {
             const err = await failed(author, path.join(dir, name));
             assert.ok(err, `${name} was accepted`);
             assert.equal(err.code, "unsupported_type", `${name}: ${err.message}`);
+
+            // Asserted through the boundary, because the boundary is where the
+            // agent reads this. A refusal is only actionable if it says which
+            // path was refused -- an agent that authored several in one turn
+            // cannot otherwise tell which call to change. Reviewed finding:
+            // the message used to open with the bare extension (".rtf cannot
+            // be created"), which reads as though the extension were the thing
+            // being created and never named the file.
+            const seen = throughToolBoundary(err);
+            const full = path.join(dir, name);
+            assert.ok(seen.message.includes(full), `${name}: does not name the path -- ${seen.message}`);
+            for (const ok of creatableList().split(", ")) {
+                assert.ok(seen.message.includes(ok), `${name}: does not offer ${ok} -- ${seen.message}`);
+            }
+            const ext = path.extname(name);
+            if (ext) {
+                assert.ok(
+                    seen.message.includes(ext),
+                    `${name}: does not name the rejected type -- ${seen.message}`,
+                );
+            }
         }
     });
 });
