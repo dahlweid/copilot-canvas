@@ -65,15 +65,21 @@ async function withHolder(label, share, access = "ReadWrite") {
 // 1. exclusive lock -- stricter than Word
 results.push(["FileShare::None (exclusive)", await withHolder("exclusive", "None")]);
 
-// 2. what Word itself takes, now measured on both halves: a handle with **write
-// access**, granting **FileShare::Read**.
+// 2. what Word itself takes: a handle with **write access**, granting
+// **FileShare::Read**.
 //
-// This label has been wrong twice, in opposite directions, and the reason is
-// worth keeping. Windows checks the access you request against the holder's
-// share mode, *and* the holder's access against the share mode you offer. Every
-// reader in this file is Node's read stream -- read access, granting ReadWrite
-// -- so it only ever exercises the second check. It measures the holder's
-// **access** and is completely blind to its **share** mode.
+// That is not measured here, and this probe could not measure it. It is taken
+// from probe-fileshare-algebra.ps1 and used only to configure the holder, so
+// this row asks "given the settled model, what does a Node reader see?" rather
+// than establishing the model.
+//
+// The distinction matters because this label has been wrong twice, in opposite
+// directions, and both times the wrongness was invisible from here. Windows
+// checks the access you request against the holder's share mode, *and* the
+// holder's access against the share mode you offer. Every reader in this file
+// is Node's read stream -- read access, granting ReadWrite -- so it only ever
+// exercises the second check. It measures the holder's **access** and is
+// completely blind to its **share** mode.
 //
 // So this probe could not have detected either error. The original said
 // `FileShare::Read` and modelled Word with an access=Read holder; the first

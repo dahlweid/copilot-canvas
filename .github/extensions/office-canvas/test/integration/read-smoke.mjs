@@ -47,7 +47,14 @@ import { assertNoLeakedWord, newWordPids, wordPids } from "./word-pids.mjs";
 // asserting success cannot, because an unheld read succeeds for the wrong
 // reason and looks identical. So the Word-like-holder check rests entirely on
 // this handshake, which is why it may not be relaxed back to a sleep.
-async function holdFile(target, share, readyPath, access = "ReadWrite") {
+// The ready-marker name is derived from the holder's own access and share
+// values rather than passed in. It was previously a literal at the call site,
+// `ready-rw`, which went stale the moment the Word-like holder changed from
+// granting ReadWrite to write-access-granting-Read -- a marker file whose name
+// contradicted the handle it stood for, in the test whose subject is a label
+// that outlived its accuracy. Derived, it cannot drift.
+async function holdFile(target, share, readyDir, access = "ReadWrite") {
+    const readyPath = path.join(readyDir, `ready-${access}-share-${share}`);
     const holder = spawn(
         "powershell.exe",
         [
@@ -336,7 +343,7 @@ try {
         // Safe despite ADR 0005: the revision token is read before Word is
         // started, so this fails fast on the filesystem and never reaches the
         // `Documents.Open` that would hang.
-        const holder = await holdFile(fixture, "None", path.join(workRoot, "ready-none"));
+        const holder = await holdFile(fixture, "None", workRoot);
         try {
             const err = await cache.readStructure(fixture).then(
                 () => null,
@@ -385,7 +392,7 @@ try {
         // an unheld file on a loaded machine and pass having contended nothing.
         // The `exitCode` assertion after the read closes the other end: the
         // holder never releases voluntarily, so still-running means still-holding.
-        const holder = await holdFile(fixture, "Read", path.join(workRoot, "ready-rw"), "Write");
+        const holder = await holdFile(fixture, "Read", workRoot, "Write");
         try {
             const result = await cache.readStructure(fixture);
             assert.equal(holder.exitCode, null, "the holder released during the read, so nothing was contended");
