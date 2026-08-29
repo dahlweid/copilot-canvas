@@ -689,6 +689,27 @@ are provenance, not paths a reader of `main` can open.
   and both mutants went from `KILLED` to `SURVIVED` with no change to the test.
   Generalises past this one file: **mutating a tracked config file by moving or
   editing the working copy is inert the moment that file is committed.**
+- **The harness could not run the subject.** Word probes launched through
+  `Start-Job` wedged: every arm that reached `Document.SaveAs2` hung
+  indefinitely, twice, costing two full probe runs before the harness rather
+  than Word was suspected. The obvious cause was apartment state, and a control
+  excluded it — the identical body in a real `powershell.exe` returned from
+  `SaveAs2` in **149 ms under `-STA` and 138 ms under `-MTA`**, so a real MTA
+  process saves fine and the job runspace's thread is what wedges. Scope, since
+  it is easy to carry this too far: `SaveAs2` is what was measured, and *"a COM
+  call that pumps a message loop wedges there"* is the inferred mechanism, not a
+  call-by-call result. Four probes in this repo still use `Start-Job`; they are
+  **unaudited, not known-broken**. The working rule is that a probe here starts
+  a real process with discrete argv.
+- **The guard could not fire.** A BOM self-check (#43) had two conditions, and
+  the first — `"$([char]0x2014)".Length -ne 1` — builds the character from a
+  *number*, so it is 1 however the file was decoded, and measured 1 in both
+  arms. The entire guard was the second condition. Nothing was broken, and the
+  hazard is the ordering: **the dead condition came first and read as the
+  primary check**, so anyone simplifying that line would have kept the inert one
+  and the guard would have died silently. It is the inverse of two live guards
+  masking a weak test — one live and one dead, with the dead one the more
+  plausible-looking of the pair.
 
 The remedy common to all three is to treat the mutant itself as the thing under
 test: assert that the mutation was applied, and that the *specific* test you
@@ -703,6 +724,21 @@ branches were covered by an assertion that could not say which one had done the
 work. The remedy there is **attribution**, not a stronger assertion. Note also
 what did *not* catch it: the two-independent-records discriminator, because there
 was no second record of the quantity to disagree with the first.
+
+**And when a convention gets rediscovered, that is evidence the first guard was
+unfindable.** `param([string] $Doc)` type-constrains that name for the whole
+scope, and PowerShell variable names are case-insensitive — so a later
+`$doc = $w.Documents.Add()` silently **coerces the Document to a string**
+instead of failing. `$doc.Content` then reads `$null`, and the error surfaces
+two lines further on as *"the property Text was not found on this object"*,
+naming a line that is entirely correct. Same class as the rest of this section:
+the failure names a cause the code never distinguished.
+
+This has now been hit independently twice, and it was **already** guarded the
+first time — `make-fixture.ps1:92` carries a comment refusing `$table` for
+exactly this reason. A guard that exists as a comment at one call site is
+findable only by someone already reading that site, which is no one who needs
+it. Rediscovery is the signal worth acting on, not the fix.
 
 Auditing for it is cheaper than it looks, and the mechanical check is the one to
 reach for: **does any asserted outcome have more than one producer?** Counting
