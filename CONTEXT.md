@@ -567,6 +567,37 @@ generates no exclusive lock, an idle machine generates no contended shutdown.
 That code is untested, not correct, and the suite disguises it. The tell is when
 a test's coverage depends on a property of the machine rather than on the test.
 
+**A green CI tick on this repo has never covered a single line of Word
+behaviour, and never will on a hosted runner.** This is structural, not an
+outage. `.github/workflows/validate.yml` runs `ubuntu-latest`, and its own
+header states the constraint:
+
+> Everything here must run without Office installed. The integration suite
+> drives Word through COM and cannot run on a hosted runner (see
+> docs/repo-restructure.md §1, constraint C5) — it stays a local gate until a
+> self-hosted Windows runner with an Office licence exists.
+
+So the tick covers exactly three steps and nothing else: packaging invariants
+(`validate-extensions.mjs`), citation resolution (`check-citations.mjs`), and
+the **Office-free** unit tests. Every claim this repo makes about `Quit()`,
+teardown, handle pinning, pid identity, orphan reaping, autocorrect persistence,
+save behaviour and share modes rests on the **local** gate and the cited probes.
+None of it has ever been checked by CI.
+
+**The billing outage makes this urgent in the wrong direction.** While CI is
+red, everyone is careful — the red is conspicuous, so it gets read, explained
+and dispensed one merge at a time. Nobody is careful about *green*. When billing
+resumes, the ticks come back and will mean precisely what they meant before,
+which was never Word coverage — and by then the merges that carried a documented
+red will look like the risky ones, while the green ones look safe. **Documenting
+only the red leaves the more misleading half standing.**
+
+The general rule, which outlives this repo's outage: **a check's name is not its
+scope.** `validate` sounds total and is not. Read what the workflow runs before
+treating a tick as evidence for anything, and when a PR's behaviour is covered
+only locally, say so in the PR body — the reader six months out has the tick and
+no way to know what it excluded.
+
 **Assert through the boundary the caller actually sees, not one layer beneath
 it.** A test placed below a boundary will confirm a property no caller can
 observe. `edit_document`'s recovery path set `snapshot`, `rolledBack` and
