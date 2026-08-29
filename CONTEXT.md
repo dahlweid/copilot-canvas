@@ -834,6 +834,37 @@ wording — the commits were redundant, not stranded. Only searching `main` for
 the content itself distinguished the two, and the two look identical from every
 count and every diff.
 
+**Check a session for unpushed work before archiving it — nothing on the remote
+side can.** The tempting check is to compare the PR's recorded `headRefOid`
+against `git rev-parse origin/<branch>`, and it is unsound: it compares two
+*remote* facts to each other and is silent about the machine. The counterexample
+appeared in this repo's own working tree while the paragraph recommending it was
+being written:
+
+```
+PR #56 headRefOid               3f6b813
+origin/dahlweid-verbose-tribble 3f6b813   <- equal
+HEAD                            097cf50   <- one commit, unpushed
+```
+
+`git rev-list --count origin/<branch>..HEAD` answers it, as do `git status -sb`
+and `git cherry -v`. Run one of them *before* the archive, not after.
+
+**A tree-equality check was drafted here and cut.** A squash does carry the tip's
+tree when `main` has not advanced — measured, `5ef2403` and `f8d48fa` both
+`1330d69` — but that instance held only because the tip was itself a merge
+commit squashed twelve minutes later. Where `main` advances and the squash must
+three-way merge, the trees differ with nothing stranded, and the check raises a
+false alarm. One agreeing instance measured nothing about the case that matters,
+so the rule is not stated rather than stated with conditions that were never
+probed.
+
+**The reason to run any of this:** a session being archived says nothing about
+whether its work is finished. Three were archived here within one session's span
+— that one was complete, while **#29 still had 7 argument-form `.Quit()` call
+sites across 6 files on `main`**, excluding comments and the probe that
+deliberately measures the throw. The archival looked identical in both cases.
+
 **A mutation gate can report on a mutant it never applied.** Three independent
 mechanisms turned up here, one per layer session, which is what makes this a
 class rather than three bugs. In all three the run completes and prints a verdict,
