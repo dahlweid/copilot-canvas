@@ -34,6 +34,20 @@ foreach ($rep in 1..$reps) {
     if ($new.Count -ne 1) {
         "rep $rep : UNATTRIBUTABLE -- census diff was $($new.Count) pids [$($new -join ',')]."
         "         Refusing to measure or kill. Aborting run."
+        # Deliberately no ReleaseComObject here, and this was raised in review.
+        # Three measured reasons it is not the fix it looks like:
+        #   1. `Quit()` (no-arg) binds under PS 5.1 and Word does exit -- #34's
+        #      control arm measured exactly this: the bare form is reaped after
+        #      the owning process exits, and it was the *swallowed* `Quit(0)`,
+        #      which throws and never binds, that leaked.
+        #   2. The RCW does not outlive this process; the script breaks and ends
+        #      within milliseconds, and `Quit()` returns 3-28 ms before Word
+        #      goes, so the release would not be what ends the instance anyway.
+        #   3. ReleaseComObject is not neutral. PR #16 round 5 measured a case
+        #      where adding it *caused* the leak it was meant to prevent.
+        # What this path genuinely cannot do is verify the outcome: it aborts
+        # precisely because attribution failed, so there is no pid it is
+        # entitled to poll or to kill. Reporting and stopping is the honest end.
         try { $app.Quit() } catch { }
         break
     }

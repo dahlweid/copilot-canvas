@@ -48,12 +48,21 @@ directions.
 | event                          | measured                        |
 | ------------------------------ | ------------------------------- |
 | `Document.Close()` → writable   | **0–1 ms**, released every run  |
-| `Application.Quit()` returns    | ~120 ms                         |
+| `Application.Quit()` returns    | **3–28 ms** (was recorded as `~120 ms`; see below) |
 | `Quit()` → process actually gone | **2.7 s, 6.1 s, 2.7 s** idle; observed >30 s under concurrent load |
 
 So the transient-lock model needs **no settling delay between operations**: once
 `Close` returns, the next operation may take the file immediately. Anything that
 sleeps between operations to "let the lock clear" is waiting for nothing.
+
+The `Quit()`-returns row was `~120 ms` until it was measured directly by
+`spikes/isolation/probes/probe-quit-exit-gap.ps1`, which puts it at **3–28 ms** —
+wrong by roughly 5–40×. The figure had been copied into five places before anyone
+measured it, and the row it sits in is headed *measured*, which is what let it
+travel. Note the direction: the error made `Quit()` look **slower** to return
+than it is, so nothing built on it under-waited and no defect surfaced from this
+row alone. A wrong number that fails safe is not self-correcting — it is simply
+never contradicted.
 
 The seconds-long tail belongs to *process* teardown, and it matters in exactly
 one place: anything that re-derives a path a dying Word might still hold. A

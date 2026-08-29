@@ -84,9 +84,10 @@ export function ownedWordLedger() {
 /**
  * Asserts this test leaked no Word process.
  *
- * Word exits asynchronously after `Quit`: the call returns in ~120 ms but the
- * process lingers. Measured on this machine, Quit-to-exit was 2.7 s, 6.1 s and
- * 2.7 s over three runs on an otherwise idle machine -- so a flat settle short
+ * Word exits asynchronously after `Quit`: the call returns in 3-28 ms (measured,
+ * probe-quit-exit-gap.ps1) but the process lingers. Measured on this machine,
+ * Quit-to-exit was 2.7 s, 6.1 s and 2.7 s over three runs on an otherwise idle
+ * machine -- so a flat settle short
  * of that is a coin toss, and a flat settle long enough to be safe wastes that
  * long on every green run. We poll instead: it returns as soon as the process
  * is actually gone, and only spends the deadline when there is something to

@@ -256,7 +256,9 @@ try {
 
     await check("the lock is released when the operation ends", async () => {
         // Not assumed: `Close()` returning is not proof the file is free, in the
-        // same way `Quit()` returns ~120 ms before Word's process exits.
+        // same way `Quit()` returns seconds before Word's process exits
+        // (measured 3-28 ms to return, 3039-3702 ms to exit --
+        // probe-quit-exit-gap.ps1).
         // Anything else here would be a re-open into the unbounded hang.
         const handle = await readFile(fixture);
         await writeFile(fixture, handle);

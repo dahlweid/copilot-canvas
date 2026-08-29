@@ -208,7 +208,8 @@ try {
         [System.Runtime.InteropServices.Marshal]::ReleaseComObject($word) | Out-Null
     }
     # Only ever reap a Word this probe started. Wait first, because Quit() returns
-    # in ~120 ms while the process lives on for seconds; then force-terminate,
+    # in 3-28 ms (measured, probe-quit-exit-gap.ps1) while the process lives on
+    # for seconds; then force-terminate,
     # because the two documented ways Word blocks here -- a held file and
     # mark-of-the-web -- both *hang* rather than fail, so a patient wait alone
     # leaks a WINWORD.EXE. That is not hypothetical: an earlier run of this probe

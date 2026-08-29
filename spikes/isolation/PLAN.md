@@ -1315,9 +1315,11 @@ rewriting it.
 | # | the fact, and where it was recorded | the code that needed it | distance |
 | --- | --- | --- | --- |
 | 1 | `docs/adr/0005-transient-lock-write-model.md:80-86` — the measured sharing table | the paragraph at `:95` describing Word's handle | **2 lines** |
-| 2 | `document-reader.mjs:132-140` — errno table, measured for **read streams** | proposed for `revertToLatest`'s `rename` in review (`document-editor.mjs`) | different operation |
-| 3 | `document-editor.mjs:402-409` — "`Application.Quit()` returns seconds before the process actually exits" | `word-host.ps1` `Stop-Word`, which waited a fixed 300 ms after `Quit` and then killed | ~300 lines, another file |
-| 4 | `word-host.ps1` `Cmd-Edit` — "`Close()` returning is not proof the file is released", **plus a worked stopwatch poll implementing the remedy** | `Stop-Word`, in the **same file**, using a fixed sleep | ~840 lines, **same file** |
+| 2 | `.github/extensions/office-canvas/src/word/document-reader.mjs:132-140` — errno table, measured for **read streams** | proposed for `revertToLatest`'s `rename` in review (`.github/extensions/office-canvas/src/word/document-editor.mjs`) | different operation |
+| 3 | `.github/extensions/office-canvas/src/word/document-editor.mjs:402-409` — "`Application.Quit()` returns seconds before the process actually exits" | `.github/extensions/office-canvas/src/word/word-host.ps1` `Stop-Word`, which waited a fixed 300 ms after `Quit` and then killed | ~300 lines, another file |
+| 4 | `.github/extensions/office-canvas/src/word/word-host.ps1` `Cmd-Edit` — "`Close()` returning is not proof the file is released", **plus a worked stopwatch poll implementing the remedy** | `Stop-Word`, in the **same file**, using a fixed sleep | ~840 lines, **same file** |
+| 5 | `spikes/isolation/probes/probe-quit-exit-gap.ps1` — `Quit()` **returns** in 3-28 ms, correcting a `~120 ms` claim | **five** further copies of the same wrong figure: `docs/adr/0005-transient-lock-write-model.md:51` in a table headed *measured*, `.github/extensions/office-canvas/test/integration/word-pids.mjs:87`, `.github/extensions/office-canvas/test/integration/edit-smoke.mjs:259`, `spikes/isolation/probes/probe-word-ownership.ps1:273`, `spikes/isolation/probes/probe-fileshare-algebra.ps1:211` | corrected in one file, by me, in the commit that added this section |
+| 6 | `.github/extensions/office-canvas/src/word/word-host.ps1` `Write-HostDiagnostic` — "stdout is the JSON-RPC channel and writing to it corrupts the protocol, so diagnostics go to stderr, **which word-host.mjs captures and surfaces**" | `.github/extensions/office-canvas/src/word/word-host.mjs:58,105,175` — stderr was captured into a ring buffer with exactly **one** reader, in `#onExit`, feeding only `#rejectAll`. A clean dispose has nothing in flight, so the buffer was discarded | **the same sentence** |
 
 **1** is the mildest and the best documented: the ADR says so itself at `:100`
 — *"This paragraph said `ReadWrite` until the table above was read properly."*
@@ -1357,10 +1359,62 @@ Not re-reading. All four were re-read many times. What caught 3 and 4 was
 `seconds` — which is only possible because both had been written down. What
 caught 2 was re-measuring on the target operation.
 
+**5 is the one to read twice**, because it is the same failure committed *in the
+act of cataloguing it*, and because the first version of this very entry got its
+own size wrong. Correcting `~120 ms` in `word-host.ps1` is what produced entry 3.
+I then wrote entry 5 describing a single uncorrected *twin* — and only on
+grepping for the value found **five**, one of them a row in ADR 0005's table
+headed *measured*, which is the canonical record every other copy descends from.
+
+Knowing the class does not confer immunity: the correction was applied where the
+search had already been looking and nowhere else, and the entry recording that
+failure repeated it by estimating the spread instead of measuring it. The grep
+took ten seconds and I wrote two paragraphs of analysis before running it.
+
+**6 has the shortest distance of any entry here — zero.** The fact and the code
+that contradicts it are *the same sentence*: the comment explaining why
+diagnostics go to stderr ends by asserting that `word-host.mjs` surfaces them,
+and `word-host.mjs` did not. The review finding that produced `Write-HostDiagnostic`
+said a refusal to kill "must be reported on a channel that is read, not silently
+skipped". I added the report, satisfied the words, and never asked who reads the
+channel — `grep '#stderr'` returns four lines and answers it.
+
+This is the entry-1 shape (`ReadWrite` two lines under the table saying
+otherwise) collapsed to nothing, and it is worth separating the two halves. The
+*writer* was correct and remains correct. What was wrong was a clause about the
+**reader**, written from the writing side, asserting a behaviour at the other end
+of a boundary that the writing side cannot observe. That is #40's defect exactly
+— `[Console]::OutputEncoding` set deliberately, `InputEncoding` never measured,
+the direction whose symptom is visible in a terminal fixed and its twin left —
+and it is why *a fix that exists is worse than nothing when it makes the
+neighbour look covered*. A comment claiming the far side works is the cheapest
+possible way to make a neighbour look covered.
+
+It also could not have been caught by the discriminator that caught 3 and 4.
+There was no second record of this quantity to disagree with the first; there
+was one confident clause and no counterpart anywhere. What caught it was a
+**surviving mutant** — deleting the null-identity guard reddened nothing, because
+the test asserted a shared outcome (the Word is still alive) that a *second*
+guard satisfied on its own. Chasing why that mutant lived produced the
+attribution fix, which required reading the log, which is what exposed that
+nothing read it. The mutant was not a test failure and not a bug; it was the
+only available evidence that two things were being proved by one assertion.
+Measured end to end, with a control, in
+`spikes/isolation/probes/probe-decline-diagnostic-reach.mjs`: the host emitted
+the decline, and the callback the extension supplies received nothing at all.
+
+Note also *why* nothing caught it: the error made `Quit()` look slower to return
+than it is, so every consumer over-waited and no test could fail. **A wrong
+number that fails safe is not self-correcting — it is simply never
+contradicted**, and it will sit in a table headed *measured* indefinitely.
+
 So the practical form is: **when you rely on a recorded number, check whether
 this repo records that number anywhere else, and if it does, make them agree by
 measurement rather than by choosing.** A quantity stated twice is a free
-discriminator; a quantity stated once is untested.
+discriminator; a quantity stated once is untested. And when you *correct* a
+number, grep for the value before you commit — a correction applied to one of
+two copies leaves the repo disagreeing with itself, which is strictly worse than
+before, because the wrong copy now has a right one to be cited against.
 
 ### A caveat about the citations above
 
