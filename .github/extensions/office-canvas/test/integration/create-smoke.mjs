@@ -30,6 +30,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 
 import { RenderCache } from "../../src/render-cache.mjs";
+import { WordHost } from "../../src/word/word-host.mjs";
 import { assertNoLeakedWord, wordPids } from "./word-pids.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -310,6 +311,39 @@ try {
                 return true;
             },
         );
+    });
+
+    await check("a COM failure reports the type Word threw, not a PowerShell type", async () => {
+        // `create_failed` is deliberately unreachable through the public API --
+        // validating the spec is what makes every COM failure impossible -- so
+        // this drives the host directly with a table the validator refuses, and
+        // Word rejects at `Tables.Add`.
+        //
+        // What it pins is that `exception` carries the type of the thing that
+        // actually failed. It cannot fail for a missing unwrap of PowerShell's
+        // MethodInvocationException, and does not claim to: the unwrap is a
+        // guard, and a mutation check confirmed that removing it changes nothing
+        // here, because COM calls arrive unwrapped. It *can* fail -- verified by
+        // mutation -- if the reported type becomes a PowerShell artefact such as
+        // the ErrorRecord, which is the shape of the regression that would put a
+        // caller back to reading the message. And the message is why the field
+        // exists at all: this failure's detail arrives in German.
+        const host = new WordHost({ log: () => {} });
+        try {
+            const out = await host.create({
+                path: path.join(docs, "never-written.docx"),
+                blocks: [{ kind: "table", headerRow: false, rows: [] }],
+            });
+            assert.equal(out.status, "create_failed", `expected a COM failure, got ${out.status}`);
+            assert.equal(
+                out.exception,
+                "System.Runtime.InteropServices.COMException",
+                `reported ${out.exception}, which is not the type the COM call threw`,
+            );
+            assert.equal(out.leftBehind, false, "a failed create left a file behind");
+        } finally {
+            await host.dispose().catch(() => {});
+        }
     });
 
     await check("creating needs no canvas open", () => {

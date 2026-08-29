@@ -1696,15 +1696,41 @@ function Cmd-Create($a) {
         # so it is now checked and reported as an observation.
         $leftBehind = Test-Path -LiteralPath $path -PathType Leaf
 
-        # The exception *type*, not its message: messages are German here, and a
-        # caller that discriminates on one is a caller that breaks on a machine
-        # with a different display language.
+        # The exception *type*, not its message: messages are German here -- this
+        # path's own detail arrives as "Die Zahl muss zwischen 1 und 63 liegen."
+        # -- and a caller that discriminates on one is a caller that breaks on a
+        # machine with a different display language.
+        #
+        # The walk to the innermost exception is a guard, not a fix for anything
+        # observed here, and the measurement says both halves of that. PowerShell
+        # wraps anything thrown out of a *.NET* constructor or method call in a
+        # `System.Management.Automation.MethodInvocationException` whose own
+        # HResult is the generic 0x80131501, and it does this for `New-Object`,
+        # `[Type]::new()` and a static like `[IO.File]::Open` alike, so no
+        # construction style avoids it. `catch [System.IO.IOException]` still
+        # matches, because PowerShell tests the inner type -- so a catch fires,
+        # the classification looks like it works, and `$_.Exception` is the
+        # wrapper regardless. That is a live defect; it was one in this repo's own
+        # share-mode probe, which reported every genuine sharing violation as
+        # `IOException(5377)`, 5377 being the low word of the wrapper.
+        #
+        # But every throw this try block can currently produce is a *COM* call,
+        # and measured, those arrive unwrapped: with the walk removed, a failing
+        # `Tables.Add` still reports `System.Runtime.InteropServices.COMException`.
+        # So this is two lines that do nothing today and stop a `New-Object` added
+        # inside this block later from silently collapsing every cause to one
+        # type. It is written down as a guard because a mutation check proved it
+        # is not currently load-bearing -- rather than left looking like a fix,
+        # which is how an unfalsifiable test gets written next to it.
+        $root = $failure.Exception
+        while ($null -ne $root.InnerException) { $root = $root.InnerException }
+
         return @{
             status     = 'create_failed'
             path       = $path
             leftBehind = [bool]$leftBehind
-            exception  = $failure.Exception.GetType().FullName
-            detail     = $failure.Exception.Message
+            exception  = $root.GetType().FullName
+            detail     = $root.Message
         }
     } finally {
         if ($null -ne $doc) {

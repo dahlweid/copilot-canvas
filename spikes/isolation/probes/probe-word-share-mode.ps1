@@ -33,6 +33,15 @@
 # its verdict on Word is worthless no matter how confident it looks. That check
 # is enforced below rather than left to the reader of the output.
 
+param(
+    # Bounded, because the first version of this probe called COM inline and hung
+    # indefinitely with 16 concurrent WINWORD.EXE on the machine. Generous rather
+    # than tight: Word's startup tail is load-dependent and is not bounded by
+    # timings taken on an idle machine.
+    [int]$StartupTimeoutSeconds = 120,
+    [int]$ShutdownTimeoutSeconds = 120
+)
+
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
@@ -50,15 +59,29 @@ function Test-Reader {
             [System.IO.FileShare]::$Share)
         $fs.Dispose()
         return 'ok'
-    } catch [System.IO.IOException] {
-        # Discriminate on the exception TYPE, never the message -- Word and
-        # Windows are both German on this machine. A sharing violation is
-        # HResult 0x80070020; a lock violation 0x80070021.
-        $code = $_.Exception.HResult -band 0xFFFF
-        if ($code -eq 32 -or $code -eq 33) { return 'sharing violation' }
-        return "IOException($code)"
-    } catch [System.UnauthorizedAccessException] {
-        return 'access denied'
+    } catch {
+        # The innermost exception, not $_.Exception. Measured: PowerShell wraps
+        # anything thrown out of a constructor or method call in a
+        # MethodInvocationException whose own HResult is the generic 0x80131501,
+        # and it does so for New-Object, [Type]::new() and [IO.File]::Open
+        # alike -- there is no construction style that avoids it. `catch
+        # [System.IO.IOException]` still *matches*, because PowerShell tests the
+        # inner type, which is what made this so easy to miss: the catch fired,
+        # so the classification looked like it was working, while every real
+        # sharing violation was being reported as `IOException(5377)` -- 5377
+        # being 0x1501, the low word of the wrapper.
+        $root = $_.Exception
+        while ($null -ne $root.InnerException) { $root = $root.InnerException }
+
+        if ($root -is [System.UnauthorizedAccessException]) { return 'access denied' }
+        if ($root -is [System.IO.IOException]) {
+            # 32 = ERROR_SHARING_VIOLATION, 33 = ERROR_LOCK_VIOLATION. Discriminate
+            # on the code, never the message: Windows is German on this machine.
+            $code = $root.HResult -band 0xFFFF
+            if ($code -eq 32 -or $code -eq 33) { return 'sharing violation' }
+            return "IOException($code)"
+        }
+        return $root.GetType().Name
     }
 }
 
@@ -98,68 +121,80 @@ foreach ($h in $synthetics) {
 
 # --- real Word ----------------------------------------------------------------
 #
-# PID differencing, because three other sessions drive Word on this machine and
-# killing one we did not start destroys someone's unsaved work.
+# Word runs in a child powershell.exe rather than in this process, for two
+# reasons. First, this repo's standing rule: any COM call that can hang must be
+# timeout-bounded, and Documents.Add / SaveAs2 have both wedged here under load
+# -- the first version of this probe called them inline and hung indefinitely
+# with 16 concurrent WINWORD.EXE on the machine. A child process can be waited on
+# with a deadline; an in-process COM call cannot. Second, the readers must run
+# *while* the document is held, which needs the holder to be somewhere else.
+#
+# Every path is passed as a discrete -Parameter value. Nothing is interpolated
+# into a command line: a path through a PowerShell single-quoted literal breaks
+# on an apostrophe, and the same path through cmd.exe is corrupted by &, ^ or a
+# matched %VAR% pair.
 
-$before = @(Get-Process -Name WINWORD -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)
-$word = $null
-$ownedPid = $null
+$holder = Join-Path $PSScriptRoot 'probe-word-share-mode-holder.ps1'
+if (-not (Test-Path -LiteralPath $holder)) { throw "holder script missing: $holder" }
+
+$docPath   = Join-Path $scratch 'held.docx'
+$readyFile = Join-Path $scratch 'ready'
+$goFile    = Join-Path $scratch 'go'
+$pidFile   = Join-Path $scratch 'pid'
+
+$proc = Start-Process -FilePath 'powershell.exe' -PassThru -WindowStyle Hidden -ArgumentList @(
+    '-NoProfile', '-ExecutionPolicy', 'Bypass',
+    '-File', $holder,
+    '-DocPath', $docPath,
+    '-ReadyFile', $readyFile,
+    '-GoFile', $goFile,
+    '-PidFile', $pidFile
+)
 
 try {
-    $word = New-Object -ComObject Word.Application
-    $word.Visible = $false
-    $word.DisplayAlerts = 0
+    # Bounded wait for the holder to have the document open.
+    $ready = $false
+    $deadline = (Get-Date).AddSeconds($StartupTimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        if (Test-Path -LiteralPath $readyFile) { $ready = $true; break }
+        if ($proc.HasExited) { break }
+        Start-Sleep -Milliseconds 200
+    }
 
-    $after = @(Get-Process -Name WINWORD -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)
-    $new = @($after | Where-Object { $before -notcontains $_ })
-    if ($new.Count -eq 1) { $ownedPid = $new[0] }
-    Write-Host "started WINWORD pid=$ownedPid (there were $($before.Count) others)"
+    if (-not $ready) {
+        Write-Host ''
+        Write-Host ("INCONCLUSIVE: the holder did not open a document within {0}s." -f $StartupTimeoutSeconds)
+        Write-Host 'This machine routinely carries a dozen WINWORD.EXE from other sessions and'
+        Write-Host 'Word contends badly under that load. No verdict is reported, because a probe'
+        Write-Host 'that could not create its own precondition has measured nothing.'
+        exit 3
+    }
 
-    $docPath = Join-Path $scratch 'held.docx'
-    $doc = $word.Documents.Add()
-    $doc.Content.Text = 'held open by Word'
-    # 16 = wdFormatDocumentDefault (.docx). Numeric, never a named constant.
-    $doc.SaveAs2($docPath, 16)
+    $ownedPid = (Get-Content -LiteralPath $pidFile -Raw -ErrorAction SilentlyContinue)
+    Write-Host ("holder ready; its WINWORD pid is " + $(if ([string]::IsNullOrWhiteSpace($ownedPid)) { '<ambiguous, not claimed>' } else { $ownedPid.Trim() }))
 
-    if (-not (Test-Path -LiteralPath $docPath)) { throw "Word did not write $docPath" }
+    if (-not (Test-Path -LiteralPath $docPath)) { throw "holder reported ready but $docPath is absent" }
 
     $col = @()
     foreach ($r in $readers) { $col += Test-Reader -Path $docPath -Access $r.access -Share $r.share }
     $results['REAL WORD (document open)'] = $col
+} finally {
+    [IO.File]::WriteAllText($goFile, 'go')
+    if (-not $proc.WaitForExit($ShutdownTimeoutSeconds * 1000)) {
+        Write-Host "WARNING: holder did not exit within ${ShutdownTimeoutSeconds}s; not killing anything."
+    }
+}
 
-    $doc.Close(0)
-    [Runtime.InteropServices.Marshal]::ReleaseComObject($doc) | Out-Null
-    $doc = $null
-
-    # And once Word has let go, as a positive control that the file itself is not
-    # the thing refusing. If this column is not all-ok, every other column is
-    # measuring a property of the file rather than of the holder.
+# And once Word has let go, as a positive control that the file itself is not the
+# thing refusing. If this column is not all-ok, every other column is measuring a
+# property of the file rather than of the holder.
+if (Test-Path -LiteralPath $docPath) {
     $col = @()
     foreach ($r in $readers) { $col += Test-Reader -Path $docPath -Access $r.access -Share $r.share }
     $results['same file, Word closed it (control)'] = $col
-} finally {
-    if ($null -ne $word) {
-        try { $word.Quit(0) } catch { }
-        try { [Runtime.InteropServices.Marshal]::ReleaseComObject($word) | Out-Null } catch { }
-        $word = $null
-        [GC]::Collect(); [GC]::WaitForPendingFinalizers()
-
-        # Quit() returns in ~120ms and the process outlives it by seconds, longer
-        # under load. Poll to a deadline; a flat sleep is a guess that goes red on
-        # a busy machine and green on a quiet one.
-        if ($null -ne $ownedPid) {
-            $deadline = (Get-Date).AddSeconds(90)
-            while ((Get-Date) -lt $deadline) {
-                if ($null -eq (Get-Process -Id $ownedPid -ErrorAction SilentlyContinue)) { break }
-                Start-Sleep -Milliseconds 250
-            }
-            $still = Get-Process -Id $ownedPid -ErrorAction SilentlyContinue
-            if ($null -ne $still) { Write-Host "WARNING: pid $ownedPid still alive after 90s" }
-            else { Write-Host "pid $ownedPid released" }
-        }
-    }
-    Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue
 }
+
+Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue
 
 # --- report -------------------------------------------------------------------
 
