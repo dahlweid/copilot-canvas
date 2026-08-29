@@ -327,6 +327,18 @@ steps, so "zero steps" was a signal and not an artefact of the query) and then
 the cause in one sentence, for less than either re-run cost. **Read the
 annotation before inferring from the outcome.**
 
+The completing half is how to establish *scope*, because a single blocked run is
+equally consistent with "my branch is broken". #43 built the discriminating table
+rather than trusting one data point: the twelve most recent runs repo-wide,
+**5/5 blocked at ≥09:02 and 7/7 clean at ≤08:57, across three branches and two
+workflows**, with the annotation confirmed on each blocked run individually
+rather than inferred from its conclusion. Varying branch and workflow is what
+turns "my PR is red" into "the account is blocked" — the same design rule as
+everywhere else here, since a set of runs that all agree has measured nothing.
+**And note what makes the annotation unavoidable: a billing block and a genuine
+test failure are both `conclusion: failure`.** The field everyone reads cannot
+separate them.
+
 The failure mode this outage produces is the one worth remembering: a job that
 never started is, from outside, indistinguishable from a job still running.
 Waiting is the natural response and it never terminates, with every dependent
