@@ -30,7 +30,7 @@
 const ADDRESS_PATTERN = /^p:[0-9a-f]{12}$/;
 
 /** Generous, but not unbounded: a single paragraph is not a document. */
-const MAX_TEXT_LENGTH = 50_000;
+export const MAX_TEXT_LENGTH = 50_000;
 
 /**
  * Exported because `edit_document`'s schema declares this same bound. L1 hit
@@ -106,8 +106,12 @@ export const OPERATION_HELP = OPERATION_NAMES.map((name) => `${name} — ${OPERA
  * address after it in the document would shift — which is precisely the thing
  * the address model cannot absorb. Several paragraphs is several operations,
  * each against a fresh read.
+ *
+ * Exported because `create_document` writes paragraphs too, and the rule is the
+ * same one for the same reason. A second copy of it would be a second place for
+ * the bound and the wording to drift apart.
  */
-function requireText(value) {
+export function requireText(value) {
     if (typeof value !== "string") {
         throw new EditIntentError("invalid_text", "`text` must be a string.");
     }

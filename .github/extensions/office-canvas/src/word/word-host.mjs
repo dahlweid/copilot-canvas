@@ -362,6 +362,24 @@ export class WordHost {
         return this.#send("edit", { path: docPath, wordIndex, expectedText, op, text, headingLevel }, timeoutMs);
     }
 
+    /**
+     * Authors a brand new document from a block spec and saves it.
+     *
+     * Uses `#send` directly for the reason `edit` does: the reopen-on-failure
+     * replay in `request()` is there so a *read* can survive Word dying, and
+     * replaying a write is the wrong behaviour. Here the failure mode is milder
+     * than the edit path's — a replay could only recreate a file the host now
+     * reports as already existing — but "milder" is not a reason to keep a
+     * retry whose only correct answer is one attempt.
+     *
+     * The timeout is a parameter, not a constant, because the caller spends its
+     * budget across this call and the read-back that confirms it, and has to
+     * hand down what is left rather than restart the clock.
+     */
+    create({ path: docPath, blocks, timeoutMs = STARTUP_TIMEOUT_MS }) {
+        return this.#send("create", { path: docPath, blocks }, timeoutMs);
+    }
+
     outline({ docId, limit }) {
         return this.request("outline", { docId, limit });
     }

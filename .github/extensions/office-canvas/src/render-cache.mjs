@@ -15,6 +15,7 @@ import path from "node:path";
 import { WordHost } from "./word/word-host.mjs";
 import { DocumentReader } from "./word/document-reader.mjs";
 import { DocumentEditor } from "./word/document-editor.mjs";
+import { DocumentAuthor } from "./word/document-author.mjs";
 
 export class DocumentError extends Error {
     constructor(code, message) {
@@ -71,6 +72,7 @@ export class RenderCache {
     #docs = new Map();
     #reader = null;
     #editor = null;
+    #author = null;
 
     constructor({ cacheRoot, snapshotRoot = null, log = () => {} }) {
         this.cacheRoot = cacheRoot;
@@ -195,6 +197,30 @@ export class RenderCache {
             });
         }
         return this.#editor;
+    }
+
+    #authorFor() {
+        if (!this.#author) {
+            this.#author = new DocumentAuthor({ reader: this.#readerFor(), host: this.host, log: this.log });
+        }
+        return this.#author;
+    }
+
+    /**
+     * Authors a new document from a spec and returns it as it stands on disk.
+     *
+     * `normalizeDocPath` rather than `requireSupported`: the two ask different
+     * questions. `SUPPORTED` is the set Word will *open*, and this path is not
+     * opening anything — it is choosing what to write, which `DocumentAuthor`
+     * narrows further because `SaveAs2` emits one format. Sharing the reader's
+     * set here would accept `.rtf` and produce a file whose extension lies about
+     * its contents.
+     *
+     * No `#invalidate`: the file did not exist a moment ago, so there is nothing
+     * cached under that identity to drop.
+     */
+    async createDocument(rawPath, spec) {
+        return this.#authorFor().create(normalizeDocPath(rawPath), spec);
     }
 
     /**

@@ -20,14 +20,36 @@
 #     own code does not do is worse than no rule, because it is the one a
 #     reader trusts without checking.
 #   * A Word instance we did not create is never quit and never hidden.
-#   * Global Application.Options are never modified. The reason is *not* that
-#     they persist for the user: measured, they are per-process -- toggled off
-#     in one instance, a fresh second process still read the original values,
-#     and the HKCU Word\Options key stayed absent throughout, including after
-#     both instances quit. So our hidden Word cannot reach the user's settings
-#     by construction, and this rule is belt-and-braces rather than the thing
-#     standing between them and a changed Word. Keep the rule; it costs nothing
-#     and the isolation is a measured property of Word, not a guarantee we own.
+#   * Global Application.Options are only ever modified on an instance we
+#     started, and are put back before the command that changed them returns.
+#     This line used to say they are never modified, which `Suppress-AutoCorrect`
+#     made false; it then said the change was safe because the settings are
+#     per-process. **That was wrong, and it was wrong in the dangerous
+#     direction.** Measured sequentially (set, QUIT the writer, then read from a
+#     fresh instance): all five settings come back changed. They persist for the
+#     user.
+#
+#     The earlier per-process result was not careless -- it is what you get from
+#     the natural form of the test. It read the second instance *while the first
+#     was still alive*, and a concurrent reader sees the pre-write value, which
+#     looks exactly like isolation. The discriminator is quitting the writer
+#     first. The HKCU Word\Options key really does stay absent throughout; that
+#     key is simply not where these live, so its absence was evidence of nothing.
+#
+#     What is measured is two observations and no mechanism: a CONCURRENT reader
+#     sees the old value, and a reader started AFTER the writer exits sees the
+#     new one. A flush at writer exit accounts for that; so does the second
+#     instance caching these at startup; so does a write-behind on any schedule
+#     shorter than the gap. Nothing here distinguishes them, and an earlier
+#     draft of this comment asserted the flush as if it had been measured. It
+#     had not. The two observations are what the code depends on and they are
+#     enough: touch these only on an instance we own, and put them back before
+#     returning. Where they are stored, and when they are written, remains open.
+#
+#     Two things now do the work, and the ownership gate is only one of them: we
+#     touch these on an owned instance ONLY, and we restore the captured prior
+#     values in a `finally` before returning. Restoring at teardown instead would
+#     be defeated by our own quit path, which kills the host after 20 s.
 
 param(
     # Directory used to record which WINWORD process this host owns, so an
@@ -92,6 +114,10 @@ $script:OwnedPid = $null
 # is what lets a later kill prove it is acting on the same one.
 $script:OwnedStart = $null
 $script:Docs = @{}
+# Whether autocorrect was switched off on the instance we are driving, and if not
+# why not. Reported on every authoring result so a caller can assert it rather
+# than assume it.
+$script:AutoCorrect = @{ suppressed = $false; reason = 'word_not_started' }
 # Remembers how each document was opened so a dead COM connection can be
 # recovered without the caller noticing.
 $script:DocArgs = @{}
@@ -421,6 +447,283 @@ function Resolve-Doc($docId) {
 
 # --- Word lifecycle ----------------------------------------------------------
 
+# Autocorrect suppression. A correctness control, not a preference.
+#
+# Autocorrect rewrites inserted text and raises nothing. Measured on this Word
+# by arm H of spikes/isolation/probes/probe-autocorrect.ps1, which forces the
+# rewrite with Content.AutoFormat() and reports codepoints rather than glyphs:
+#
+#   She said "hello" and left.  ->  She said U+201E hello U+201C and left.
+#   width -- height             ->  width U+2014 height, and the spaces are eaten
+#   (c) 2026                    ->  U+00A9 2026
+#
+# Named by codepoint deliberately. An earlier version of this comment said
+# '"--" becomes a dash' and '"(c)" becomes (c) as a symbol', which is circular
+# and, on the dash, wrong -- it is an em dash, not the en dash the test file
+# also claimed. That was not carelessness: the probe printed its results through
+# a CP850 console read back as Windows-1252, so the copyright sign arrived as a
+# cedilla and the curly quotes best-fitted to plain ASCII quotes, making a
+# rewritten line look identical to the line it replaced. The instrument measured
+# correctly and reported illegibly, and the comment was written from the report.
+# The probe now escapes non-ASCII before printing, which is why the codepoints
+# above can be stated at all.
+#
+# There is no error to catch and no return value to check, so a document
+# authored through it can differ from what was asked for with nothing anywhere
+# reporting that.
+#
+# Two things were measured before this was written
+# (spikes/isolation/probes/probe-autocorrect.ps1, arms C and A/B/E/F/G/H):
+#
+#   1. RETRACTED, and it was the load-bearing one. The original arm C concluded
+#      the settings are per *process* -- switched off on one hidden instance and
+#      read back from a second, independent WINWORD, all five read True -- and
+#      that HKCU:\Software\Microsoft\Office\16.0\Word\Options read <absent>
+#      throughout. Both observations are reproducible. The conclusion drawn from
+#      them is false.
+#
+#      Arm C read the second instance WHILE THE FIRST STILL HELD THEM OFF. A
+#      concurrent reader sees the pre-write value, which is indistinguishable
+#      from isolation. Re-measured sequentially -- set, QUIT the writer, then
+#      read a fresh instance -- all five come back changed. **They persist for
+#      the user.** The HKCU key is absent because that is not where they live;
+#      its absence was evidence of nothing and should never have been cited as
+#      if it were.
+#
+#      Stated as observations, because that is all that was measured: concurrent
+#      reader sees old, post-exit reader sees new. Do not restate this as "not
+#      flushed until the writer exits" -- that names a mechanism the probes
+#      cannot separate from the second instance caching at startup. The
+#      correction and the error it corrects have the same shape, which is why it
+#      is worth the two extra lines to avoid repeating it here.
+#
+#      A concurrent read cannot test persistence. That is the whole defect, and
+#      it is the same shape as the share-column error: an instrument that could
+#      not observe the property it was being cited for, so nothing went red.
+#
+#   2. Stands. Autocorrect never fired on any programmatic insertion tested: 0 of
+#      6 bait lines rewritten across Range.Text assignment and Selection.TypeText,
+#      typed whole and character by character, with every setting on. The one arm
+#      that rewrote anything (3 of 6) was an explicit Content.AutoFormat() call,
+#      which this host never makes.
+#
+# So this is belt and braces rather than the mechanism that makes authoring
+# correct -- (2) is what actually keeps text verbatim today, and it is a
+# statement about today's Word rather than a guarantee.
+#
+# The retraction of (1) is why this no longer runs at Initialize-Word and simply
+# stays off. Because the settings persist, leaving them off leaks out of our
+# process and silently changes the user's own Word -- which it demonstrably did:
+# a fresh instance on this machine read all five False before this session
+# touched anything, and our own runs are a sufficient cause. So the pair is now
+# capture-disable / restore, wrapped around the authoring call in a `finally`.
+#
+# Restoring at teardown instead was considered and rejected: our own quit path
+# kills the host after 20 s, so a restore hung off teardown is skipped by the one
+# failure mode we have already measured.
+#
+# Ownership still gates it, for the original reason -- an attached instance is
+# the user's Word and must not be touched even briefly.
+#
+# The property names are the ones that exist on this Word, taken from the probe
+# rather than from memory. A misspelled COM property reads $null silently and
+# throws only on assignment, so three plausible names -- ReplaceHyphens,
+# ReplaceHyphensWithDash, CorrectTwoInitialCapitals -- cost a run before this
+# list was pinned to something measured.
+# The settings are READ BACK, and `suppressed = $true` means Word reports them
+# off -- not merely that five assignments did not throw. The difference is the
+# whole value of this function. An earlier version returned $true on "nothing
+# threw", and create-smoke.mjs called it "the settings read-back check" in the
+# comment that discharges the bait assertion onto it. Neither the flag nor the
+# baits could have gone red if Word had accepted an assignment without applying
+# it: the baits rewrite 0 of 6 with every setting ON (line ~90 there), so they
+# are inert on this machine by construction. That left the PR's headline claim
+# resting on an inference.
+#
+# Three outcomes, split because the platform distinguishes them and they mean
+# different things. Assignment threw -> `not_settable`, the name is wrong or
+# refused. Read returned a value that is not $false -> `not_applied`, we
+# observed it is still on. Read threw -> `not_verifiable`, we observed nothing
+# at all, which is not the same as observing failure and must not borrow its
+# name.
+#
+# Compare against $false explicitly. A misspelled COM property reads $null (see
+# above), and $null is falsy in PowerShell, so `if (-not $v)` would accept the
+# exact case the read-back exists to catch.
+#
+# WHAT THE READ-BACKS CANNOT SEE, measured rather than reasoned about. On this
+# machine the found state is already all-$false, which is also the value the
+# disable writes. prior == target, so a write that is SKIPPED ENTIRELY leaves
+# the right value behind and both read-backs stay green. Mutation-checking with
+# a no-op is therefore vacuous here, and the checks that follow were instead
+# proven with a wrong value: assigning $true in the disable goes red with
+# `not_applied (CorrectInitialCaps)`, and restoring the inverse goes red with
+# `not_restored (ReplaceText)`.
+#
+# The vacuity is benign for the disable -- a setting already off that we fail to
+# write is still off. It is NOT benign for the restore, whose entire purpose is
+# the user whose autocorrect is ON, where prior != target and a skipped write
+# leaves our $false on their machine permanently. That case cannot occur on this
+# machine, so no test here can enter it.
+# spikes/isolation/probes/probe-autocorrect-restore.mjs manufactures it: it sets
+# all five ON, runs the tool, and reads a FRESH instance afterwards -- so it
+# observes what was persisted for the user's next Word rather than what the
+# authoring instance held. Both halves are falsifiable there, and both were
+# confirmed red under the same mutation.
+#
+# The names are listed ONCE, at $script:AC_SETTINGS, and every pass -- capture,
+# disable, verify, restore, verify-restore -- derives from it. Stating them
+# twice would let a later edit add a setting to one pass and not another, which
+# reads as suppressed while being unchecked, or gets disabled and never put back.
+$script:AC_SETTINGS = @(
+    @{ Container = { $script:App.AutoCorrect }; Names = @('ReplaceText', 'CorrectSentenceCaps', 'CorrectInitialCaps') },
+    @{ Container = { $script:App.Options };     Names = @('AutoFormatAsYouTypeReplaceQuotes', 'AutoFormatAsYouTypeReplaceSymbols') }
+)
+
+# Capture the current values, then switch autocorrect off, then verify. The
+# capture is not bookkeeping -- because these persist for the user, it is the
+# only record of what to put back, and it must happen before the first write.
+#
+# Every container accessor is guarded, for a reason that is stronger here than
+# in Restore-AutoCorrect. There are two containers, so an accessor can raise
+# AFTER the first group's three writes have landed -- Word dying mid-call gives
+# RPC_E_DISCONNECTED on `$script:App.Options` while `$script:App.AutoCorrect`
+# already answered. An exception leaving this function propagates past the
+# assignment that binds $acState, so the caller's `finally` is never armed and
+# three settings stay off on the user's machine forever, unreported. The
+# read-back loop has the same hole without needing two groups: by then all five
+# writes have landed.
+#
+# That hole is only reachable by a RAISE. Every `return` below -- not_verifiable,
+# not_settable, not_applied -- is safe, because a return binds $acState and arms
+# the `finally`. So the mutations that exercise the return paths stay green over
+# it, which is exactly why it survived four review rounds: the design was right
+# and the guard was missing on the three lines that could throw.
+#
+# $script:AcPrior is the second half of the belt. The priors live in a script
+# variable as well as in the returned state, so an unforeseen throw anywhere
+# after the capture loop still leaves the restore something to put back rather
+# than losing it with the stack frame.
+#
+# MUTATION-CHECKED, both directions, with probe-autocorrect-restore.mjs. Inject
+# a throw into the second group's Container on its second access -- the write
+# loop, i.e. after the first group's three writes have landed -- by replacing
+# that scriptblock with
+#     { $script:MutN = 1 + [int]$script:MutN
+#       if ($script:MutN -eq 2) { throw 'MUTANT: RPC_E_DISCONNECTED' }
+#       $script:App.Options }
+# and resetting $script:MutN = 0 beside the $script:AutoCorrect reset at the top
+# of Cmd-Create, so the counter is per-create rather than per-host -- a global
+# counter fires during the probe's own setup and the probe dies before it can
+# assert anything, which looks like evidence and is not.
+#
+#   with these guards:  create returns, reports `not_settable` naming
+#                       AutoFormatAsYouTypeReplaceQuotes and ...Symbols,
+#                       reports restored=true, and a FRESH instance still reads
+#                       all five ON. The user's machine is untouched.
+#   with the guards and the in-try assignment both reverted (the shape this
+#                       file had at 7ed4298): create RAISES word_error, and no
+#                       autocorrect report comes back at all -- the `finally`
+#                       was never entered, because the assignment that binds
+#                       $acState sits outside the `try`. Read from the source
+#                       rather than inferred: the damage itself is not visible
+#                       in that arm because the PROBE restores the machine in
+#                       its own finally. Production has no such net.
+function Disable-AutoCorrect {
+    $script:AcPrior = @{}
+    if ($null -eq $script:OwnedPid) { return @{ suppressed = $false; reason = 'attached_instance'; prior = @{} } }
+
+    $prior = $script:AcPrior
+    $unreadable = @()
+    foreach ($g in $script:AC_SETTINGS) {
+        $c = $null
+        try { $c = & $g.Container } catch { $c = $null }
+        foreach ($name in $g.Names) {
+            if ($null -eq $c) { $unreadable += $name; continue }
+            try { $prior[$name] = $c.$name } catch { $unreadable += $name }
+        }
+    }
+    # Refuse to write anything we could not first record. Disabling a setting
+    # whose prior value we never captured is unrestorable, and it persists.
+    if ($unreadable.Count -gt 0) { return @{ suppressed = $false; reason = 'not_verifiable'; settings = $unreadable; prior = $prior } }
+
+    $failed = @()
+    foreach ($g in $script:AC_SETTINGS) {
+        $c = $null
+        try { $c = & $g.Container } catch { $c = $null }
+        foreach ($name in $g.Names) {
+            if ($null -eq $c) { $failed += $name; continue }
+            try { $c.$name = $false } catch { $failed += $name }
+        }
+    }
+    if ($failed.Count -gt 0) { return @{ suppressed = $false; reason = 'not_settable'; settings = $failed; prior = $prior } }
+
+    $stuck = @()
+    foreach ($g in $script:AC_SETTINGS) {
+        $c = $null
+        try { $c = & $g.Container } catch { $c = $null }
+        foreach ($name in $g.Names) {
+            if ($null -eq $c) { $unreadable += $name; continue }
+            $value = $null
+            try { $value = $c.$name } catch { $unreadable += $name; continue }
+            if ($value -ne $false) { $stuck += $name }
+        }
+    }
+
+    if ($unreadable.Count -gt 0) { return @{ suppressed = $false; reason = 'not_verifiable'; settings = $unreadable; prior = $prior } }
+    if ($stuck.Count -gt 0) { return @{ suppressed = $false; reason = 'not_applied'; settings = $stuck; prior = $prior } }
+    return @{ suppressed = $true; prior = $prior }
+}
+
+# Put back exactly what was captured, and verify that too. A restore that
+# silently fails leaves the user's Word altered permanently, which is the whole
+# defect this pair exists to close -- so it gets the same read-back treatment as
+# the disable, for the same reason.
+#
+# Every COM access here is guarded: this runs in a `finally`, so it may run with
+# Word already dead, and an exception raised here would replace the real error
+# with a confusing one. A restore we could not perform is reported, never thrown.
+#
+# It reaches Word only through $script:App and never constructs one. That is a
+# checked property rather than an obvious one: a second `New-Object -ComObject
+# Word.Application` in the same process does NOT fail -- measured in
+# spikes/isolation/probes/probe-newobject-attach.ps1, which got two distinct
+# WINWORDs from one process -- so a reconstruction on this path would raise
+# nothing, return a working object, and strand a process that only the leak
+# census at the end of a run would ever notice. The single construction site is
+# in Initialize-Word, behind Test-AppAlive, and this function does not call it.
+function Restore-AutoCorrect($state) {
+    # Falls back to $script:AcPrior when the state is missing. That is not
+    # defensive padding: if Disable-AutoCorrect raises after its capture loop,
+    # the caller's $acState is still $null, and restoring from the argument
+    # alone would report `nothing_captured` while the priors we did record went
+    # with the stack frame. Reported-and-permanent is better than
+    # silent-and-permanent, but neither is a restore.
+    if ($null -eq $state -and $null -ne $script:AcPrior -and $script:AcPrior.Count -gt 0) {
+        $state = @{ prior = $script:AcPrior }
+    }
+    if ($null -eq $state -or $null -eq $state.prior -or $state.prior.Count -eq 0) {
+        return @{ restored = $false; reason = 'nothing_captured' }
+    }
+
+    $failed = @()
+    foreach ($g in $script:AC_SETTINGS) {
+        $c = $null
+        try { $c = & $g.Container } catch { $c = $null }
+        foreach ($name in $g.Names) {
+            if (-not $state.prior.ContainsKey($name)) { continue }
+            if ($null -eq $c) { $failed += $name; continue }
+            try { $c.$name = $state.prior[$name] } catch { $failed += $name; continue }
+            $value = $null
+            try { $value = $c.$name } catch { $failed += $name; continue }
+            if ($value -ne $state.prior[$name]) { $failed += $name }
+        }
+    }
+
+    if ($failed.Count -gt 0) { return @{ restored = $false; reason = 'not_restored'; settings = $failed } }
+    return @{ restored = $true }
+}
+
 function Initialize-Word {
     if (Test-AppAlive) { return }
 
@@ -475,6 +778,10 @@ function Initialize-Word {
     # Force-disable macros before any document is opened. We render documents
     # the user may not have authored.
     try { $script:App.AutomationSecurity = $MSO_AUTOMATION_SECURITY_FORCE_DISABLE } catch { }
+    # Autocorrect is deliberately NOT touched here. It used to be, and because
+    # the settings persist for the user that left their Word altered for the
+    # whole life of this host. It is now disabled and restored around each
+    # authoring call instead -- see Cmd-Create.
 }
 
 function Close-Doc($docId) {
@@ -486,6 +793,7 @@ function Close-Doc($docId) {
 }
 
 function Stop-Word {
+    $script:QuitError = $null
     foreach ($docId in @($script:Docs.Keys)) { Close-Doc $docId }
     $script:DocArgs = @{}
     if ($null -ne $script:App) {
@@ -514,7 +822,27 @@ function Stop-Word {
             # other. Do not "consistency-fix" `Close` to take no argument: with
             # none, Word prompts on a dirty document, and a modal prompt in a
             # hidden instance is the silent hang this host exists to avoid.
-            try { $script:App.Quit() } catch { }
+            #
+            # Reported, not swallowed, and that half is not decoration. This
+            # defect was found on this branch and on #33 independently, and both
+            # times what hid it was a bare `catch { }`: Word exited anyway, so
+            # every black-box signal stayed green while the quit had never run.
+            # Not even the Node-side reaper saw it -- `word-host.mjs` clears
+            # `ownedPid` on a *successful* quit RPC, and a swallowed throw is
+            # reported successful, so the reaper never ran either. Word exited
+            # because killing the host released the last COM reference, and an
+            # invisible instance with no open documents exits when its refcount
+            # drops. There was no observable to write a test against; this makes
+            # one, and `quitError` on the quit reply is what the create smoke
+            # test asserts against. Confirmed by instrumenting all 11 swallowing
+            # catches around Quit/Close/ReleaseComObject and re-running the
+            # suite: this was the only site throwing, and it is now silent.
+            try { $script:App.Quit() }
+            catch {
+                $root = $_.Exception
+                while ($null -ne $root.InnerException) { $root = $root.InnerException }
+                $script:QuitError = $root.GetType().Name + ': ' + $root.Message
+            }
         }
         try { [Runtime.InteropServices.Marshal]::ReleaseComObject($script:App) | Out-Null } catch { }
         $script:App = $null
@@ -1080,6 +1408,15 @@ $WD_STYLE_NORMAL = -1
 $WD_CHARACTER = 1
 $WD_COLLAPSE_START = 1
 
+# Built-in list styles, and the format SaveAs2 writes a .docx in. Every one of
+# these was read back off a live Word rather than taken from documentation, for
+# the reason the header gives: this Word is German, so the *names* that come back
+# are Aufzählungszeichen and Listennummer, and only the numbers are portable.
+# Measured, spikes/isolation/probes/probe-authoring.ps1 arm S.
+$WD_STYLE_LIST_BULLET = -49
+$WD_STYLE_LIST_NUMBER = -50
+$WD_FORMAT_XML_DOCUMENT = 16
+
 # Reads the Zone.Identifier alternate data stream. Sub-millisecond, and it
 # cannot hang, which is the entire point: the obvious test -- ask Word to open
 # it and see what happens -- is the call that wedges.
@@ -1425,6 +1762,363 @@ function Cmd-Edit($a) {
     return $result
 }
 
+# --- authoring ---------------------------------------------------------------
+
+# Writes one block of a document spec at the end of the document.
+#
+# `$state.fresh` exists because Documents.Add() does not produce an empty
+# document: it produces one containing exactly one empty paragraph. Appending
+# from the start would leave a blank first line in every authored document, so
+# the first block writes into that paragraph and every later block appends.
+function Add-SpecBlock($doc, $block, $state) {
+    $kind = [string]$block.kind
+
+    # One place that decides where the next block goes, so a block kind cannot
+    # invent its own cursor and land somewhere the others do not expect.
+    #
+    # `$state.pending` is a paragraph that already exists and should be written
+    # into rather than appended after. Two things produce one: the empty
+    # paragraph a new document starts with, and the paragraph Word insists on
+    # keeping after a table. Consuming both is what stops the result carrying
+    # stray empties the caller never asked for.
+    #
+    # `Paragraphs.Add()` is called for its side effect and its return value is
+    # discarded, which is not fastidiousness. Measured
+    # (spikes/isolation/probes/probe-spec-cursor.ps1): with no Range argument it
+    # appends an empty paragraph at the end and returns the paragraph that was
+    # previously *last*, not the one it just added. Writing into that return
+    # value overwrites the preceding block -- the first version of this authored
+    # [heading; paragraph; heading] and produced a document with the heading
+    # silently gone, no error raised anywhere. `Paragraphs.Last` is the appended
+    # one, read back from the document rather than taken on trust.
+    $next = {
+        if ($null -ne $state.pending) {
+            $para = $state.pending
+            $state.pending = $null
+            return $para
+        }
+        $doc.Paragraphs.Add() | Out-Null
+        return $doc.Paragraphs.Last
+    }
+
+    switch ($kind) {
+        'paragraph' {
+            $para = & $next
+            Set-ParagraphText $para ([string]$block.text)
+            $para.Range.Style = $WD_STYLE_NORMAL
+            return
+        }
+        'heading' {
+            $para = & $next
+            Set-ParagraphText $para ([string]$block.text)
+            # Numeric constant, via the same helper the edit path uses. Naming
+            # the style is the bug here, in either direction: 'Heading 1' throws
+            # and so does the style id Word actually writes into the file.
+            Set-ParagraphHeadingLevel $para ([int]$block.level)
+            return
+        }
+        'list' {
+            $style = if ($block.ordered) { $WD_STYLE_LIST_NUMBER } else { $WD_STYLE_LIST_BULLET }
+            foreach ($item in $block.items) {
+                $para = & $next
+                Set-ParagraphText $para ([string]$item)
+                $para.Range.Style = $style
+            }
+            return
+        }
+        'table' {
+            $rows = @($block.rows)
+            $rowCount = $rows.Count
+            $colCount = @($rows[0]).Count
+
+            # The anchor paragraph is consumed as the table's insertion point.
+            # Its style is reset first: it was appended after whatever came
+            # before, so it carries that block's style, and a table inserted at a
+            # list paragraph produces a table whose every cell is styled as a
+            # list item. Measured -- the first version of this authored a table
+            # after a numbered list and every cell came back `Listennummer`.
+            $anchor = & $next
+            $anchor.Range.Style = $WD_STYLE_NORMAL
+            $table = $doc.Tables.Add($anchor.Range, $rowCount, $colCount)
+
+            for ($r = 0; $r -lt $rowCount; $r++) {
+                $row = @($rows[$r])
+                for ($c = 0; $c -lt $colCount; $c++) {
+                    # Cell text goes through the same position-span trim as every
+                    # other paragraph. A cell paragraph's Range.Text ends "`r"
+                    # plus chr(7) -- two characters in the string but one position
+                    # -- so a length-derived trim eats a real character here.
+                    Set-ParagraphText $table.Cell($r + 1, $c + 1).Range.Paragraphs.Item(1) ([string]$row[$c])
+                }
+            }
+
+            if ($block.headerRow) {
+                # Direct formatting, not a named style: repeating the first row
+                # across page breaks is what "header row" means structurally, and
+                # bold is what makes it read as one. Neither names anything
+                # localizable.
+                try { $table.Rows.Item(1).HeadingFormat = $true } catch { }
+                try { $table.Rows.Item(1).Range.Bold = $true } catch { }
+            }
+
+            # Word keeps a paragraph after every table and will not let it go, so
+            # the next block writes into it rather than appending a second one.
+            # Without this a table block leaves a stray empty paragraph behind --
+            # measured, and visible to the caller as an unexplained "" in the
+            # structure map. Its style is reset for the same reason the anchor's
+            # was: it inherited whatever preceded the table.
+            $trailing = $doc.Paragraphs.Last
+            $trailing.Range.Style = $WD_STYLE_NORMAL
+            $state.pending = $trailing
+            return
+        }
+        default { throw "Unsupported block kind '$kind'." }
+    }
+}
+
+# Authors a new document from a spec and saves it.
+#
+# Shaped like Cmd-Edit and for the same reasons: the document is never registered
+# in $script:Docs, so no later command can resolve it and reacquire a lock; and
+# failures come back as a `status` on the success channel, because the dispatch
+# loop collapses every throw to one `word_error` and the caller would otherwise
+# be string-matching German exception text to tell one cause from another.
+#
+# It differs from Cmd-Edit in one respect that matters: it refuses to write over
+# an existing file, and there is no flag to make it do so. `create_document`
+# creating a document is the whole contract, and an overwrite is a data-loss path
+# that `edit_document` already covers properly -- with a revision token, a
+# snapshot and a revert.
+#
+# That refusal also removes a question this repo has revised four times. An
+# existing file might be held by Word. Measured directly --
+# spikes/isolation/probes/probe-word-share-mode.ps1 -- real Word takes *write*
+# access and grants FileShare::Read, so a request for write access against it
+# fails on Windows' first rule (requested access against the holder's granted
+# share mode) regardless of the share mode the requester offers.
+#
+# That conclusion rests on the share column, not the access column. An earlier
+# draft cited only the access column, which does not carry it: a holder taking
+# write access while granting ReadWrite permits the same request. Never opening
+# one for write means none of it is load-bearing here either way.
+function Cmd-Create($a) {
+    $path = [string]$a.path
+    $started = [Diagnostics.Stopwatch]::StartNew()
+
+    # Cleared at entry so the dispatcher can attach it unconditionally. The
+    # early returns below happen before autocorrect is ever touched, and a
+    # report left over from a previous create would ride out on them -- a
+    # restore outcome attached to a call that never disabled anything, which is
+    # asserting something this invocation did not observe.
+    $script:AutoCorrect = $null
+
+    if ([string]::IsNullOrWhiteSpace($path)) { return @{ status = 'invalid_path'; path = $path } }
+    if (Test-Path -LiteralPath $path -PathType Container) { return @{ status = 'path_is_directory'; path = $path } }
+    if (Test-Path -LiteralPath $path -PathType Leaf) { return @{ status = 'file_exists'; path = $path } }
+
+    # [IO.Path] rather than Split-Path. `Split-Path -LiteralPath $p -Parent` does
+    # not bind in Windows PowerShell 5.1 -- -LiteralPath and -Parent are in
+    # different parameter sets, and the failure is a ParameterBindingException
+    # raised at call time, not a parse error, so it survives every static check
+    # this repo runs and only appears when the command is actually reached.
+    # Measured: it took the create smoke test to see it at all.
+    $parent = [IO.Path]::GetDirectoryName($path)
+    if (-not [string]::IsNullOrWhiteSpace($parent) -and -not (Test-Path -LiteralPath $parent -PathType Container)) {
+        return @{ status = 'directory_not_found'; path = $path; directory = $parent }
+    }
+
+    Initialize-Word
+
+    # Autocorrect goes off inside the `try`, not before it, and comes back on in
+    # the `finally` below. These settings persist for the user (see the header),
+    # so the window in which the user's Word is altered has to be the authoring
+    # call and nothing wider. Leaving them off for the life of the host -- which
+    # is what suppressing at init did -- means every idle minute is a minute of
+    # the user's Word silently changed.
+    #
+    # The `finally` is armed BEFORE the first write, which is the whole reason
+    # this assignment sits inside the try rather than above it. Disable-AutoCorrect
+    # writes to two containers, so a raise between them left three settings off
+    # with no `finally` to put them back. It no longer raises for that reason --
+    # its accessors are guarded now -- and this is the second half of the same
+    # fix: an unforeseen throw from anywhere in it still reaches a restore.
+    $acState = $null
+    $doc = $null
+    $result = $null
+    try {
+        $acState = Disable-AutoCorrect
+
+        $buildStarted = [Diagnostics.Stopwatch]::StartNew()
+        $doc = $script:App.Documents.Add()
+        $state = @{ pending = $doc.Paragraphs.Item(1) }
+        foreach ($block in @($a.blocks)) { Add-SpecBlock $doc $block $state }
+        $buildMs = [int]$buildStarted.ElapsedMilliseconds
+
+        $saveStarted = [Diagnostics.Stopwatch]::StartNew()
+
+        # The authoritative existence check, here rather than only at the top.
+        #
+        # The check at the head of this function runs before `Initialize-Word`,
+        # so a cold Word start (~4.5 s measured, plus up to 1.5 s of ownership
+        # polling) and the whole block build -- up to MAX_BLOCKS of them -- sit
+        # between it and this line. `SaveAs2` takes no "fail if exists" flag and
+        # overwrites an existing file silently -- measured, not inferred from
+        # `DisplayAlerts` being `wdAlertsNone`: with both of this function's
+        # existence checks deleted, the create smoke test's direct-host arm
+        # reports `created` for a path that already held a document, and the
+        # document's bytes change. That made the early check a sample taken
+        # seconds before the write it was supposed to guard.
+        #
+        # Not a guard against a racing `create_document`: the dispatch loop is a
+        # single `ReadLine` switch, so a second create cannot begin until this
+        # one has returned, and the loser's *early* check already sees the
+        # winner's file. It guards the writer this function does not control --
+        # the user saving from Word, a sync client, a scaffolding step -- for
+        # which the window was seconds wide and is now the gap to the next line.
+        #
+        # It `return`s and does not throw, which is load-bearing rather than
+        # stylistic: the catch below deletes `$path` to clear a half-authored
+        # document, so raising here would destroy the very file this check just
+        # found. The `finally` still closes the document. Do not "tidy" this into
+        # a throw for symmetry with the checks above.
+        if (Test-Path -LiteralPath $path -PathType Leaf) { return @{ status = 'file_exists'; path = $path } }
+
+        $doc.SaveAs2($path, $WD_FORMAT_XML_DOCUMENT)
+        $saveMs = [int]$saveStarted.ElapsedMilliseconds
+
+        $result = @{
+            status         = 'created'
+            paragraphCount = [int]$doc.Paragraphs.Count
+            tableCount     = [int]$doc.Tables.Count
+            buildMs        = $buildMs
+            saveMs         = $saveMs
+        }
+    } catch {
+        # `$_` is captured before the cleanup runs. Not because the cleanup
+        # clobbers it -- measured, it does not: an empty `catch { }` in between
+        # leaves `$_` still holding the original InvalidOperationException. It is
+        # captured because the reason it survives is a scoping subtlety rather
+        # than anything stated in this file, and the cleanup below is exactly the
+        # kind of code someone extends later. Naming the error costs one line and
+        # removes the question.
+        $failure = $_
+
+        # A half-authored document must not be left on disk looking like a
+        # finished one. SaveAs2 either wrote the file or it did not; if we got
+        # here after it wrote, the caller asked for a document we could not
+        # finish describing, so the file goes.
+        try { if ($null -ne $doc) { $doc.Close($WD_DO_NOT_SAVE_CHANGES) } } catch { }
+        $doc = $null
+        try { if (Test-Path -LiteralPath $path -PathType Leaf) { Remove-Item -LiteralPath $path -Force } } catch { }
+
+        # Whether the cleanup actually worked, established by looking rather than
+        # by assuming the Remove-Item above did what it was asked. Its failure is
+        # deliberately swallowed -- there is nothing useful to do about it here --
+        # and for a while that meant the caller was told "no document was written"
+        # on a path where one demonstrably still was. An outcome the code never
+        # checked is exactly the kind of claim this repo keeps having to retract,
+        # so it is now checked and reported as an observation.
+        $leftBehind = Test-Path -LiteralPath $path -PathType Leaf
+
+        # The exception *type*, not its message: messages are German here -- this
+        # path's own detail arrives as "Die Zahl muss zwischen 1 und 63 liegen."
+        # -- and a caller that discriminates on one is a caller that breaks on a
+        # machine with a different display language.
+        #
+        # The walk to the innermost exception is a guard, not a fix for anything
+        # observed here, and the measurement says both halves of that. PowerShell
+        # wraps anything thrown out of a *.NET* constructor or method call in a
+        # `System.Management.Automation.MethodInvocationException` whose own
+        # HResult is the generic 0x80131501, and it does this for `New-Object`,
+        # `[Type]::new()` and a static like `[IO.File]::Open` alike, so no
+        # construction style avoids it. `catch [System.IO.IOException]` still
+        # matches, because PowerShell tests the inner type -- so a catch fires,
+        # the classification looks like it works, and `$_.Exception` is the
+        # wrapper regardless. That is a live defect; it was one in this repo's own
+        # share-mode probe, which reported every genuine sharing violation as
+        # `IOException(5377)`, 5377 being the low word of the wrapper.
+        #
+        # But every throw this try block can currently produce is a *COM* call,
+        # and measured, those arrive unwrapped: with the walk removed, a failing
+        # `Tables.Add` still reports `System.Runtime.InteropServices.COMException`.
+        # So this is two lines that do nothing today and stop a `New-Object` added
+        # inside this block later from silently collapsing every cause to one
+        # type. It is written down as a guard because a mutation check proved it
+        # is not currently load-bearing -- rather than left looking like a fix,
+        # which is how an unfalsifiable test gets written next to it.
+        $root = $failure.Exception
+        while ($null -ne $root.InnerException) { $root = $root.InnerException }
+
+        return @{
+            status     = 'create_failed'
+            path       = $path
+            leftBehind = [bool]$leftBehind
+            exception  = $root.GetType().FullName
+            detail     = $root.Message
+        }
+    } finally {
+        if ($null -ne $doc) {
+            try { $doc.Close($WD_DO_NOT_SAVE_CHANGES) } catch { }
+            try { [Runtime.InteropServices.Marshal]::ReleaseComObject($doc) | Out-Null } catch { }
+        }
+
+        # The user's settings go back before this command returns, on every path
+        # including the failure one. This is the half that carries the safety
+        # claim: because these persist, a disable we do not undo is a permanent
+        # change to a machine we do not own.
+        #
+        # It lives here rather than in teardown deliberately. Our own quit path
+        # kills the host after 20 s, so cleanup hung off teardown is guarded by
+        # precisely the code most likely to be skipped.
+        $restore = Restore-AutoCorrect $acState
+        $report = @{}
+        # $acState is $null when Disable-AutoCorrect threw rather than returned.
+        # Enumerating .Keys on it would raise inside the `finally` and replace
+        # the real error with a NullReference -- the exact failure the guards in
+        # Restore-AutoCorrect exist to avoid, one line further out.
+        if ($null -ne $acState) {
+            foreach ($k in $acState.Keys) { $report[$k] = $acState[$k] }
+        } else {
+            $report.suppressed = $false
+            $report.reason = 'not_verifiable'
+        }
+        $report.restored = $restore.restored
+        if ($restore.ContainsKey('reason'))   { $report.restoreReason = $restore.reason }
+        if ($restore.ContainsKey('settings')) { $report.restoreSettings = $restore.settings }
+        $script:AutoCorrect = $report
+    }
+
+    # The autocorrect report is attached by the dispatcher, not here.
+    #
+    # It used to be set on this line, after the try/catch/finally, so that it
+    # carried the restore outcome and not just the disable. That much was right
+    # and still is. What it missed is that two paths -- `file_exists` and
+    # `create_failed` -- `return` from inside the try, so the `finally` runs the
+    # restore, builds the report, and then the return skips this line and throws
+    # the report away. A caller could not tell a clean restore from a failed one
+    # on exactly the two paths where a half-suppressed machine is most likely.
+    #
+    # Attaching at the single call site covers every return, including these,
+    # without turning `file_exists` into a throw -- which the comment at its
+    # check explains must not happen, because the catch deletes $path.
+
+    # Close() returning is not proof the file is released. The next thing the
+    # caller does is read this file back to confirm what was written, and a
+    # re-open into a file Word still holds is the indefinite hang this whole
+    # design avoids -- so measure the release rather than sleeping past it.
+    $releaseStarted = [Diagnostics.Stopwatch]::StartNew()
+    $released = $false
+    while ($releaseStarted.ElapsedMilliseconds -lt 5000) {
+        if (Test-FileWritable $path) { $released = $true; break }
+        Start-Sleep -Milliseconds 20
+    }
+    $result.releaseMs = [int]$releaseStarted.ElapsedMilliseconds
+    $result.released = $released
+    $result.totalMs = [int]$started.ElapsedMilliseconds
+
+    return $result
+}
+
 function Cmd-Close($a) {
     $docId = [string]$a.docId
     $script:DocArgs.Remove($docId) | Out-Null
@@ -1454,6 +2148,19 @@ try {
                 'open' { Send-Ok $id (Cmd-Open $cmdArgs) }
                 'structure' { Send-Ok $id (Cmd-Structure $cmdArgs) }
                 'edit' { Send-Ok $id (Cmd-Edit $cmdArgs) }
+                'create' {
+                    # Attached here rather than inside Cmd-Create because two of
+                    # its paths return from within the try whose finally runs the
+                    # restore: the report exists by the time control reaches this
+                    # line on every path, and no return can skip it. Cmd-Create
+                    # clears the variable at entry, so this is never a previous
+                    # call's outcome.
+                    $created = Cmd-Create $cmdArgs
+                    if ($created -is [hashtable] -and $null -ne $script:AutoCorrect) {
+                        $created.autoCorrect = $script:AutoCorrect
+                    }
+                    Send-Ok $id $created
+                }
                 'export' { Send-Ok $id (Cmd-Export $cmdArgs) }
                 'outline' { Send-Ok $id (Cmd-Outline $cmdArgs) }
                 'search' { Send-Ok $id (Cmd-Search $cmdArgs) }
@@ -1462,7 +2169,7 @@ try {
                 'close' { Send-Ok $id (Cmd-Close $cmdArgs) }
                 'quit' {
                     Stop-Word
-                    Send-Ok $id @{ stopped = $true }
+                    Send-Ok $id @{ stopped = $true; quitError = $script:QuitError }
                     $exitRequested = $true
                 }
                 default { Send-Fail $id 'unknown_command' "Unknown command '$([string]$req.cmd)'." }

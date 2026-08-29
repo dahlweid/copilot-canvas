@@ -27,6 +27,22 @@ import { createIdleShutdown } from "./src/word-lifecycle.mjs";
 import { normalizeReadArgs, DEFAULT_READ_LIMIT, MAX_READ_LIMIT } from "./src/word/read-args.mjs";
 import { MAX_HEADING_LEVEL, MIN_HEADING_LEVEL, OPERATION_HELP, OPERATION_NAMES } from "./src/word/edit-intent.mjs";
 import { asToolError } from "./src/tool-error.mjs";
+import {
+    BLOCK_HELP,
+    BLOCK_KINDS,
+    fieldUsage,
+    MAX_BLOCKS,
+    MAX_LIST_ITEMS,
+    MAX_TABLE_COLUMNS,
+    MAX_TABLE_ROWS,
+    MIN_BLOCK_HEADING_LEVEL,
+    MIN_BLOCKS,
+    MIN_LIST_ITEMS,
+    MIN_TABLE_COLUMNS,
+    MIN_TABLE_ROWS,
+    MAX_TEXT_LENGTH,
+} from "./src/word/create-intent.mjs";
+import { creatableList } from "./src/word/document-author.mjs";
 
 /** instanceId -> ViewerInstance */
 const instances = new Map();
@@ -417,6 +433,149 @@ const readDocumentTool = {
     },
 };
 
+// Every bound below is imported from src/word/create-intent.mjs, which is also
+// what the runtime enforces. A description that restates a limit is a second
+// copy of it, and this repo has shipped the drifted version of that three times
+// in three pull requests — a range hardcoded in prose, the constant moved, and
+// the model told something false with no test able to notice.
+//
+// The schema declares every bound `validateSpec` enforces except one: the rule
+// that a paragraph may not contain a line or paragraph break. That is
+// `/[\r\n\v\f\u0007]/` in `requireText`, and JSON Schema could carry it as a
+// `pattern`. It deliberately does not. A `pattern` subtly wrong in the other
+// direction would reject legal text at the schema layer, which is worse than
+// the gap it closes, and a negative character-class is not something a model
+// reliably satisfies by construction. Each affected description states the rule
+// in prose instead, and the runtime refusal names it. Recorded as a decision so
+// the next audit finds a reason here rather than an oversight.
+
+const createBlockSchema = {
+    type: "object",
+    properties: {
+        kind: {
+            type: "string",
+            enum: BLOCK_KINDS,
+            description: `What this block is. ${BLOCK_HELP}`,
+        },
+        level: {
+            type: "integer",
+            minimum: MIN_BLOCK_HEADING_LEVEL,
+            maximum: MAX_HEADING_LEVEL,
+            description: `${fieldUsage("level")} The heading depth, ${MIN_BLOCK_HEADING_LEVEL} being the top level.`,
+        },
+        text: {
+            type: "string",
+            maxLength: MAX_TEXT_LENGTH,
+            description: `${fieldUsage("text")} The text. One paragraph — line breaks are refused, because a second paragraph is a second block.`,
+        },
+        ordered: {
+            type: "boolean",
+            description: `${fieldUsage("ordered")} True numbers the items; omitted or false bullets them.`,
+        },
+        items: {
+            type: "array",
+            items: { type: "string", maxLength: MAX_TEXT_LENGTH },
+            minItems: MIN_LIST_ITEMS,
+            maxItems: MAX_LIST_ITEMS,
+            description: `${fieldUsage("items")} The items, one paragraph each. From ${MIN_LIST_ITEMS} to ${MAX_LIST_ITEMS}.`,
+        },
+        rows: {
+            type: "array",
+            items: {
+                type: "array",
+                items: { type: "string", maxLength: MAX_TEXT_LENGTH },
+                minItems: MIN_TABLE_COLUMNS,
+                maxItems: MAX_TABLE_COLUMNS,
+            },
+            minItems: MIN_TABLE_ROWS,
+            maxItems: MAX_TABLE_ROWS,
+            description: `${fieldUsage("rows")} The cells, row by row. The table must be rectangular — every row the same length — and from ${MIN_TABLE_ROWS}×${MIN_TABLE_COLUMNS} to ${MAX_TABLE_ROWS}×${MAX_TABLE_COLUMNS}.`,
+        },
+        headerRow: {
+            type: "boolean",
+            description: `${fieldUsage("headerRow")} True makes the first row a bold heading row that repeats if the table crosses a page break.`,
+        },
+    },
+    // Only `kind` is unconditionally required; what each kind additionally
+    // requires is derived into the field descriptions above by `fieldUsage`,
+    // because JSON Schema `required` cannot be made conditional on `kind` here.
+    // `edit_document` carries the same limitation the same way.
+    required: ["kind"],
+    additionalProperties: false,
+};
+
+const createDocumentTool = {
+    name: "create_document",
+    description: [
+        "Creates a new Word document from an ordered list of blocks — headings, paragraphs, bulleted or",
+        "numbered lists and tables — and returns its structure map and revision token, the same ones",
+        "read_document would give, so it can be edited straight away without reading it first.",
+        "It will not overwrite: a path that already exists is refused, because replacing a document is",
+        "what edit_document is for and that path has a revision token, a snapshot and a revert behind it.",
+        "Text is written verbatim. Autocorrect is switched off first on a Word this tool started, so",
+        "straight quotes stay straight and nothing is capitalised or substituted on the way in; if it",
+        "attached to a Word you already had running, that instance's settings are left alone instead,",
+        "because they are yours. The result's `autoCorrect` field reports which of the two happened.",
+    ].join(" "),
+    parameters: {
+        type: "object",
+        properties: {
+            path: {
+                type: "string",
+                description: `Absolute or workspace-relative path to create (${creatableList()}). The folder must already exist, and the file must not.`,
+            },
+            blocks: {
+                type: "array",
+                minItems: MIN_BLOCKS,
+                maxItems: MAX_BLOCKS,
+                items: createBlockSchema,
+                description: `The document's content, in order. From ${MIN_BLOCKS} to ${MAX_BLOCKS} blocks. ${BLOCK_HELP}`,
+            },
+        },
+        required: ["path", "blocks"],
+        additionalProperties: false,
+    },
+    handler: async (args) => {
+        // Path resolution runs before any Word work is entered, matching
+        // read_document: a malformed path should cost a string operation, not a
+        // cold Word start.
+        let docPath;
+        try {
+            docPath = resolveInputPath(args?.path);
+        } catch (err) {
+            throw asToolError(err);
+        }
+
+        // Everything except `path` is forwarded, rather than `{ blocks }` being
+        // picked out.
+        //
+        // This looks like the looser choice and is the stricter one. `validateSpec`
+        // already refuses a spec field nobody implements -- that refusal exists
+        // because `title` was once accepted here and silently ignored by the host,
+        // which is the same defect as a half-applied block. Picking `blocks` out
+        // put that refusal out of reach: an unknown argument never reached the
+        // validator, so `additionalProperties: false` above was decorative and the
+        // caller was told nothing.
+        //
+        // It is decorative in a second way too, measured by the coordinator on
+        // this CLI host (issue #28): the host validates `parameters` before
+        // dispatch not at all -- `required`, `enum`, `type`, `minItems`,
+        // `maximum` and `additionalProperties` were each violated and every one
+        // reached the handler. So the schema is documentation for the model and
+        // `validateSpec` is the only enforcement there is. Anything declared up
+        // there and not checked in code is a promise nothing keeps.
+        const { path: _path, ...spec } = args ?? {};
+
+        return withWordWork(async () => {
+            try {
+                return await getCache().createDocument(docPath, spec);
+            } catch (err) {
+                throw asToolError(err);
+            }
+        });
+    },
+};
+
 const editDocumentTool = {
     name: "edit_document",
     description: [
@@ -587,7 +746,7 @@ process.on("unhandledRejection", (reason) => {
 
 session = await joinSession({
     canvases: [wordCanvas],
-    tools: [readDocumentTool, editDocumentTool, revertDocumentTool],
+    tools: [createDocumentTool, readDocumentTool, editDocumentTool, revertDocumentTool],
     hooks: {
         onSessionEnd: async () => {
             await shutdown(null);
