@@ -54,8 +54,10 @@ Write-Output ''
 Write-Output '=== PART A: sharing algebra against a synthetic holder ==='
 Write-Output ''
 
-# The three models this claim has passed through, plus the configuration
-# read-smoke.mjs uses as its stand-in for Word.
+# The three models this claim has passed through -- the third of which is also
+# the configuration read-smoke.mjs now uses as its stand-in for Word -- plus a
+# control that varies access alone (ReadWrite vs Write) while holding the share
+# mode fixed, to show the two W-access holders are indistinguishable here.
 #
 # Two of these readers discriminate, and they discriminate different things.
 # Windows checks the access you request against the holder's SHARE mode, and the

@@ -81,7 +81,7 @@ results.push(["FileShare::None (exclusive)", await withHolder("exclusive", "None
 // which neither proposed. Every version produced the same row here, because a
 // read-requesting reader succeeds against all three.
 //
-// probe-share-vs-access.ps1 is what settled it, by adding a reader that requests
+// probe-fileshare-algebra.ps1 is what settled it, with a reader that requests
 // *write* access while granting ReadWrite -- the only shape that puts the
 // holder's share mode on the other side of the comparison.
 results.push([

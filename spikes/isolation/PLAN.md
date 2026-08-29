@@ -1227,8 +1227,12 @@ synthetic holders and then against a document held by real Word:
 The row above ending "**ok**" is the one that took two revisions to reach. The
 first correction concluded "write handle granting `ReadWrite`", and recorded
 that the *share* half was measured and the *access* half merely inferred. Both
-statements are backwards, and a third probe —
-`spikes/isolation/probes/probe-share-vs-access.ps1` — settled it.
+statements are backwards, and adding a fifth, **write-requesting** reader to
+`probe-fileshare-algebra.ps1` settled it. (The discriminating reader was devised
+first by the `edit_document` session, as a standalone probe on the branch behind
+PR #16. It was folded into the algebra probe here so that the evidence for this
+claim ships in the same commit as the claim — a probe on another branch is not
+something a reader of this one can run.)
 
 **Windows checks two things on every open**, and this is the whole explanation:
 

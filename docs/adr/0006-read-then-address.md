@@ -132,9 +132,9 @@ candidate mechanisms agree on every reader we happened to use, and disagree only
 on the second row, which is why the wrong one went unchallenged for so long.
 
 **That correction was itself half wrong, and the half it got wrong is the half
-it claimed to have measured.** A third revision, forced by
-`spikes/isolation/probes/probe-share-vs-access.ps1`. Windows checks **two**
-things on every open:
+it claimed to have measured.** A third revision, forced by adding a
+**write-requesting** reader to `spikes/isolation/probes/probe-fileshare-algebra.ps1`.
+Windows checks **two** things on every open:
 
 - **(a)** the access *you* request, against the share mode of each existing handle;
 - **(b)** the access of each existing handle, against the share mode *you* offer.

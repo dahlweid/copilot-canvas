@@ -371,8 +371,9 @@ try {
         // reader asks for read access, so it only ever exercises the second
         // check -- it measures the holder's access and cannot see its share
         // mode at all. That blindness is why this claim was stated wrongly
-        // twice with nothing going red; see probe-share-vs-access.ps1, which
-        // needed a *write*-requesting reader to settle it.
+        // twice with nothing going red; see
+        // spikes/isolation/probes/probe-fileshare-algebra.ps1, whose
+        // *write*-requesting reader is what settled it.
         //
         // The check is still the guard against someone "hardening" our copy to
         // a narrower share mode: a reader granting only `Read` refuses to let
