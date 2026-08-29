@@ -22,7 +22,7 @@
 
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
-import { access, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { access, copyFile, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -31,6 +31,7 @@ import { fileURLToPath } from "node:url";
 import { RenderCache } from "../../src/render-cache.mjs";
 import { fileRevisionToken, tokensMatch } from "../../src/revision-token.mjs";
 import { asToolError } from "../../src/tool-error.mjs";
+import { codepoints, documentPlainText, documentXml } from "./docx-zip.mjs";
 import { assertNoLeakedWord, wordPids } from "./word-pids.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -618,6 +619,102 @@ try {
             assert.equal(result.paragraph.text, `${marker} rewritten`, `${marker} was not rewritten`);
             token = result.document.revisionToken;
         }
+    });
+
+    // Issue #40. Three checks, deliberately not one: the write direction, the
+    // lockout the write direction creates, and a paragraph Word itself authored.
+    // They fail for different reasons and a single round trip would prove only
+    // the first of them.
+    //
+    // Every umlaut below is built from codepoints rather than typed. A literal
+    // would make the assertion depend on how *this* file's bytes are decoded,
+    // which is a member of the class of question under test -- the probe that
+    // established this defect broke on exactly that before it was rewritten this
+    // way.
+    const UML = String.fromCharCode(0x00e4, 0x00f6, 0x00fc, 0x00df, 0x00c4, 0x00d6, 0x00dc);
+    // 0xC3, the UTF-8 lead byte of every Latin-1 supplement character, decoded
+    // as the OEM codepage. It is the signature of one crossing of the corrupting
+    // boundary. The codepage is deliberately *not* named here: this ran under
+    // 850 (measured with `chcp`), while an earlier version of this comment
+    // asserted 437. The mark is identical either way, because both map 0xC3 to
+    // U+251C -- which is exactly why naming one was a claim nothing here had
+    // established, and why the assertion below does not depend on it.
+    // Note the inverse test would be wrong: mojibake *contains* U+00E4, so
+    // "no U+00E4 present" does not detect corruption.
+    const MOJIBAKE_MARK = String.fromCharCode(0x251c);
+    const umlautDoc = path.join(docs, "umlauts.docx");
+    // Copied here rather than inside the first check, so the third does not
+    // silently depend on the first having run. The second depends on the first
+    // deliberately and says so; the third must be able to fail on its own.
+    await copyFile(fixture, umlautDoc);
+
+    await check("non-ASCII text an agent writes reaches the disk intact", async () => {
+        // Asserted against the bytes in the zip, not through our own reader. A
+        // reader that corrupted symmetrically would cancel the defect out and
+        // report a green test over a wrecked file; the user's file is the thing
+        // that has to be right, so that is what is read.
+        const map = await cache.readStructure(umlautDoc);
+        // An ASCII target on purpose. Editing a paragraph that already contains
+        // non-ASCII fails for the *next* check's reason, which would make this
+        // one red for a property it is not testing.
+        const target = map.paragraphs.find((p) => p.text.includes("ZORBLAX"));
+        assert.ok(target, "no ZORBLAX paragraph in the fixture");
+        assert.ok(!/[^\u0000-\u007f]/.test(target.text), "this check needs an ASCII target");
+
+        const written = `UMLWRITE ${UML}`;
+        await cache.editDocument(umlautDoc, { op: "replace_text", address: target.address, text: written }, { revisionToken: map.revisionToken });
+
+        const onDisk = documentPlainText(await documentXml(umlautDoc));
+        // `documentPlainText` concatenates runs with no separator, on purpose --
+        // Word splits a run wherever it likes -- so the diagnostic slices a
+        // fixed window rather than looking for a line that does not exist.
+        const at = onDisk.indexOf("UMLWRITE");
+        const found = at === -1 ? "<no UMLWRITE paragraph at all>" : onDisk.slice(at, at + written.length + 8);
+        assert.ok(onDisk.includes(written), `the text did not survive the trip to disk.\n  sent:  ${codepoints(written)}\n  found: ${codepoints(found)}`);
+        assert.ok(!onDisk.includes(MOJIBAKE_MARK), "the document contains U+251C, the signature of a UTF-8 sequence decoded as OEM");
+    });
+
+    await check("a paragraph is still editable after non-ASCII has been written to it", async () => {
+        // The half a round trip cannot reach. Corruption here is not symmetric
+        // and does not cancel: reads are faithful, so an agent gets the on-disk
+        // mojibake back exactly, and sending it in as `expectedText` re-decodes
+        // the previous result's UTF-8 bytes a second time and expands it again.
+        // The pre-mutation check can then never match, for any number of
+        // retries, and the paragraph is locked for good.
+        //
+        // This runs after the check above deliberately: the text it edits is the
+        // text that came back from a read of what we ourselves wrote, which is
+        // the exact sequence a user performs.
+        const map = await cache.readStructure(umlautDoc);
+        const target = map.paragraphs.find((p) => p.text.startsWith("UMLWRITE"));
+        assert.ok(target, "the previous check left no UMLWRITE paragraph to edit");
+
+        const result = await cache.editDocument(
+            umlautDoc,
+            { op: "replace_text", address: target.address, text: "UMLWRITE rewritten" },
+            { revisionToken: map.revisionToken },
+        );
+        assert.equal(result.paragraph.text, "UMLWRITE rewritten", "the second edit did not take");
+    });
+
+    await check("a paragraph Word itself wrote with umlauts is editable", async () => {
+        // The other origin. Above, the non-ASCII arrived through our own write
+        // path; here it was authored by Word, so the bytes on disk are correct
+        // UTF-8 and only the inbound crossing is at fault. A user opening their
+        // own German document meets this one without our write path ever having
+        // run.
+        const map = await cache.readStructure(umlautDoc);
+        const target = map.paragraphs.find((p) => p.text.includes("UMLAUTMARKER"));
+        assert.ok(target, "no UMLAUTMARKER paragraph in the fixture");
+        assert.match(target.text, /[^\u0000-\u007f]/, "the UMLAUTMARKER paragraph is not actually non-ASCII -- the fixture is fake again");
+        assert.ok(!target.text.includes(MOJIBAKE_MARK), "the fixture itself is already mojibake; make-fixture.ps1 is at fault, not the edit path");
+
+        const result = await cache.editDocument(
+            umlautDoc,
+            { op: "replace_text", address: target.address, text: "UMLAUTMARKER rewritten" },
+            { revisionToken: map.revisionToken },
+        );
+        assert.equal(result.paragraph.text, "UMLAUTMARKER rewritten", "a Word-authored non-ASCII paragraph could not be edited");
     });
 
     await check("deleting the only paragraph in a table cell is refused, not silently reported as done", async () => {

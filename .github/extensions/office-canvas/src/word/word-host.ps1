@@ -37,7 +37,27 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# Both directions, because the protocol is UTF-8 in both directions and only one
+# of them used to say so. Node writes UTF-8 JSON to this process's stdin; with
+# InputEncoding left at its default, Windows PowerShell decoded that as the OEM
+# codepage, so every non-ASCII character an agent sent arrived as mojibake and
+# was saved that way, and a search for a non-ASCII term matched nothing while
+# reporting no error.
+#
+# It also made such a paragraph permanently uneditable, by a mechanism worth
+# stating exactly: the read direction is faithful, so an agent gets the on-disk
+# mojibake back unchanged, and sending that in as expectedText re-decodes the
+# previous result's UTF-8 bytes a second time (measured: `Gr<mojibake>nchen` in,
+# a longer `Gr<mojibake>nchen` out). It compounds rather than cancelling, so the
+# pre-mutation text check could never match, for any number of retries.
+#
+# Measured by spikes/isolation/probes/probe-console-input-encoding.mjs, which
+# drives this same spawn shape three ways: without the second line the text is
+# corrupted, with either UTF-8 form it is intact. The one real risk -- that the
+# setter throws when stdin is a redirected pipe rather than a console -- is
+# measured there too, and it does not.
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+[Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false)
 
 # --- Word / Office constants -------------------------------------------------
 $WD_ALERTS_NONE = 0

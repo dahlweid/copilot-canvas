@@ -27,6 +27,38 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# Real umlauts, built from codepoints rather than typed into this file.
+#
+# The line below used to read "Umlaut check: Grosse Aepfel, Strasse, Muenchen",
+# which is pure ASCII -- a fixture named for the property it did not exercise.
+# Every fixture in this suite being ASCII is exactly why issue #40 survived two
+# merged layers: the host decoded agent text as the OEM codepage, and no test
+# ever sent it a character that could show the difference.
+#
+# Codepoints rather than literals because a fixture must not inherit the
+# ambiguity it is measuring: PowerShell 5.1 reads a BOM-less .ps1 as the ANSI
+# codepage, so a typed umlaut here would be decoded by the same class of rule
+# that is under test, and a failure could not be attributed.
+#
+# The names are `lo`/`up` rather than `$ae`/`$AE` because PowerShell variable
+# names are **case-insensitive**: `$AE = ...` reassigns `$ae`. Written the
+# obvious way, this fixture emitted "M<U+00DC>nchen" and an all-uppercase
+# "<U+00C4><U+00D6><U+00DC>", so the lowercase umlauts -- the more common half
+# of the alphabet this is here to exercise -- never appeared in the document at
+# all. Measured by reading the bytes back out of the .docx zip.
+$loA = [char]0x00E4
+$loO = [char]0x00F6
+$loU = [char]0x00FC
+$upA = [char]0x00C4
+$upO = [char]0x00D6
+$upU = [char]0x00DC
+$sz = [char]0x00DF
+$umlautCheck = "Umlaut check: Gro${sz}e ${upA}pfel, Stra${sz}e, M${loU}nchen, ${loA}${loO}${loU}${upA}${upO}${upU}${sz}."
+# One paragraph carrying a token that is unique *and* non-ASCII, so a test can
+# address it deterministically and a search can send non-ASCII across the same
+# boundary it is checking.
+$umlautMarker = "Gr${loU}${sz}e aus M${loU}nchen -- the UMLAUTMARKER paragraph."
+
 $WD_STYLE_NORMAL = -1
 $WD_STYLE_HEADING1 = -2
 $WD_STYLE_HEADING2 = -3
@@ -55,7 +87,7 @@ try {
 
             $sel.Style = $WD_STYLE_NORMAL
             foreach ($p in 1..12) {
-                $sel.TypeText("Paragraph $chapter.$section.$p - the quick brown fox jumps over the lazy dog. Umlaut check: Grosse Aepfel, Strasse, Muenchen, aeoeue.")
+                $sel.TypeText("Paragraph $chapter.$section.$p - the quick brown fox jumps over the lazy dog. $umlautCheck")
                 $sel.TypeParagraph()
             }
         }
@@ -110,6 +142,8 @@ try {
     $sel.TypeParagraph()
     $sel.Style = $WD_STYLE_NORMAL
     $sel.TypeText("This paragraph contains the unique token ZORBLAX for search testing.")
+    $sel.TypeParagraph()
+    $sel.TypeText($umlautMarker)
     $sel.TypeParagraph()
 
     # `.Item(...)` on DocumentProperties throws under PowerShell; use late binding.

@@ -12,6 +12,7 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { RenderCache, normalizeDocPath } from "../../src/render-cache.mjs";
 import { ViewerInstance } from "../../src/server.mjs";
+import { codepoints } from "./docx-zip.mjs";
 import { assertNoLeakedWord, wordPids } from "./word-pids.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -285,6 +286,48 @@ try {
     await check("search for something absent returns no hits", async () => {
         const body = await (await get("/api/search?q=QQZZNOTPRESENT")).json();
         assert.deepEqual(body.hits, []);
+    });
+
+    await check("a canvas search for a non-ASCII term finds it", async () => {
+        // Issue #40, and not redundant with the tool-side tests: the canvas
+        // action boundary and the tool boundary have already been measured
+        // behaving differently from one another (integer schema bounds are
+        // enforced on one and not the other, issue #28), so neither is inferable
+        // from the other even though one line fixes both.
+        //
+        // The symptom this guards is the quietest of the three the defect
+        // caused, and the one a user meets first: `count: 0` with no error, no
+        // warning, indistinguishable from the term genuinely not being there.
+        //
+        // Both terms are built from codepoints, so no assertion here rests on
+        // how this file's own bytes are decoded.
+        const strasse = `Stra${String.fromCharCode(0x00df)}e`;
+        const umlautWord = `Gr${String.fromCharCode(0x00fc, 0x00df)}e`;
+
+        // Outbound control, reached with an ASCII query on purpose. Asserting
+        // the echoed query and the snippet of one *non-ASCII* search would look
+        // like it covered both directions and would not: measured, an inbound
+        // regression makes that search match nothing, so the response carries no
+        // snippet to check and the outbound half is unreachable in exactly the
+        // case it is supposed to rule out. An ASCII query matching a paragraph
+        // whose text is non-ASCII has no inbound dependency, so this stays green
+        // through an inbound regression and reddens only for an outbound one.
+        const outbound = await (await get("/api/search?q=UMLAUTMARKER&limit=5")).json();
+        assert.ok(outbound.count > 0, "the fixture has no UMLAUTMARKER paragraph to read back");
+        assert.ok(
+            outbound.hits.some((h) => h.snippet.includes(umlautWord)),
+            `text read out of the document lost its umlauts on the way to the canvas: ${outbound.hits
+                .map((h) => codepoints(h.snippet))
+                .join(" | ")}`,
+        );
+
+        // Inbound: the query the canvas sent, echoed back as the host decoded
+        // it. The two directions fail with different signatures -- expansion to
+        // `U+251C ...` for inbound, replacement with `U+FFFD` for outbound -- so
+        // this and the control above together say which boundary broke.
+        const body = await (await get(`/api/search?q=${encodeURIComponent(strasse)}&limit=5`)).json();
+        assert.equal(body.query, strasse, `the query came back as ${codepoints(body.query)}, sent ${codepoints(strasse)}`);
+        assert.ok(body.count > 0, `no hits for ${codepoints(strasse)}, which the fixture contains`);
     });
 
     await check("an empty search query is a typed 400", async () => {
