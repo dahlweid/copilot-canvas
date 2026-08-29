@@ -242,9 +242,11 @@ _Avoid_: command, patch, script
 
 ### Review
 
-Every PR gets a Copilot review. Reply to every comment, push, re-request,
-repeat. The coordinator requests and merges; the owning session replies and
-pushes, so two worktrees never touch one branch.
+Every PR gets a code review, to a hard cap of **two rounds** (below): reply to
+every finding, push, re-review, repeat. Prefer GitHub's Copilot reviewer; when
+it cannot run, run a `code-review` sub-agent locally under the same rules rather
+than skipping the review. The coordinator requests or runs it and merges; the
+owning session replies and pushes, so two worktrees never touch one branch.
 
 **Read the review body, not just the thread list.** Findings arrive in two
 shapes and only one of them is a thread. **Suppressed** findings — "previously
@@ -285,7 +287,7 @@ replied — which for this repo's loop is *us*, once per round:
 
 Three consequences. **Counting records to derive the round number over-counts by
 exactly the number of replies you have posted** — deterministic, not a race, and
-it walks a PR into the six-round cap early. **Reading "the latest review" can
+it walks a PR into the round cap early. **Reading "the latest review" can
 return your own reply**: empty body, no findings, indistinguishable from a clean
 round. And `requested_reviewers` empties as soon as the review is delivered, so
 it cannot answer "has this round come back?" either.
@@ -340,7 +342,7 @@ in full:
 Every discriminator above passes it. Right author, non-empty body, right commit,
 arrived promptly after the request. It is not a reply-record and it is not a
 stale round. **It is a billing failure wearing the shape of a clean review**, and
-counting it would consume one of the six rounds and could merge a PR on the
+counting it would consume one of the two rounds and could merge a PR on the
 strength of a review that never executed.
 
 What separates it is the one thing the reviewer produces and our query cannot:
@@ -405,19 +407,20 @@ broadcast *"round N is not consumed"* to every session in the stack. It is true
 only where a review was requested **after** the outage began, which was those two
 PRs and no others. Reconciled by counting genuine reviews per PR:
 
-| PR | genuine rounds | phantom | of six |
-| --- | --- | --- | --- |
-| #26 | **4** | none | 2 left |
-| #34 | 2 | none | 4 left |
-| #36 | 2 | 1 | 4 left |
-| #43 | **1, genuine and worked** | none | 5 left |
-| #46 | **0 — never reviewed at all** | none | 6 left |
-| #47 | 2 | 1 | 4 left |
+| PR | genuine rounds | phantom |
+| --- | --- | --- |
+| #26 | **4** | none |
+| #34 | 2 | none |
+| #36 | 2 | 1 |
+| #43 | **1, genuine and worked** | none |
+| #46 | **0 — never reviewed at all** | none |
+| #47 | 2 | 1 |
 
 Two of those were live errors, not pedantry: #26 was two rounds further into the
-six-round cap than anyone believed, and #43's round 1 was real and had already
-been answered while I was telling its session the round had not run. **A
-per-artefact observation is not a property of the system**, and the correction
+cap in force at the time than anyone believed, and #43's round 1 was real and
+had already been answered while I was telling its session the round had not run.
+**A per-artefact observation is not a property of the system**, and the
+correction
 arrived within the hour of writing that a summary is what discards a scope — the
 recommendation being itself a summary, which is the shape rather than the
 exception. What caught it was a layer session **applying the discriminator to its
@@ -442,27 +445,57 @@ same JSON object throughout. Two rounds of theorising about GitHub's timing, fro
 `submitted_at` and body length, when the field naming the cause was already in
 hand. **Before modelling a mechanism, spend the remaining fields.**
 
-**Six rounds, then merge.** This is a hard cap, not a target. At round six the
+**Two rounds, then merge.** This is a hard cap, not a target. At round two the
 PR merges with any remaining comments declined explicitly in a reply. The one
-thing that may go past six is a **correctness or data-loss defect**, and it buys
+thing that may go past two is a **correctness or data-loss defect**, and it buys
 exactly one more round — it does not reset the counter.
 
-**Effort follows the same curve: Balanced for rounds 1–4, Lite for 5–6.** The
-deep pass is worth paying for while the diff is still novel; by round five the
-reviewer is re-reading code it has already cleared, and the findings have
-consistently been documentation and contract precision rather than defects.
-Escalate back to Balanced mid-loop only when a round lands a **substantive code
-change** — new logic, a changed contract, a fix touching more than the site it
-was aimed at — because that is new material the deep pass has never seen.
-A one-line comment or message fix is not that, and re-reviewing it deeply has
-never once paid.
+**And if GitHub's reviewer cannot run, run the review locally instead of
+skipping it.** The billing outage proved the delegation is the fragile part, not
+the review: a `code-review` sub-agent reads the same diff from the same tree
+with no external dependency and no per-run cost. **Same rules, same cap** — two
+rounds, read every finding, decide, reply, push, repeat, decline explicitly in
+writing. The only thing that changes is who produced the findings, and that goes
+in the squash body so the record says which reviewer ran.
 
-**Effort cannot be set programmatically**, so the curve's upper half is
-aspirational and every round is Lite in practice. It is a control on the PR's
-Reviewers panel and nothing else: measured across five routes, including a REST
-field that is accepted and then silently ignored. Because a request can look
-like it succeeded, **read the effort level printed in every review body** rather
-than assuming the one you asked for took effect.
+The division of labour is unchanged and is what keeps two worktrees off one
+branch: **the coordinator runs the review, the owning session addresses it and
+pushes.** A local review is read-only, so the coordinator may fetch and diff
+another session's branch without owning it — reviewing is not mutating. Never
+let a session be the sole reviewer of its own diff; self-review re-reads the
+author's intent, which is the blind spot the loop exists to cover.
+
+Two properties of the local reviewer that the GitHub one does not have, both
+worth exploiting. It takes an **explicit diff range**, so a review can be scoped
+to exactly the commits that will land rather than to whatever the PR page thinks
+the base is. And it has **no suppressed-findings channel** — every finding
+arrives in the transcript, so the "read the body, not just the thread list" trap
+above simply does not exist. What it loses is the second opinion of a different
+model on a different substrate; treat a clean local round as evidence, not as
+proof, exactly as with a clean Lite round.
+
+What does **not** relax under either reviewer is the local evidence: validator,
+citations, units and the relevant integration gates, on the head that will
+actually land.
+
+**The cut from six rounds to two was a throughput decision, and it has a
+measured cost worth stating rather than burying.** The table below — taken
+before the cut — puts the only findings that changed *shipping code* in rounds
+one to three. Two rounds therefore gives up a band that has historically paid.
+The cost is real, and it is not the same claim as "rounds three onward were
+worthless".
+
+**Effort: Balanced for both rounds.** The old curve (Balanced 1–4, Lite 5–6)
+existed because late rounds re-read code already cleared. With two rounds there
+is no late half — both rounds see novel material, so neither is a candidate for
+the cheap pass.
+
+**Effort cannot be set programmatically**, so this is aspirational and every
+round is Lite in practice. It is a control on the PR's Reviewers panel and
+nothing else: measured across five routes, including a REST field that is
+accepted and then silently ignored. Because a request can look like it
+succeeded, **read the effort level printed in every review body** rather than
+assuming the one you asked for took effect.
 
 The cap exists because the loop has no natural end. The reviewer re-scans
 unchanged code every round and surfaces different **suppressed** findings each
@@ -470,8 +503,9 @@ time, so "0 new comments" never means "clear" — on #12, rounds four and five
 both reported zero new comments and both carried real suppressed findings. A
 reviewer that keeps finding things is not evidence the file is getting better.
 
-What the rounds were actually worth, measured on the first two PRs to run the
-full loop:
+What the rounds were worth, measured on the first two PRs to run the old
+six-round loop. This table is why the cut to two costs something, and it is kept
+in its original units rather than restated in the new ones:
 
 | rounds | what they produced |
 | --- | --- |
@@ -479,15 +513,21 @@ full loop:
 | 4–6 | documentation and contract precision: stale comments, miscounts, a schema bound the runtime did not enforce |
 | 6+ | not observed to produce anything, on a diff of +3860/−107 across 29 files |
 
+Read it in the direction that costs, not the one that comforts: it retires
+rounds four onward, and it does **not** retire round three.
+
 Declining is a real outcome and must be recorded as one: reply saying why, so
 the next engineer sees a decision rather than an omission. Replies are for the
 human record — Copilot cannot read them.
 
 **Lite is a floor.** A clean Lite pass means the cheap checks passed, not that
 the code is right — an independent deeper read of #16 found a critical
-data-loss defect that six Lite rounds elsewhere never approached. Spending
-rounds 5–6 at Lite is only defensible because the deep pass ran at 1–4; it is
-not a claim that Lite suffices.
+data-loss defect that six Lite rounds elsewhere never approached. That result
+gets sharper under a two-round cap, not softer: there are now fewer passes
+behind a merge, all of them Lite in practice, and one of them may be absent
+entirely when billing is down. **The local gates are what carry a merge; the
+review is what improves it.** Treat a clean review as the weaker of the two
+signals, and never as a substitute for running the suite.
 
 **Mutation-check every test before you rely on it: reintroduce the defect, run,
 confirm red.** A test that cannot fail is worse than no test, because it reads
@@ -908,4 +948,56 @@ comment whose entire body was a 41-character Windows path. **Assert that the
 check produced a verdict, not merely that it exited well** — a run that matched
 nothing and a run that passed are the same observable, and a call that succeeded
 at posting the wrong bytes looks exactly like one that worked.
+
+**The sharpest instance of that shape is the test runner itself, and the exit
+status is no help.** Measured here on Node v24.18.0, same tree, same moment:
+
+| invocation | output | exit |
+| --- | --- | --- |
+| `node --test "**/test/unit/*.test.mjs"` | 8 lines, `tests 0 … pass 0 … fail 0` | **0** |
+| `node --test ".github/extensions/office-canvas/test/unit/*.test.mjs"` | `tests 258 … pass 258 … fail 0` | 0 |
+| `node --test <directory>` | `tests 1 … pass 0 … fail 1` | 1 |
+
+The first form is the dangerous one: it ran **nothing** and said so only in the
+body, never in the status, so a `&&` chain, a CI step or a person reading the
+last line all see a pass. The third is its inverse — a `MODULE_NOT_FOUND`
+wearing the shape of a test failure, which sends you looking for a broken test
+that does not exist. **Assert on the `pass` count, never on the exit code**, and
+treat `tests 0` as red.
+
+**A figure another session hands you is a memory, not a measurement — including
+when the session is you.** I reported this trap as *"zero output lines"*. The
+session I gave it to declined to write it down without reproducing it, and was
+right: it is eight lines, not zero, which is the difference between "the
+instrument is silent" and "the instrument is answering a question nobody
+asked". The claim survived only because someone refused to transport it. This
+sits one level above *"is this a measurement or a memory?"*: applied to received
+claims, the answer is **always memory**, whatever it cost the sender to obtain.
+The coordinator is the worst offender by construction, because broadcasting is
+the job.
+
+**A gate run on a head that cannot merge measures a tree that will never
+exist.** Merge-readiness is a *precondition* of running the gates, not a check
+performed after they come back green. I asked a session for full gates on a head
+that was `CONFLICTING` at the moment I asked — and the conflict had been caused
+by my own merge of another PR, reported in the same message as an aside, four
+paragraphs below the words *"Verified: MERGEABLE"*. Had the session complied,
+every number would have been truthful and about nothing. Re-read
+`mergeable`/`mergeStateStatus` immediately before asking, and again immediately
+before merging; `gh pr view` lags, so cross-check `headRefOid` against
+`git ls-remote`.
+
+**A control proves an instrument can see. It does not prove it is pointed at the
+right thing.** The `ReleaseComObject` probe A/B'd one operation, found the file
+free in 16 ms either way, and carried exactly the control this file demands — 
+leave the document open, confirm the file is *still held* at 30 s — which
+passed, demonstrating the instrument detects retention. Every reading was true.
+The damage was on an axis the probe could not have seen: across *operations* of
+a long-lived host, adding the release scored **19/20 with 7 WINWORD left alive**
+against **20/20 and zero** without it. The control answered "can this detect
+retention?"; the honest question was "can this detect retention **across
+operations**?", and nothing in the setup forced anyone to notice those differ.
+This is the `FileShare` lesson one level down, and it was walked into by the
+same person hours after writing the probe that exposed it. **State what the
+control ranges over, in the same breath as the control.**
 
