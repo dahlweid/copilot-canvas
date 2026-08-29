@@ -116,7 +116,6 @@ test("a document is authored and described back to the caller", async () => {
         // The token is the one read_document would mint, so the caller can edit
         // immediately without reading first.
         assert.equal(result.revisionToken, await fileRevisionToken(doc));
-        assert.equal(result.expectedParagraphs, 2);
         assert.equal(result.lockReleased, true);
     });
 });

@@ -34,7 +34,7 @@ import { stat } from "node:fs/promises";
 import path from "node:path";
 
 import { fileRevisionToken } from "../revision-token.mjs";
-import { describeSpec, paragraphsIn, validateSpec } from "./create-intent.mjs";
+import { describeSpec, validateSpec } from "./create-intent.mjs";
 
 export class CreateError extends Error {
     constructor(code, message, details = {}) {
@@ -230,13 +230,6 @@ export class DocumentAuthor {
             );
         }
 
-        // What the spec said should be there, against what Word actually
-        // produced. Reported rather than enforced: Word's paragraph count is its
-        // own business — a table contributes a paragraph per cell, one per
-        // row-end mark and one after the table — and a mismatch is a fact worth
-        // surfacing, not grounds for deleting a document the caller asked for.
-        const expectedParagraphs = paragraphsIn(spec);
-
         this.#log(
             `create_document: ${describeSpec(spec)} at ${path.basename(docPath)} ` +
                 `(build ${result.buildMs}ms, save ${result.saveMs}ms, release ${result.releaseMs}ms, ` +
@@ -252,7 +245,16 @@ export class DocumentAuthor {
                 suppressed: Boolean(result.autoCorrect?.suppressed),
                 reason: result.autoCorrect?.reason ?? null,
             },
-            expectedParagraphs,
+            // No predicted paragraph count is reported. An earlier version
+            // returned one and it was wrong by construction: it modelled Word's
+            // COM `Paragraphs.Count`, which counts a row-end mark per table row,
+            // while every paragraph number the caller can act on — including
+            // `document.paragraphCount` and every address in the map — comes
+            // from OOXML, where row-end marks are not paragraphs. Measured on
+            // the smoke fixture: the prediction said 18, the map says 14. Two
+            // coordinate systems joined on a bare number is the same trap as
+            // joining on a localized style name, and the authoritative count is
+            // already in `document` below.
             tableCount: result.tableCount ?? 0,
             lockReleased,
             revisionToken,

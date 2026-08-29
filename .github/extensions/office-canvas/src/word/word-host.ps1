@@ -1506,9 +1506,30 @@ function Add-SpecBlock($doc, $block, $state) {
 
     # One place that decides where the next block goes, so a block kind cannot
     # invent its own cursor and land somewhere the others do not expect.
+    #
+    # `$state.pending` is a paragraph that already exists and should be written
+    # into rather than appended after. Two things produce one: the empty
+    # paragraph a new document starts with, and the paragraph Word insists on
+    # keeping after a table. Consuming both is what stops the result carrying
+    # stray empties the caller never asked for.
+    #
+    # `Paragraphs.Add()` is called for its side effect and its return value is
+    # discarded, which is not fastidiousness. Measured
+    # (spikes/isolation/probes/probe-spec-cursor.ps1): with no Range argument it
+    # appends an empty paragraph at the end and returns the paragraph that was
+    # previously *last*, not the one it just added. Writing into that return
+    # value overwrites the preceding block -- the first version of this authored
+    # [heading; paragraph; heading] and produced a document with the heading
+    # silently gone, no error raised anywhere. `Paragraphs.Last` is the appended
+    # one, read back from the document rather than taken on trust.
     $next = {
-        if ($state.fresh) { $state.fresh = $false; return $doc.Paragraphs.Item(1) }
-        return $doc.Paragraphs.Add()
+        if ($null -ne $state.pending) {
+            $para = $state.pending
+            $state.pending = $null
+            return $para
+        }
+        $doc.Paragraphs.Add() | Out-Null
+        return $doc.Paragraphs.Last
     }
 
     switch ($kind) {
@@ -1541,12 +1562,14 @@ function Add-SpecBlock($doc, $block, $state) {
             $rowCount = $rows.Count
             $colCount = @($rows[0]).Count
 
-            # The anchor paragraph is consumed as the table's insertion point and
-            # survives after it -- Word requires a paragraph following a table, so
-            # this is the paragraph it would have created anyway. This is the exact
-            # shape measured in probe-authoring-save.ps1: an appended paragraph,
-            # then Tables.Add against its Range.
+            # The anchor paragraph is consumed as the table's insertion point.
+            # Its style is reset first: it was appended after whatever came
+            # before, so it carries that block's style, and a table inserted at a
+            # list paragraph produces a table whose every cell is styled as a
+            # list item. Measured -- the first version of this authored a table
+            # after a numbered list and every cell came back `Listennummer`.
             $anchor = & $next
+            $anchor.Range.Style = $WD_STYLE_NORMAL
             $table = $doc.Tables.Add($anchor.Range, $rowCount, $colCount)
 
             for ($r = 0; $r -lt $rowCount; $r++) {
@@ -1568,6 +1591,16 @@ function Add-SpecBlock($doc, $block, $state) {
                 try { $table.Rows.Item(1).HeadingFormat = $true } catch { }
                 try { $table.Rows.Item(1).Range.Bold = $true } catch { }
             }
+
+            # Word keeps a paragraph after every table and will not let it go, so
+            # the next block writes into it rather than appending a second one.
+            # Without this a table block leaves a stray empty paragraph behind --
+            # measured, and visible to the caller as an unexplained "" in the
+            # structure map. Its style is reset for the same reason the anchor's
+            # was: it inherited whatever preceded the table.
+            $trailing = $doc.Paragraphs.Last
+            $trailing.Range.Style = $WD_STYLE_NORMAL
+            $state.pending = $trailing
             return
         }
         default { throw "Unsupported block kind '$kind'." }
@@ -1602,7 +1635,13 @@ function Cmd-Create($a) {
     if (Test-Path -LiteralPath $path -PathType Container) { return @{ status = 'path_is_directory'; path = $path } }
     if (Test-Path -LiteralPath $path -PathType Leaf) { return @{ status = 'file_exists'; path = $path } }
 
-    $parent = Split-Path -LiteralPath $path -Parent
+    # [IO.Path] rather than Split-Path. `Split-Path -LiteralPath $p -Parent` does
+    # not bind in Windows PowerShell 5.1 -- -LiteralPath and -Parent are in
+    # different parameter sets, and the failure is a ParameterBindingException
+    # raised at call time, not a parse error, so it survives every static check
+    # this repo runs and only appears when the command is actually reached.
+    # Measured: it took the create smoke test to see it at all.
+    $parent = [IO.Path]::GetDirectoryName($path)
     if (-not [string]::IsNullOrWhiteSpace($parent) -and -not (Test-Path -LiteralPath $parent -PathType Container)) {
         return @{ status = 'directory_not_found'; path = $path; directory = $parent }
     }
@@ -1614,7 +1653,7 @@ function Cmd-Create($a) {
     try {
         $buildStarted = [Diagnostics.Stopwatch]::StartNew()
         $doc = $script:App.Documents.Add()
-        $state = @{ fresh = $true }
+        $state = @{ pending = $doc.Paragraphs.Item(1) }
         foreach ($block in @($a.blocks)) { Add-SpecBlock $doc $block $state }
         $buildMs = [int]$buildStarted.ElapsedMilliseconds
 

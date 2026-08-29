@@ -109,12 +109,17 @@ $mutants = @(
        from  = '        const spec = validateSpec(rawSpec);'
        to    = '        const spec = { blocks: rawSpec?.blocks ?? [] };' }
 
-    # Word's own arithmetic, measured: a 2x2 table takes a 2-paragraph document
-    # to 9. One paragraph per cell, one per row-end mark, one after the table.
-    @{ name = 'table paragraph arithmetic guessed as rows*cols'
+    # A predicted paragraph count used to be returned here and was wrong by
+    # construction — it counted in Word's COM coordinate system while the map is
+    # OOXML-derived. Reinstating it must go red, or the pin against it is decor.
+    @{ name = 'a predicted paragraph count is put back'
        file = 'src/word/create-intent.mjs'
-       from  = '                total += block.rows.length * block.rows[0].length + block.rows.length + 1;'
-       to    = '                total += block.rows.length * block.rows[0].length;' }
+       from  = '/** A short, human-readable description, for logs and snapshot manifests. */'
+       to    = @'
+export function paragraphsIn(spec) { return spec.blocks.length; }
+
+/** A short, human-readable description, for logs and snapshot manifests. */
+'@ }
 )
 
 $survived = @()

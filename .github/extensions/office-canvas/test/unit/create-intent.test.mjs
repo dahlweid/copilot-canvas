@@ -24,9 +24,9 @@ import {
     MAX_TABLE_ROWS,
     MAX_TEXT_LENGTH,
     MIN_BLOCK_HEADING_LEVEL,
-    paragraphsIn,
     validateSpec,
 } from "../../src/word/create-intent.mjs";
+import * as created from "../../src/word/create-intent.mjs";
 import { MIN_HEADING_LEVEL } from "../../src/word/edit-intent.mjs";
 
 const rejects = (spec, code) => {
@@ -186,13 +186,18 @@ test("a spec-level field nobody implements is refused, not dropped", () => {
     rejects({ blocks: [para()], footer: "x" }, "invalid_spec");
 });
 
-test("paragraphsIn counts a table the way Word does", () => {
-    // Measured on a live Word (spikes/isolation/probes/probe-authoring-save.ps1):
-    // a document of 2 paragraphs plus a 2x2 table reopens with 9 paragraphs.
-    // Word counts one per cell, one per row-end mark, and keeps one after the
-    // table. So 2 + (4 + 2 + 1) = 9.
-    assert.equal(paragraphsIn({ blocks: [para(), para(), { kind: "table", rows: [["a", "b"], ["c", "d"]], headerRow: false }] }), 9);
-    assert.equal(paragraphsIn({ blocks: [{ kind: "list", items: ["a", "b", "c"] }] }), 3);
+test("no predicted paragraph count is reported", () => {
+    // A prediction used to be returned and it was wrong by construction: it
+    // counted paragraphs the way Word's COM object model does (a row-end mark
+    // per table row) while every number the caller can act on is OOXML-derived,
+    // where row-end marks are not paragraphs. Measured on the smoke fixture: the
+    // prediction said 18, the document says 14.
+    //
+    // This is a pin, not a preference. Re-exporting a `paragraphsIn` would put
+    // two coordinate systems back in one result object with nothing marking
+    // which is which.
+    assert.equal(Object.keys(created).includes("paragraphsIn"), false);
+    assert.equal(typeof created.validateSpec, "function");
 });
 
 // --- derive, don't restate ---------------------------------------------------

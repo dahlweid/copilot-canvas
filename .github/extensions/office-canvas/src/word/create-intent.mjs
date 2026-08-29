@@ -236,28 +236,6 @@ export function validateSpec(input) {
     return { blocks: blocks.map((block, index) => normalizeBlock(block, index)) };
 }
 
-/** How many paragraphs a spec will produce, so a result can be checked against it. */
-export function paragraphsIn(spec) {
-    let total = 0;
-    for (const block of spec.blocks) {
-        switch (block.kind) {
-            case "list":
-                total += block.items.length;
-                break;
-            case "table":
-                // Word counts a paragraph per cell, one per row-end mark, and
-                // keeps one after the table. Measured on a 2x2:
-                // spikes/isolation/probes/probe-authoring-save.ps1 reports 9
-                // paragraphs for a document that had 2 before the table.
-                total += block.rows.length * block.rows[0].length + block.rows.length + 1;
-                break;
-            default:
-                total += 1;
-        }
-    }
-    return total;
-}
-
 /** A short, human-readable description, for logs and snapshot manifests. */
 export function describeSpec(spec) {
     const counts = new Map();
