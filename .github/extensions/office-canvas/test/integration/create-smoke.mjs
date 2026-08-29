@@ -89,45 +89,83 @@ async function check(name, fn) {
  *
  * WHAT A GREEN HERE DOES AND DOES NOT MEAN. This is a forward guard, not a live
  * regression detector, and the difference matters because the test's name reads
- * like the latter.
- *
- *   - The mechanism is live: forbidding a character that IS present turns this
- *     red with "smart quotes appeared in: ...", so the assertion can fail.
- *     Verified by mutating the list rather than by assuming.
- *   - What cannot currently happen is the substitution itself. Arms A, B, E, F
- *     and G of probe-autocorrect.ps1 insert this bait through Range.Text and
- *     through Selection.TypeText, whole and character by character, with every
- *     autocorrect setting ON, and rewrite 0 of 6. The only arm that rewrites
- *     anything is an explicit Content.AutoFormat(), which this host never calls.
- *
- * So on this Word these three assertions cannot go red for the reason their name
- * gives, and a green here is not evidence that suppression works. The evidence
+ * like the latter. Arms A, B, E, F and G of probe-autocorrect.ps1 insert this
+ * bait through Range.Text and through Selection.TypeText, whole and character by
+ * character, with every autocorrect setting ON, and rewrite 0 of 6. The only arm
+ * that rewrites anything is an explicit Content.AutoFormat(), which this host
+ * never calls. So no insertion path the product uses can trigger a substitution
+ * today, and a green here is not evidence that suppression works -- the evidence
  * for that is the separate settings read-back check. What this guards is a
- * *future* insertion path that does trigger autocorrect -- which is worth having,
- * and is why the suppression is belt and braces rather than the mechanism.
+ * *future* insertion path that does trigger autocorrect.
+ *
+ * THE ANCHOR IS LOAD-BEARING, AND ITS ABSENCE MADE THE GUARD UNABLE TO GUARD.
+ * Each bait paragraph opens with an anchor and is located by it. That is not
+ * cosmetic. This test previously located the paragraph by its own first twelve
+ * characters, and for all three baits that prefix spanned the substitution site:
+ *
+ *   'He said "hel'   contains the quote that becomes \u201E
+ *   'A dash -- li'   contains the -- that becomes \u2014
+ *   'Copyright (c'   contains the (c) that becomes \u00A9
+ *
+ * So a *successful* substitution destroyed the locator. The paragraph was not
+ * found, and the only assertion that could fire was "the bait paragraph is
+ * missing" -- which is equally consistent with an #40 stdin corruption, a paging
+ * bug, or a document that was never authored. The two assertions that name the
+ * defect were both unreachable for the case they exist to catch, on any Word in
+ * any locale, independently of the arm results above. Measured by replaying the
+ * find-then-assert against a substituted string; both orderings reported
+ * "missing" and neither reported a substitution.
+ *
+ * An anchor must therefore be invariant under every substitution being detected.
+ * ANCHOR_SHAPE enforces that mechanically rather than by inspection: letters and
+ * spaces only, so it cannot contain a quote, a dash, or a parenthesised (c),
+ * (r), (e) or (tm). Adding a bait whose anchor does not match is a hard failure.
+ *
+ * mustNotContain is checked BEFORE the equality assertion, so a substitution is
+ * reported as "smart quotes appeared in: ..." rather than as the generic "Word
+ * rewrote the text". Equality still runs afterwards as the catch-all for a
+ * rewrite these lists do not name. Reversing that order does not break the test,
+ * it just downgrades every message -- which is how the specific assertions came
+ * to be dead without anything going red.
  *
  * Do not try to mutation-check these by putting a curly quote in the bait text.
  * That was tried: it turns the suite red, but with "the bait paragraph is
  * missing", because the character is corrupted crossing stdin (issue #40) and
  * the paragraph is never found. The mutant scores as killed and the kill is
- * attributed to an assertion that never ran.
+ * attributed to an assertion that never ran. Mutate the mustNotContain list
+ * instead -- forbid a character the bait certainly has.
  */
+const ANCHOR_SHAPE = /^[A-Za-z][A-Za-z ]*\.$/;
+
 const VERBATIM_BAITS = [
     {
+        anchor: "Bait one.",
         text: `He said "hello" to her.`,
         mustNotContain: ["\u201e", "\u201c", "\u201d"],
         what: "smart quotes",
     },
-    { text: "A dash -- like this.", mustNotContain: ["\u2014", "\u2013"], what: "an em or en dash" },
-    { text: "Copyright (c) 2024.", mustNotContain: ["\u00a9"], what: "a copyright sign" },
+    {
+        anchor: "Bait two.",
+        text: "A dash -- like this.",
+        mustNotContain: ["\u2014", "\u2013"],
+        what: "an em or en dash",
+    },
+    {
+        anchor: "Bait three.",
+        text: "Copyright (c) 2024.",
+        mustNotContain: ["\u00a9"],
+        what: "a copyright sign",
+    },
 ];
+
+const baitParagraph = (b) => `${b.anchor} ${b.text}`;
 
 const spec = {
     blocks: [
         { kind: "heading", level: 1, text: "Quarterly Report" },
         { kind: "paragraph", text: "This document was authored by create_document." },
         { kind: "heading", level: 2, text: "Findings" },
-        ...VERBATIM_BAITS.map((b) => ({ kind: "paragraph", text: b.text })),
+        ...VERBATIM_BAITS.map((b) => ({ kind: "paragraph", text: baitParagraph(b) })),
         { kind: "list", ordered: false, items: ["First point", "Second point"] },
         { kind: "list", ordered: true, items: ["Step one", "Step two", "Step three"] },
         {
@@ -209,12 +247,16 @@ try {
         const map = await cache.readStructure(target, { limit: 0 });
         const texts = map.paragraphs.map((p) => p.text);
         for (const bait of VERBATIM_BAITS) {
-            const found = texts.find((t) => t.includes(bait.text.slice(0, 12)));
-            assert.ok(found !== undefined, `the bait paragraph is missing: ${bait.text}`);
-            assert.equal(found, bait.text, `Word rewrote the text`);
+            assert.ok(
+                ANCHOR_SHAPE.test(bait.anchor),
+                `anchor is not substitution-proof, so a rewrite would read as a missing paragraph: ${bait.anchor}`,
+            );
+            const found = texts.find((t) => t.startsWith(bait.anchor));
+            assert.ok(found !== undefined, `the bait paragraph is missing: ${bait.anchor}`);
             for (const ch of bait.mustNotContain) {
                 assert.ok(!found.includes(ch), `${bait.what} appeared in: ${found}`);
             }
+            assert.equal(found, baitParagraph(bait), `Word rewrote the text`);
         }
     });
 
