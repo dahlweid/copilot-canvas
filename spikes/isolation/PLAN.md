@@ -1299,3 +1299,65 @@ it: `writable` is reported as a fact alongside a typed code, never used to infer
 a cause. The rule the review was reaching for holds — split where the platform
 distinguishes, stay collapsed where it does not — and the two halves of this
 section are the two sides of it.
+
+## 20. Facts we had measured and failed to join to the code they bore on
+
+Every entry below is a fact this repo had **already measured, written down and
+got right**, sitting some distance from code that was wrong for want of it. None
+of them was a discovery failure. **The failure is joining, not discovery** — and
+because the fact is already recorded, every instance reads as well-documented
+work right up until someone checks the two against each other.
+
+This section is a list on purpose. Prose cannot carry this; a list that gets
+longer is the only form a future reader can act on. Add to it rather than
+rewriting it.
+
+| # | the fact, and where it was recorded | the code that needed it | distance |
+| --- | --- | --- | --- |
+| 1 | `docs/adr/0005-transient-lock-write-model.md:80-86` — the measured sharing table | the paragraph at `:95` describing Word's handle | **2 lines** |
+| 2 | `document-reader.mjs:132-140` — errno table, measured for **read streams** | proposed for `revertToLatest`'s `rename` in review (`document-editor.mjs`) | different operation |
+| 3 | `document-editor.mjs:402-409` — "`Application.Quit()` returns seconds before the process actually exits" | `word-host.ps1` `Stop-Word`, which waited a fixed 300 ms after `Quit` and then killed | ~300 lines, another file |
+| 4 | `word-host.ps1` `Cmd-Edit` — "`Close()` returning is not proof the file is released", **plus a worked stopwatch poll implementing the remedy** | `Stop-Word`, in the **same file**, using a fixed sleep | ~840 lines, **same file** |
+
+**1** is the mildest and the best documented: the ADR says so itself at `:100`
+— *"This paragraph said `ReadWrite` until the table above was read properly."*
+A table two lines above a sentence it contradicts.
+
+**2** is the only one caught before it landed, and only because the errnos were
+re-measured on the operation actually being performed rather than inherited.
+`rename` answers `EPERM` for every cause and `EBUSY` never; the read-stream
+table would have reported *"will not clear, do not retry"* for a document merely
+open in Word. A table is a measurement of one operation, and carrying it to
+another is a fresh assumption wearing a measurement's clothes.
+
+**3** is worse than 1 and 2, because those were facts in the wrong *context*.
+This was a fact in the right context, in the right layer, **written by the
+person who would later need it** — and still not applied.
+
+**4** is the sharpest, and it was found by checking 3. The host contained both
+the statement that a Word call returning is not the work completing *and a
+working implementation of the remedy* — a `Stopwatch`-bounded poll — applied to
+`Close` and not to `Quit`, in the same file. The recorded figure was also wrong
+by ~28x (`~120 ms`; measured 3138-3702 ms), and `Stop-Word`'s replacement poll
+had been **sized on it**, budgeting 3000 ms for something that takes 3.1-3.7 s.
+It passed review anyway, rescued by `Get-Process` costing ~46 ms a call.
+
+### What actually catches these
+
+Not re-reading. All four were re-read many times. What caught 3 and 4 was
+**finding two records of the same quantity that disagreed** — `~120 ms` against
+`seconds` — which is only possible because both had been written down. What
+caught 2 was re-measuring on the target operation.
+
+So the practical form is: **when you rely on a recorded number, check whether
+this repo records that number anywhere else, and if it does, make them agree by
+measurement rather than by choosing.** A quantity stated twice is a free
+discriminator; a quantity stated once is untested.
+
+### A caveat about the citations above
+
+`tools/check-citations.mjs` cannot keep this table honest. Its pattern matches
+`probe-*.{ps1,mjs}` only, so source-file citations are unguarded and will rot as
+line numbers move. Symbol names are given alongside line numbers for that
+reason — prefer the symbol when they disagree. Extending the guard to source
+paths would make this table self-checking and is not yet done.
