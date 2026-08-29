@@ -412,10 +412,22 @@ function Stop-Word {
     # directions -- `Quit()` with the poll exits on its own and this branch never
     # fires; the old by-value call with the same poll still throws and still
     # needs the kill. Both halves are load-bearing.
+    #
+    # The wait is bounded by elapsed time, not by an iteration count. Measured
+    # here, `Quit()` returns in 3-28 ms and the process exits 3138-3702 ms after
+    # that, so the count-based version this replaced -- 30 x 100 ms, nominally
+    # 3000 ms -- was budgeting less than the thing it was waiting for. It worked
+    # only because `Get-Process` costs ~46 ms a call, padding the loop to 4375 ms
+    # of wall time. That margin was an accident of an unrelated API's cost, and
+    # had it ever narrowed, the kill below would have resumed firing and this fix
+    # would have silently reverted to the behaviour it exists to correct, with
+    # nothing going red. Timing out here is not a failure -- it falls through to
+    # the kill -- so the bound is deliberately generous.
     if ($null -ne $script:OwnedPid) {
         try {
             $p = $null
-            for ($i = 0; $i -lt 30; $i++) {
+            $waited = [Diagnostics.Stopwatch]::StartNew()
+            while ($waited.ElapsedMilliseconds -lt 10000) {
                 Start-Sleep -Milliseconds 100
                 $p = Get-Process -Id $script:OwnedPid -ErrorAction SilentlyContinue
                 if ($null -eq $p -or $p.ProcessName -ne 'WINWORD') { break }
@@ -1187,11 +1199,17 @@ function Cmd-Edit($a) {
     }
 
     if ($null -ne $result) {
-        # Close() returning is not proof the file is released -- Quit() is known
-        # to return ~120 ms before its process actually exits. Measure it rather
-        # than assume, because the next thing the caller does is read the file
-        # to confirm the edit, and a re-open into a still-held file is the hang
-        # this whole command is built to avoid.
+        # Close() returning is not proof the file is released. Quit() is cited
+        # here only as precedent for "a call returning is not the work being
+        # done" -- measured, it returns 3.1-3.7 s before its process exits. It is
+        # not evidence about Close, which is a different call with measurably
+        # different behaviour, and nothing about either may be inferred from the
+        # other; the poll below is what establishes the fact for Close. (This
+        # comment read "~120 ms" until that number was actually measured. It was
+        # wrong by a factor of ~28, and Stop-Word had sized a wait on it.)
+        # Measure it rather than assume, because the next thing the caller does
+        # is read the file to confirm the edit, and a re-open into a still-held
+        # file is the hang this whole command is built to avoid.
         $releaseStarted = [Diagnostics.Stopwatch]::StartNew()
         $released = $false
         while ($releaseStarted.ElapsedMilliseconds -lt 5000) {
