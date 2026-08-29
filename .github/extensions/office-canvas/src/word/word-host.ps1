@@ -545,6 +545,7 @@ function Close-Doc($docId) {
 }
 
 function Stop-Word {
+    $script:QuitError = $null
     foreach ($docId in @($script:Docs.Keys)) { Close-Doc $docId }
     $script:DocArgs = @{}
     if ($null -ne $script:App) {
@@ -573,7 +574,27 @@ function Stop-Word {
             # other. Do not "consistency-fix" `Close` to take no argument: with
             # none, Word prompts on a dirty document, and a modal prompt in a
             # hidden instance is the silent hang this host exists to avoid.
-            try { $script:App.Quit() } catch { }
+            #
+            # Reported, not swallowed, and that half is not decoration. This
+            # defect was found on this branch and on #33 independently, and both
+            # times what hid it was a bare `catch { }`: Word exited anyway, so
+            # every black-box signal stayed green while the quit had never run.
+            # Not even the Node-side reaper saw it -- `word-host.mjs` clears
+            # `ownedPid` on a *successful* quit RPC, and a swallowed throw is
+            # reported successful, so the reaper never ran either. Word exited
+            # because killing the host released the last COM reference, and an
+            # invisible instance with no open documents exits when its refcount
+            # drops. There was no observable to write a test against; this makes
+            # one, and `quitError` on the quit reply is what the create smoke
+            # test asserts against. Confirmed by instrumenting all 11 swallowing
+            # catches around Quit/Close/ReleaseComObject and re-running the
+            # suite: this was the only site throwing, and it is now silent.
+            try { $script:App.Quit() }
+            catch {
+                $root = $_.Exception
+                while ($null -ne $root.InnerException) { $root = $root.InnerException }
+                $script:QuitError = $root.GetType().Name + ': ' + $root.Message
+            }
         }
         try { [Runtime.InteropServices.Marshal]::ReleaseComObject($script:App) | Out-Null } catch { }
         $script:App = $null
@@ -1794,7 +1815,7 @@ try {
                 'close' { Send-Ok $id (Cmd-Close $cmdArgs) }
                 'quit' {
                     Stop-Word
-                    Send-Ok $id @{ stopped = $true }
+                    Send-Ok $id @{ stopped = $true; quitError = $script:QuitError }
                     $exitRequested = $true
                 }
                 default { Send-Fail $id 'unknown_command' "Unknown command '$([string]$req.cmd)'." }

@@ -346,6 +346,48 @@ try {
         }
     });
 
+    await check("quitting Word actually calls Quit, rather than relying on the process dying", async () => {
+        // The defect this pins was invisible to every black-box signal.
+        // `Application.Quit` declares its parameters as `VARIANT*`, so a value
+        // argument fails to bind -- "Argument: 1 muss
+        // System.Management.Automation.PSReference sein" -- and it threw on every
+        // shutdown of every run. Word exited anyway, because killing the host
+        // process releases the last COM reference, so the quit RPC succeeded, the
+        // leak assertion passed and the census was clean while the Quit never ran.
+        //
+        // Measured by instrumenting all 11 swallowing catches around
+        // Quit/Close/Release and re-running this suite: `Quit` was the only site
+        // throwing, at every occurrence, and with `[ref]` the log is empty.
+        //
+        // Two things it deliberately does not claim. It is not a
+        // value-versus-variable problem -- that site passed a variable. And it is
+        // not a general VARIANT* rule: in the same process on the same run,
+        // `$doc.Close($WD_DO_NOT_SAVE_CHANGES)` never threw at any of its four
+        // sites, so neither call shape may be changed on the other's evidence.
+        //
+        // The assertion is only possible because the catch reports instead of
+        // swallowing. That was the actual fix; the `[ref]` was the easy part.
+        //
+        // The `owned` guard below is not decoration. `Initialize-Word` attaches
+        // to a Word the user already had running when one is available, and
+        // `Stop-Word` never quits an instance it did not start -- so on an
+        // attached instance `Quit` is skipped and `quitError` is null for a
+        // reason that has nothing to do with the binding. Without the guard this
+        // check would pass vacuously, on a machine where 8-18 WINWORD.EXE are
+        // routinely alive from other sessions. It fails loudly instead, because
+        // "could not measure" and "the defect is gone" must not look alike.
+        const host = new WordHost({ log: () => {} });
+        try {
+            const ready = await host.request("ping", {});
+            assert.equal(ready.owned, true, "attached to an existing Word, so the Quit below is skipped and this check cannot measure anything");
+            const out = await host.request("quit", {});
+            assert.equal(out.stopped, true, "the host did not report a stop");
+            assert.equal(out.quitError, null, `Application.Quit threw and was swallowed: ${out.quitError}`);
+        } finally {
+            await host.dispose().catch(() => {});
+        }
+    });
+
     await check("creating needs no canvas open", () => {
         assert.equal(cache.openCount, 0, "a create left a document open");
     });
