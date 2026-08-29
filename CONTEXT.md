@@ -501,24 +501,30 @@ counts. Had the merge taken the body, the most durable copy of a retracted claim
 in this repo would have been the one commit message nobody ever revisits, while
 every other site carried the correction.
 
-**An earlier draft of this section said the replaced body "cannot be re-measured,
-because an edited body overwrites its predecessor." That is false, and a review
-caught it here rather than after it landed.** GitHub retains every prior version
-and exposes them, timestamped, through GraphQL — measured on this very PR, which
-returns `totalCount: 5` with the pre-edit text recoverable in the `16:53:31Z`
-node:
+**Three drafts of this section made three different false claims about GitHub's
+body retention, so the fourth does not make one.** In order: that a replaced body
+"cannot be re-measured" (false — prior versions are retained); then that GitHub
+"retains every prior version" recoverable from a named node (false twice over —
+the cap is 100 revisions, revisions can be deleted, and the node I cited holds
+the body *after* that edit, not before); then that recovering one "takes a
+deliberate query against a surface almost nobody visits" (false — the web UI
+shows an **edited** marker with a revision picker to any reader).
 
-```
-gh api graphql -f query='{ repository(owner:"…",name:"…"){ pullRequest(number:26){
-  userContentEdits(first:20){ totalCount nodes{ editedAt editor{login} diff } } } } }'
-```
+**The claim is cut rather than corrected a fourth time.** The rule stands without
+it: what the squash captures is a race, which the timestamps above establish on
+their own. A mechanism that has been wrong three times and cannot change the
+practice is not worth a fourth attempt — the same reason this repo declines
+probes that cannot change a decision.
 
-**So the asymmetry is about what a reader is *presented*, not about what is
-retrievable.** A PR page shows the body as it is now; recovering what it said
-before takes a deliberate query against a surface almost nobody visits. A commit
-message is what `git log` shows by default. That is a weaker claim than the one
-first written and it is the true one — and worth knowing in its own right, since
-it means a body edited to hide a claim is still on the record.
+**And the way the second error survived my own check is the part to keep.** I
+verified the reviewer's finding by grepping the retained nodes for
+`per-process|not persisted` and got a hit on **all five**, which I read as
+confirmation. Those words appear in the *retraction* as well as in the claim
+being retracted, so the pattern could not distinguish the two states it was cited
+for. Every arm agreed and it measured nothing — this file's own oldest rule,
+broken by me while checking somebody else's report of a false claim. The
+discriminating test was one line away: compare each node's `diff` against the
+current body, which shows immediately that the cited node *is* the current body.
 
 The margin is not the point and the rule does not depend on it being small. What
 makes a commit message the right home is one structural property: it is **written
@@ -526,8 +532,8 @@ once, at the merge, and carries that timestamp**. Verified here — the squash
 commit's own date matches `merged_at` to the second. Not *immutable*: history
 gets rewritten in this repo routinely, by amend, rebase and force-push, and the
 guidance a few sections down is about exactly that. The narrower true claim is
-that a commit message is not editable **in place** the way a body is, so changing
-one moves the commit and leaves a trace.
+that a commit message is not editable **in place** the way a body is: the SHA is
+a hash of the message, so changing one produces a different commit.
 
 **It is not a warrant that anyone verified anything.** A maintainer merging
 someone else's PR with a message assembled from a review they did not run
