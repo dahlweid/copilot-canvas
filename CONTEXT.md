@@ -1029,3 +1029,46 @@ onto the pre-squash head carries ancestry that `main` will never have, and its
 next rebase must replay commits already present as content. Rebase onto `main`
 after the squash lands, or let the forge's cascading merge retarget the PR.
 
+**A review scoped to a superseded head reviews a tree that will not ship, and
+whether that matters is decided by ancestry, not by apology.** Both local rounds
+on #46 were scoped to `6fdd8d40`; the head moved to `645e072` mid-review. The
+question is not "did it move" but "how":
+
+```
+git merge-base --is-ancestor <reviewed-head> <current-head>
+```
+
+Exit **0** means the new head *contains* the reviewed one — an addition, so the
+completed review still holds for everything it covered, and only the delta needs
+attention. Exit **1** means a rebase, and the verdict describes a tree that no
+longer exists. On #46 it was 0 and one commit of comments; on #26 the same check
+against `771a776` returned 1, so a set of gate numbers had to be re-requested
+rather than re-quoted. **Run this check before deciding a stale review or a
+stale gate result still counts**, and re-scope any round still running instead
+of letting it finish against the old range.
+
+**A reviewer is thorough within the frame it is given and does not interrogate
+the frame.** First evidence on replacing the forge's reviewer with a local one:
+round 1 on #46 spent ~15 minutes and 50+ tool calls, named a concrete mutation
+for every new assertion, byte-scanned all nine changed files for stray non-ASCII
+literals, recomputed the cited offsets against the head blob, and checked that
+an assertion's snippet window actually reaches the character it claims to test —
+attacking test *vacuity*, this repo's most recurrent defect class. It returned
+clean. It also confirmed a mojibake signature as "arithmetically correct under
+CP437" — correct arithmetic on a codepage nobody had measured. The **author**
+then ran `chcp`, found 850, and retracted the claim, showing the assertion
+survives because both codepages map `0xC3` to `U+251C`. The reviewer checked the
+arithmetic and never asked whether the premise had been measured. That is the
+`FileShare` lesson a third time, now with a reviewer in the loop: **a conclusion
+can be right while its mechanism is wrong, and nothing fails, because the
+observable is identical either way.**
+
+The operational consequence, given a two-round cap: **on an unchanged tree a
+second identical pass re-reads the same diff.** Round 2 must change the angle —
+a different model, aimed at what round 1's framing structurally could not see —
+or it is a formality. On #46, round 1 proved `[Console]::InputEncoding` is set
+at line 60 and precedes first use; it never asked whether that assignment can
+*throw*, which on Windows it can when stdin is a redirected pipe, which is
+exactly how this host is spawned. Same line, same diff, question round 1 was
+never pointed at.
+
