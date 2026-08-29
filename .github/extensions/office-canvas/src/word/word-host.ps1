@@ -1660,12 +1660,17 @@ function Add-SpecBlock($doc, $block, $state) {
 # that `edit_document` already covers properly -- with a revision token, a
 # snapshot and a revert.
 #
-# That refusal also removes a question this repo has revised three times. An
-# existing file might be held by Word, and the currently measured model
-# (PR #24, spikes/isolation/probes/probe-fileshare-algebra.ps1) is that Word
-# holds *write* access, so any request for write access against it fails
-# regardless of the share mode offered. Never opening one for write means that
-# model is not load-bearing here.
+# That refusal also removes a question this repo has revised four times. An
+# existing file might be held by Word. Measured directly --
+# spikes/isolation/probes/probe-word-share-mode.ps1 -- real Word takes *write*
+# access and grants FileShare::Read, so a request for write access against it
+# fails on Windows' first rule (requested access against the holder's granted
+# share mode) regardless of the share mode the requester offers.
+#
+# That conclusion rests on the share column, not the access column. An earlier
+# draft cited only the access column, which does not carry it: a holder taking
+# write access while granting ReadWrite permits the same request. Never opening
+# one for write means none of it is load-bearing here either way.
 function Cmd-Create($a) {
     $path = [string]$a.path
     $started = [Diagnostics.Stopwatch]::StartNew()

@@ -14,13 +14,22 @@
 // reach for.
 //
 // The refusal buys a second thing. An existing file may be open in Word, and this
-// repo has now revised its model of what that means three times (kickoff, PR #22,
-// PR #24). The currently measured position is that Word holds *write* access, so
-// any request for write access against it fails on Windows' first rule --
-// requested access against the holder's share mode -- whatever share mode the
-// requester offers. Never opening an existing file for writing means none of that
-// is load-bearing here: the only file this module ever writes is one that did not
-// exist a moment ago.
+// repo has now revised its model of what that means four times (kickoff, PR #22,
+// PR #24, and the run below). Measured directly --
+// spikes/isolation/probes/probe-word-share-mode.ps1 -- real Word takes *write*
+// access and grants `FileShare::Read`. A request for write access against it
+// therefore fails on Windows' first rule, requested access against the holder's
+// granted share mode, whatever share mode the requester offers.
+//
+// That conclusion rests on the *share* column, not the access column, and an
+// earlier draft of this comment cited only the latter: a holder taking write
+// access while granting `ReadWrite` permits the very request this paragraph says
+// is refused. Both columns are measured now, so the sentence carries the one it
+// actually needs.
+//
+// Never opening an existing file for writing means none of it is load-bearing
+// here: the only file this module ever writes is one that did not exist a moment
+// ago.
 //
 // Autocorrect
 // -----------
