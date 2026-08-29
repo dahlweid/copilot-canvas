@@ -371,9 +371,16 @@ The workflow does exactly what that check did, so the badge is load-bearing.
 Two things were found by writing the tests rather than by reading the code:
 
 - **`bytes=-500` was served as bytes 0–500.** A suffix range means the *last* 500 bytes
-  (RFC 9110 §14.1.2). Extracting `parseByteRange` for testability exposed it. This was
-  latent because the host's native PDF viewer never sent one; pdf.js (ADR 0004) fetches the
-  trailer that way, and would have received plausible garbage instead of an error.
+  (RFC 9110 §14.1.2). Extracting `parseByteRange` for testability exposed it, and the fix is
+  right on the spec — but the reason given here for why it mattered was wrong. This
+  paragraph used to say pdf.js "fetches the trailer that way". It does not:
+  `spikes/pdfjs/probes/probe-range-requests.mjs` recorded **zero** suffix ranges under every
+  configuration tried, including `disableStream` with an 8 KB chunk size. pdf.js computes the
+  tail's offset itself from `Content-Length` and asks for an explicit `bytes=start-end`.
+  Under the default configuration it issues no Range request at all. So the bug was real and
+  the correction is worth keeping; what it was not is a bug pdf.js would ever have hit. The
+  suffix branch has no consumer in this repo, and must not be "verified" by assuming the
+  viewer exercises it.
 - **The C3 self-containment check missed bare `import "…"`.** It matched only the
   `from`-bearing and dynamic forms, so a side-effect import escaping the folder passed. The
   fault-injection test caught this on its first run — which is the argument for having

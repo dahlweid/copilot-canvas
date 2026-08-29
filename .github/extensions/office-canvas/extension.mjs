@@ -27,6 +27,7 @@ import { createIdleShutdown } from "./src/word-lifecycle.mjs";
 import { normalizeReadArgs, DEFAULT_READ_LIMIT, MAX_READ_LIMIT } from "./src/word/read-args.mjs";
 import { MAX_HEADING_LEVEL, MIN_HEADING_LEVEL, OPERATION_HELP, OPERATION_NAMES } from "./src/word/edit-intent.mjs";
 import { asToolError } from "./src/tool-error.mjs";
+import { changeRecordFrom } from "./src/change-record.mjs";
 import {
     BLOCK_HELP,
     BLOCK_KINDS,
@@ -633,7 +634,7 @@ const editDocumentTool = {
                 const result = await getCache().editDocument(resolveInputPath(args?.path), intent, {
                     revisionToken: args?.revisionToken,
                 });
-                await refreshCanvasesFor(result.document.path);
+                await refreshCanvasesFor(result.document.path, changeRecordFrom(result));
                 return result;
             } catch (err) {
                 throw asToolError(err);
@@ -677,7 +678,11 @@ const revertDocumentTool = {
                 const result = await getCache().revertDocument(resolveInputPath(args?.path), {
                     revisionToken: args?.revisionToken,
                 });
-                await refreshCanvasesFor(result.document.path);
+                // A revert undoes the edit the overlay was describing, so the
+                // record is cleared rather than replaced. The restored text is
+                // not a change the agent made -- highlighting it would tell the
+                // user the opposite of what happened.
+                await refreshCanvasesFor(result.document.path, null);
                 return result;
             } catch (err) {
                 throw asToolError(err);
@@ -686,18 +691,24 @@ const revertDocumentTool = {
 };
 
 /**
- * Re-renders any open canvas showing a document we have just changed.
+ * Re-renders any open canvas showing a document we have just changed, and tells
+ * it what changed so the overlay can mark it.
  *
  * Best-effort by design: the edit has already been made and verified by a
  * re-read, so a canvas that fails to refresh is a stale picture, not a failed
  * edit, and must not turn a successful edit into an error.
+ *
+ * `change` is passed explicitly as `null` by operations that invalidate the
+ * previous overlay without producing a new one -- a revert undoes the very edit
+ * the last record described, so leaving that record up would point the user at
+ * a change that no longer exists.
  */
-async function refreshCanvasesFor(docPath) {
+async function refreshCanvasesFor(docPath, change) {
     const target = identityFor(docPath);
     for (const instance of instances.values()) {
         if (!instance.doc || identityFor(instance.doc.path) !== target) continue;
         try {
-            await instance.refresh({ force: true });
+            await instance.refresh({ force: true, change });
         } catch (err) {
             log(`could not refresh the canvas after an edit: ${err?.message ?? err}`, "warning");
         }

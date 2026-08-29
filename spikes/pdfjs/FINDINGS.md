@@ -111,3 +111,49 @@ Assert against `dist/office-canvas-<version>.package.json` rather than by eye:
 it carries `.totalBytes`, `.budget.maxFileBytes`, `.budget.maxTotalBytes`,
 `.budget.largestFile.{path,bytes}`, `.budget.headroomBytes`, and `.files[]` with
 per-file `path`/`bytes`/`sha256`.
+
+## Accessibility — measured, and one half that cannot be
+
+`probe-accessibility.mjs`, five-page document exported through our own render
+pipeline, pdf.js 6.2.108.
+
+**The comparison ADR 0004 asked for is structurally impossible.** The native
+plugin exposes no DOM to the embedding page — the fact the whole decision rests
+on — so there is no accessibility tree to enumerate on that side. Parity cannot
+be established this way at all, only by driving a real screen reader against
+both. What follows is therefore absolute, not comparative.
+
+| measurement | result |
+| --- | --- |
+| `/MarkInfo`, `/Marked true`, `/StructTreeRoot`, `/Lang` | all present |
+| `getStructTree()` | 19 nodes, `Root > Document > H1/H2/P` |
+| distinct roles | `Root`, `Document`, `H1`, `H2`, `P` |
+| marked-content refs in the tree | 17 |
+| text-layer spans | 31 |
+| DOM order vs extraction order | identical |
+| **spans carrying a marked-content id** | **0** |
+
+Word already exports with `DocStructureTags = $true`, which is why the tagging
+is there.
+
+**The gap, named:** the structure exists in the file and pdf.js hands it over,
+but a bare `TextLayer` does not wire it into the DOM. A screen reader walking our
+markup sees 31 correctly-ordered spans with `role="presentation"` and no
+headings. pdf.js's own viewer mounts a separate structure-tree layer to close
+this; we mount only the text layer. Bounded work, not an unknown — but it means
+the roles above must not be read as accessibility parity.
+
+**Two methodological corrections made while probing, both of the "measured
+nothing" kind:**
+
+- A first version counted structure roles with a regex over the raw PDF bytes and
+  reported `{"/L": 1}` for a document full of headings. Word writes the structure
+  tree into a compressed object stream, so those tokens are not present as bytes;
+  the single hit was a coincidence. Roles must be read through pdf.js, which
+  decompresses them.
+- A first version walked the struct tree recording `hasRef: Boolean(node.id)` on
+  roled nodes and found none, which reads like "the tree has no refs". The refs
+  live on `{type: "content", id}` leaves, which carry no `role` and so were never
+  visited. Counted properly there are 17.
+
+Not measured by anyone: actual assistive-technology output, from either viewer.

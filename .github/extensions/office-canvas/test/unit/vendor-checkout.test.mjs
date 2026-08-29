@@ -15,6 +15,11 @@
 // asks git itself whether that guard is in force, rather than reading the file
 // and trusting our own parse of it.
 //
+// Asking git rather than reading the file is not fastidiousness. Attributes are
+// resolved from the index when the working-tree `.gitattributes` is missing, so
+// the guard applies during a checkout that cannot see the file -- a fact a parse
+// of the working tree would get wrong in both directions.
+//
 // Office-free.
 
 import { test } from "node:test";

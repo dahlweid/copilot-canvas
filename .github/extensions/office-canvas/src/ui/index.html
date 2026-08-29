@@ -4,6 +4,7 @@
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <title>Word document</title>
+        <link rel="stylesheet" href="/vendor/pdf-text-layer.css" />
         <link rel="stylesheet" href="/app.css" />
     </head>
     <body>
@@ -29,6 +30,20 @@
 
         <div class="status" id="status" hidden></div>
 
+        <!--
+            What the agent just changed. The banner is the only way to reach a
+            change that landed off-screen: the marker itself is drawn on a page
+            that may be nowhere near the one being read.
+        -->
+        <div class="change-bar" id="changeBar" hidden>
+            <span class="change-dot" aria-hidden="true"></span>
+            <span class="change-text" id="changeText"></span>
+            <button type="button" id="jumpToChange" class="btn btn-quiet">Show me</button>
+            <button type="button" id="dismissChange" class="btn btn-quiet" title="Hide this marker">
+                Dismiss
+            </button>
+        </div>
+
         <main class="layout">
             <aside class="sidebar" id="sidebar" hidden>
                 <div class="search-row">
@@ -45,7 +60,7 @@
             </aside>
 
             <section class="viewer" id="viewer">
-                <iframe id="pdf" title="Document" src="about:blank"></iframe>
+                <div class="pages" id="pages"></div>
             </section>
 
             <section class="picker" id="picker">

@@ -1,6 +1,8 @@
 // Viewer front-end. Talks to the extension over plain HTTP; there is no
 // privileged bridge from an extension canvas iframe to the host.
 
+import { PdfView } from "./pdf-view.mjs";
+
 const $ = (id) => document.getElementById(id);
 
 const el = {
@@ -14,7 +16,7 @@ const el = {
     searchInput: $("searchInput"),
     searchResults: $("searchResults"),
     viewer: $("viewer"),
-    pdf: $("pdf"),
+    pages: $("pages"),
     picker: $("picker"),
     pathForm: $("pathForm"),
     pathInput: $("pathInput"),
@@ -28,12 +30,69 @@ const el = {
     reload: $("reload"),
     openInWord: $("openInWord"),
     changeDoc: $("changeDoc"),
+    changeBar: $("changeBar"),
+    changeText: $("changeText"),
+    jumpToChange: $("jumpToChange"),
+    dismissChange: $("dismissChange"),
 };
 
 let state = null;
 let currentPage = 1;
 let outlineLoadedFor = null;
 let forcePicker = false;
+
+/**
+ * The rendered document. Reporting the visible page back to the host is how a
+ * reopened canvas restores position, and it is now driven by scrolling rather
+ * than by an explicit jump, so it is throttled to the page actually changing.
+ */
+const view = new PdfView(el.pages, {
+    onPageChange: (page) => {
+        if (page === currentPage) return;
+        currentPage = page;
+        api("/api/page", { method: "POST", body: JSON.stringify({ page }) }).catch(() => {});
+    },
+});
+
+/** The URL currently loaded into the view, so a redundant reload is skipped. */
+let loadedPdfUrl = null;
+
+/**
+ * The change the reader has dismissed, if any.
+ *
+ * Held as a value derived from what the record *says*, not as the record: the
+ * state arrives over SSE, so every frame carries a fresh object and identity
+ * comparison would un-dismiss the same change on the next push. Keyed this way,
+ * dismissing hides one change and the next one still announces itself.
+ */
+let dismissedChange = null;
+
+const changeKey = (record) =>
+    record ? `${record.at}\u0000${record.op}\u0000${record.page}\u0000${record.text ?? ""}` : null;
+
+/**
+ * Puts the current change -- or nothing -- in front of the reader.
+ *
+ * The banner and the marker are driven together from one place. Splitting them
+ * would let the page carry a highlight with nothing explaining it, which is the
+ * state a reader cannot act on.
+ */
+function showChange() {
+    const record = state?.change ?? null;
+    const dismissed = record !== null && changeKey(record) === dismissedChange;
+
+    if (!record || dismissed) {
+        view.setChange(null);
+        el.changeBar.hidden = true;
+        return;
+    }
+
+    view.setChange(record);
+    el.changeText.textContent = record.locatable
+        ? `${record.description} — page ${record.page}`
+        : `${record.description} — page ${record.page}, shown as a page marker`;
+    el.changeBar.hidden = false;
+}
 
 // --- helpers ---------------------------------------------------------------
 
@@ -65,20 +124,32 @@ function setStatus(text, { error = false, busy = false } = {}) {
 }
 
 /**
- * Points the embedded viewer at a page. The fragment alone is not enough --
- * the PDF plugin only reads it while loading -- so the src is reassigned. The
- * file is served immutable, so this is a cache hit rather than a re-download.
+ * Loads the current render into the view, restoring the reader's position.
+ *
+ * The PDF URL carries the render key, so it changes exactly when the document
+ * does. Comparing against it is what stops every unrelated state push from
+ * tearing down and re-parsing a document that has not moved.
  */
-function showPdf(page = currentPage, { force = false } = {}) {
+async function showPdf(page = currentPage, { force = false } = {}) {
     if (!state?.pdfUrl) return;
-    const target = `${state.pdfUrl}#page=${page}`;
-    if (!force && el.pdf.getAttribute("src") === target) return;
-    el.pdf.setAttribute("src", target);
+    if (!force && loadedPdfUrl === state.pdfUrl) {
+        showChange();
+        return;
+    }
+    loadedPdfUrl = state.pdfUrl;
+    try {
+        await view.load(state.pdfUrl);
+        showChange();
+        if (page > 1) view.goToPage(page);
+    } catch (err) {
+        loadedPdfUrl = null;
+        setStatus(`Could not display the document: ${err.message}`, { error: true });
+    }
 }
 
 function goToPage(page) {
     currentPage = Math.max(1, Math.floor(page));
-    showPdf(currentPage, { force: true });
+    view.goToPage(currentPage);
     api("/api/page", { method: "POST", body: JSON.stringify({ page: currentPage }) }).catch(() => {});
 }
 
@@ -299,7 +370,7 @@ function applyState(next, { forceReload = false } = {}) {
     if (state?.doc && state.doc.key !== previousKey) {
         outlineLoadedFor = null;
         if (el.sidebar.dataset.open === "true") loadOutline();
-        showPdf(currentPage, { force: true });
+        showPdf(currentPage);
     }
 }
 
@@ -313,7 +384,7 @@ function connect() {
         const payload = JSON.parse(event.data);
         applyState(payload);
         currentPage = payload.restorePage ?? currentPage;
-        showPdf(currentPage, { force: true });
+        showPdf(currentPage);
         outlineLoadedFor = null;
         if (el.sidebar.dataset.open === "true") loadOutline();
         if (el.searchInput.value.trim()) runSearch();
@@ -323,7 +394,7 @@ function connect() {
     source.addEventListener("goto", (event) => {
         const { page } = JSON.parse(event.data);
         currentPage = page;
-        showPdf(page, { force: true });
+        view.goToPage(page);
     });
     source.onerror = () => {
         // EventSource reconnects on its own; surface it only if it lingers.
@@ -354,7 +425,8 @@ el.reload.addEventListener("click", async () => {
     setStatus("Re-rendering…", { busy: true });
     try {
         await api("/api/refresh", { method: "POST", body: JSON.stringify({ force: true }) });
-        showPdf(currentPage, { force: true });
+        // The state push that follows carries the new render key, and the
+        // `reloaded` event reloads the view. Nothing to do here but say so.
         setStatus("Reloaded from disk.");
         setTimeout(() => setStatus(null), 2500);
     } catch (err) {
@@ -377,6 +449,16 @@ el.changeDoc.addEventListener("click", () => {
     loadPicker();
     render();
     el.pathInput.focus();
+});
+
+el.jumpToChange.addEventListener("click", () => {
+    const page = state?.change?.page;
+    if (page) goToPage(page);
+});
+
+el.dismissChange.addEventListener("click", () => {
+    dismissedChange = changeKey(state?.change ?? null);
+    showChange();
 });
 
 el.searchInput.addEventListener("input", scheduleSearch);
