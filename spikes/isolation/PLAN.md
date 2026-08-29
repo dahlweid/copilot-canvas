@@ -1713,3 +1713,54 @@ before, because the wrong copy now has a right one to be cited against.
 line numbers move. Symbol names are given alongside line numbers for that
 reason — prefer the symbol when they disagree. Extending the guard to source
 paths would make this table self-checking and is not yet done.
+
+## 22. A rebase is a message-staleness generator
+
+Five coordination messages reached this session while #26 was in flight. Three
+named the SHA to rebase onto, and **each was stale by the time it was read**:
+`682bda7`, then `aca0d3d`, then `f8d48fa`. One message self-flagged as thirteen
+hours late; the other two were minutes old and stale anyway. No sender was
+careless, and re-reading a message more carefully would not have caught any of
+them.
+
+The mechanism is structural rather than human. A rebase rewrites every SHA above
+the fork point, so **any in-flight message that names a head is invalidated by a
+rebase the sender did not perform and cannot observe.** The staleness is created
+after the message is written and before it is read. Care at the writing end
+cannot prevent it, which distinguishes this from the ordinary transport failures
+in section 21 — nothing here was summarised, narrowed, or misremembered.
+
+### The discriminator: fork points survive, heads do not
+
+Both kinds of identifier were in play, and they behaved differently:
+
+| identifier | fate over this PR's life |
+| --- | --- |
+| head SHA (`d1194ca`, `be97045`, `90c7a62`, `771a776`, …) | rewritten by every rebase; 3 of 3 relayed values stale on arrival |
+| fork point (`cee2da6`) | **survived six head moves** and still resolves |
+| branch name, PR number | never moved |
+
+So the practical form is: **address a coordination message to an invariant, and
+resolve the head yourself at the moment you act.** `git rebase --onto <branch>
+<fork-point>` is correct whenever it is read; `git rebase --onto <head-sha>
+<fork-point>` is correct only while nobody rebases. The two commands look
+equally specific and one of them has a shelf life.
+
+The receiving-end rule follows: **re-verify any head-dependent claim before
+acting on it, however fresh the message looks.** This session did that three
+times and found `main` had moved on all three.
+
+### The same mechanism voids a gate run
+
+A gate run is a claim about a tree. Running the suite on a head that cannot
+merge measures a tree that will never exist — the numbers are real and describe
+nothing that will ship. This is the staleness above with a longer fuse: the run
+is invalidated by a merge into the base, not by a rebase of the branch, and
+again the invalidation happens after the measurement and before it is read.
+
+So gate numbers are only meaningful when quoted **with the head they were taken
+on, and only while that head is still mergeable.** If the base moves between the
+run and the report, the correct action is to re-merge and re-run, not to send the
+older numbers with a note. A number that describes an abandoned tree is not
+evidence, and unlike a stale SHA it does not announce itself — it looks exactly
+like a passing gate.
