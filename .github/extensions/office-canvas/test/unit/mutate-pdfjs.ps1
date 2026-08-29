@@ -266,10 +266,10 @@ $mutants = @(
 
     @{ name = 'a record arriving during an in-flight refresh is swallowed'
        file = '.github/extensions/office-canvas/src/server.mjs'; at = 'repo'
-       from = '            if (change !== undefined) {
-                this.#stampChange(this.doc?.key ?? null);'
-       to   = '            if (false) {
-                this.#stampChange(this.doc?.key ?? null);' }
+       from = '                if (change !== undefined) {
+                    this.#stampChange(this.doc?.key ?? null);'
+       to   = '                if (false) {
+                    this.#stampChange(this.doc?.key ?? null);' }
 
     @{ name = 'the record is never tied to the render it describes'
        file = '.github/extensions/office-canvas/src/server.mjs'; at = 'repo'
@@ -412,6 +412,44 @@ $mutants = @(
        file = 'src/word/word-host.ps1'
        from = '        $WD_EXPORT_CREATE_HEADING_BOOKMARKS,'
        to   = '        CreateBookmarks = $WD_EXPORT_CREATE_HEADING_BOOKMARKS,' }
+
+    # --- four defects found by reviewing this layer against itself -------------
+
+    # `owners` maps character offset -> item index, and the offsets that index it
+    # come from `indexOf`, which counts UTF-16 units. The loop that fills it
+    # iterates code points. Push once per iteration and every entry after an
+    # astral character is shifted left by one, so a located quad is drawn over
+    # the wrong item -- reporting `located`, not degrading to a marker. No ASCII
+    # fixture can observe it, because there the two units of measure coincide.
+    @{ name = 'the character-to-item map is filled per code point, not per unit'
+       file = 'src/ui/locate-text.mjs'
+       from = '        for (let i = 0; i < char.length; i += 1) owners.push(owner);'
+       to   = '        owners.push(owner);' }
+
+    # A refresh that joined an in-flight one must not stamp its record unless
+    # that refresh actually re-rendered. A no-op returns without advancing
+    # `this.doc`, so stamping publishes the new edit's text over the pre-edit
+    # image -- the hazard the comment above `refresh` names, by the other door.
+    @{ name = 'a joined refresh stamps its record without checking it re-rendered'
+       file = 'src/server.mjs'
+       from = '            if (joined.changed) {'
+       to   = '            if (true) {' }
+
+    # ...and the other half: a forced caller that joined a no-op has no render
+    # containing its edit, so it must refresh for real rather than return it.
+    @{ name = 'a forced refresh settles for the no-op it joined'
+       file = 'src/server.mjs'
+       from = '            if (!force) return joined;'
+       to   = '            return joined;' }
+
+    # `vendor_missing` names a cause and prescribes a remedy. Reporting it for a
+    # read that failed for any other reason sends the reader after the wrong
+    # thing -- and for EACCES the prescribed remedy appears to succeed while the
+    # file stays unservable.
+    @{ name = 'every vendor read failure is blamed on a missing file'
+       file = 'src/server.mjs'
+       from = '            const missing = err.code === "ENOENT";'
+       to   = '            const missing = true;' }
 )
 
 $survived = @()

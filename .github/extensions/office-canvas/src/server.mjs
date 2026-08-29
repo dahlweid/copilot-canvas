@@ -311,11 +311,24 @@ export class ViewerInstance {
 
         if (this.#refreshing) {
             const joined = await this.#refreshing;
-            if (change !== undefined) {
-                this.#stampChange(this.doc?.key ?? null);
-                this.#broadcast("reloaded", { ...this.state, restorePage: this.lastPage });
+            // Only a refresh that actually re-rendered carries this edit. One that
+            // turned out to be a no-op returned early without advancing `this.doc`,
+            // so the key here is still the *pre-edit* render -- and stamping
+            // against it publishes this edit's text over the previous image, which
+            // is the exact hazard named above arriving through the other door.
+            // Left unstamped the record is dropped by #changeIfCurrent, which is
+            // the safe direction.
+            if (joined.changed) {
+                if (change !== undefined) {
+                    this.#stampChange(this.doc?.key ?? null);
+                    this.#broadcast("reloaded", { ...this.state, restorePage: this.lastPage });
+                }
+                return joined;
             }
-            return joined;
+            // A forced caller needs a render that includes its edit, and the no-op
+            // it joined did not produce one. Returning here would drop the render
+            // as well as the overlay, so fall through and refresh for real.
+            if (!force) return joined;
         }
 
         this.#refreshing = (async () => {
@@ -333,10 +346,16 @@ export class ViewerInstance {
             return { changed: true, doc: this.doc };
         })();
 
+        // Cleared only if it is still ours. A forced caller that joined a no-op
+        // falls through and installs its own promise here, and this owner's
+        // `finally` may run afterwards -- clearing the field unconditionally would
+        // null out that successor and let a third caller start a concurrent
+        // refresh against the same document.
+        const mine = this.#refreshing;
         try {
-            return await this.#refreshing;
+            return await mine;
         } finally {
-            this.#refreshing = null;
+            if (this.#refreshing === mine) this.#refreshing = null;
         }
     }
 
@@ -494,10 +513,19 @@ export class ViewerInstance {
             return res.end(body);
         } catch (err) {
             this.log(`could not serve vendored ${name}: ${err.message}`);
+            // Re-vendoring fixes exactly one cause, so only that cause is named.
+            // A permissions or I/O failure reports its own code instead: telling
+            // someone to re-run the vendoring step would send them after the
+            // wrong thing, and for EACCES the step appears to succeed while the
+            // file stays unservable. Discriminated on `err.code`, never on the
+            // message, which is localized.
+            const missing = err.code === "ENOENT";
             return json(res, 500, {
                 error: {
-                    code: "vendor_missing",
-                    message: `The vendored pdf.js file '${name}' is missing. Run 'node tools/vendor-pdfjs.mjs'.`,
+                    code: missing ? "vendor_missing" : "vendor_unreadable",
+                    message: missing
+                        ? `The vendored pdf.js file '${name}' is missing. Run 'node tools/vendor-pdfjs.mjs'.`
+                        : `The vendored pdf.js file '${name}' could not be read (${err.code ?? "unknown error"}).`,
                 },
             });
         }

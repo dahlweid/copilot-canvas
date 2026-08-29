@@ -297,3 +297,91 @@ both were path-translation errors rather than anything interesting: Windows path
 handed to Git Bash matched no files, so every arm agreed and "failed" for the
 same wrong reason; then bash-native `/tmp` paths were unresolvable by the Windows
 `node`, so the positive control failed too. Every arm agreeing is the signature.
+
+## Reviewing this layer against itself found four defects, and two units of measure
+
+Run before the last review round rather than after, on the argument that the
+diff's *content* is stable across the pending rebase even though its ancestry is
+not. Four findings, all in this layer's own files, all reproduced before being
+believed.
+
+### `owners` counted code points while `indexOf` counted code units
+
+`buildPageText` builds a string and a parallel `owners` array mapping character
+offset back to the pdf.js text item that produced it. The fill loop is
+`for (const char of str)`, which yields **code points**; `text += char` appends
+**one or two UTF-16 units**. One `owners.push` per iteration therefore desynchronises
+by one entry per astral character — an emoji, CJK ext-B, a mathematical
+alphanumeric. `locateText` then finds its match with `indexOf`, which counts
+units, and indexes `owners` with that offset.
+
+Measured, three emoji ahead of the target on one page:
+
+| fixture | `text.length` | `owners.length` | located range |
+| --- | --- | --- | --- |
+| `😀😀😀 Titel` + `AAAA` + … | 33 | **30** | `{startItem: 1, endItem: 2}` |
+| `XXX Titel` + `AAAA` + … | 30 | 30 | `{startItem: 1, endItem: 1}` |
+
+The status is `located` in both. This is not the overlay degrading to a marker —
+it is the overlay drawing a box over an item the edit never touched, which is the
+one outcome `change-record.mjs` is written to prevent.
+
+**An ASCII fixture cannot observe it**, because there the two units of measure
+coincide. The existing test asserted exactly the right invariant
+(`owners.length === text.length`) and could not fail: every fixture it had was
+ASCII. That is this repo's recurring shape — a correct assertion with an input
+set that cannot produce the failure — and it is why the new fixture is astral
+rather than merely longer.
+
+### A refresh that joined a no-op stamped the record against the pre-edit render
+
+`ViewerInstance.refresh` returns early when `cache.refresh` reports the file has
+not moved, **without re-rendering and without advancing `this.doc`**. The join
+path awaited the in-flight refresh and then stamped unconditionally, never
+consulting `joined.changed`.
+
+The comment directly above `refresh` names this exact hazard — *"stamping it with
+the current key here would instead publish the new edit's text over the pre-edit
+render"* — and the join path three lines below committed it. Reachable when a
+watcher echo fires before Word finishes saving: that refresh is a no-op, the
+edit's own forced refresh joins it, and `force` was silently discarded so no
+render containing the edit ever happened.
+
+**No test could reach it.** `FakeCache.refresh` returned `changed: true`
+unconditionally, so the early return at the heart of the bug was unreachable from
+the unit suite — including from the test named *"a record arriving during an
+in-flight refresh is not swallowed"*, which covers that very code path.
+
+Both halves are now separately mutated, because either alone leaves the defect:
+gating the stamp without fixing `force` loses the render, fixing `force` without
+gating the stamp still publishes against a stale key.
+
+### `vendor_missing` was reported for every read failure
+
+The vendored-file route's `catch` never inspected `err.code`, so `EACCES`,
+`EISDIR` and `EMFILE` all returned *"is missing. Run `node tools/vendor-pdfjs.mjs`"*.
+That is a code naming a cause the code never distinguished, and the remedy is
+actively misleading: for a permissions failure the prescribed script appears to
+succeed while the file stays unservable. Split on `err.code === "ENOENT"`, which
+is what the platform distinguishes; injected with a directory in the file's place.
+
+### A deletion can never carry a page, so its documented marker was unreachable
+
+`change-record.mjs` claimed unlocatable changes *"carry `locatable: false` and the
+viewer shows a page-level marker instead"*. For `delete_paragraph` — the op that
+paragraph is about — the host returns `0` as the touched index, the page is only
+read `if ($touched -gt 0 ...)`, and `document-editor` maps `0` to `null`. So a
+deletion has no page, `candidatePages` refuses to guess one, and only the text
+notice appears. The prose promised a behaviour the pipeline cannot produce.
+
+The comment is corrected rather than the code: capturing the page before the
+range is deleted is a host-side change and is not asserted here. The
+page-level-marker branch is *not* dead — it is reached by an unlocatable op whose
+page Word did report — which is why both branches remain.
+
+**The verification of this section's own mutation run was wrong first time.**
+`Select-String -SimpleMatch` with a `[regex]::Escape`-d pattern searches for the
+escaping backslashes, so all four restored anchors reported LOST. The files were
+fine; the instrument was looking for text that never existed. Same class as every
+other entry here, one level up: the check that confirms a fix has to be able to
+tell the two answers apart.

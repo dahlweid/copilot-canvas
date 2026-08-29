@@ -77,6 +77,27 @@ test("an end-of-line marker with no text of its own still separates the lines", 
     assert.equal(buildPageText(items).text, "The quick brown fox.");
 });
 
+test("the character-to-item map survives a character that is two UTF-16 units", () => {
+    // The discriminating case, and the reason the ASCII fixture above cannot
+    // stand in for it. `for...of` over a string yields *code points*, so an
+    // emoji is one iteration but two units in `text`. Push one owner per
+    // iteration and the map shifts left by one per astral character -- silently,
+    // because `indexOf` counts units and the drift only shows up as a quad drawn
+    // over the wrong item. An ASCII fixture cannot observe it: the two units of
+    // measure coincide.
+    const items = [item("\u{1F600}\u{1F600}\u{1F600} Titel", true), item("AAAA", true), item("Der Zielabsatz.", true)];
+    const { text, owners } = buildPageText(items);
+    assert.equal(owners.length, text.length, "one owner per UTF-16 unit, not per code point");
+
+    const located = locateText(items, "AAAA");
+    assert.equal(located.status, "located");
+    assert.deepEqual(
+        located.range,
+        { startItem: 1, endItem: 1 },
+        "the match is wholly inside item 1; a shifted map spills the range into item 2",
+    );
+});
+
 test("the character-to-item map stays the same length as the text it describes", () => {
     // Every collapsed space, and the trailing space a final hasEOL leaves, must
     // drop an owner too. A drift here does not fail loudly: it silently shifts

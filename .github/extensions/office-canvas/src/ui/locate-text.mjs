@@ -55,7 +55,13 @@ export function buildPageText(items) {
         // Collapse runs of whitespace, and never open with one.
         if (char === " " && (text.length === 0 || text.endsWith(" "))) return;
         text += char;
-        owners.push(owner);
+        // One owner per UTF-16 code unit, not per character. The loop below
+        // iterates code points, so an astral character -- an emoji, CJK ext-B, a
+        // mathematical alphanumeric -- is one `char` here but *two* units in
+        // `text`. `owners` is indexed by offsets that come from `indexOf`, which
+        // counts units, so pushing once per character would shift every later
+        // entry left by one per astral character and silently box the wrong item.
+        for (let i = 0; i < char.length; i += 1) owners.push(owner);
     };
 
     for (const [index, item] of (items ?? []).entries()) {

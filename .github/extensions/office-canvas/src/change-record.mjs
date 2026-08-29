@@ -22,8 +22,20 @@
 // `delete_paragraph` leaves nothing behind to find. There is no honest box to
 // draw, and anchoring to the following paragraph would assert a position the
 // code never determined -- the paragraph that now follows the gap need not be
-// the one that followed the deleted text. Those cases carry `locatable: false`
-// and the viewer shows a page-level marker instead.
+// the one that followed the deleted text. Those cases carry `locatable: false`.
+//
+// A deletion also carries **no page**, so it gets no marker either, only the
+// text notice. That is not the viewer declining to draw one: the host returns
+// `0` for a deletion's touched index (`word-host.ps1`, the `delete_paragraph`
+// arm), the page is only read `if ($touched -gt 0 ...)`, and `document-editor`
+// maps the resulting `0` to `null`. So the page is never determined, and
+// `candidatePages` refuses to guess one. The page-level marker is reachable for
+// the *other* unlocatable case -- an op whose paragraph has no findable text but
+// whose page Word did report -- which is why both branches exist.
+//
+// Capturing the page before the range is deleted would make the marker
+// available, but that is a host-side change and is tracked separately rather
+// than asserted here.
 //
 // ## The record does not carry a revision token
 //

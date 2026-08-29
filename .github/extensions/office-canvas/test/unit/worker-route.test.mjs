@@ -7,7 +7,7 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { cp, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -146,6 +146,31 @@ test("a missing static vendor file is a typed 500, not an empty 200", async () =
 
     assert.equal(res.status, 500);
     assert.equal(JSON.parse(body.toString("utf8")).error.code, "vendor_missing");
+});
+
+test("a vendor file that exists but cannot be read does not blame a missing file", async () => {
+    // `vendor_missing` names a cause -- the file is not there -- and re-running
+    // the vendoring script is the remedy that follows from it. Report it for a
+    // read that failed some other way and the message sends the reader after
+    // the wrong thing: for a permissions failure the script even appears to
+    // succeed while the file stays unservable. Discriminated on `err.code`,
+    // which is what the platform distinguishes, never on the message.
+    const staged = await stageVendor();
+    const target = path.join(staged, "pdf-text-layer.css");
+    await rm(target);
+    await mkdir(target); // exists, is not readable as a file -> EISDIR, not ENOENT
+
+    const { base } = await viewer({ vendorDir: staged });
+    const { res, body } = await get(base, "/vendor/pdf-text-layer.css");
+
+    assert.equal(res.status, 500);
+    const payload = JSON.parse(body.toString("utf8"));
+    assert.equal(payload.error.code, "vendor_unreadable");
+    assert.doesNotMatch(
+        payload.error.message,
+        /missing|vendor-pdfjs/,
+        "the file is present, so neither the cause nor the remedy for an absent one applies",
+    );
 });
 
 test("only the allowlisted vendor files are reachable", async () => {

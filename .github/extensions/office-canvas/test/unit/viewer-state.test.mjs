@@ -42,7 +42,12 @@ class FakeCache {
     async pdf() {}
     async refresh(docPath) {
         this.refreshCalls += 1;
-        return { ...this.#info(docPath), changed: true };
+        // Defaults to a render, which is what most tests want. Set `changed` to
+        // false to exercise the no-op path: `cache.refresh` reporting that the
+        // file has not moved is what makes `ViewerInstance.refresh` return
+        // early *without* advancing `this.doc`.
+        const changed = this.nextChanged ?? true;
+        return { ...this.#info(docPath), changed };
     }
 }
 
@@ -155,6 +160,47 @@ test("reopening the same document also drops a stale overlay", async () => {
     await viewerInstance.openDocument(DOC_A);
     assert.equal(viewerInstance.doc.key, key, "precondition: the key did not move");
     assert.equal(viewerInstance.state.change, null);
+});
+
+test("a forced refresh does not settle for a no-op it joined", async () => {
+    // The discriminating case the test above cannot reach, because its cache
+    // always reports `changed: true`. A watcher echo can fire *before* Word has
+    // finished saving: that refresh finds nothing moved and returns early
+    // WITHOUT re-rendering and without advancing `this.doc`. The edit's own
+    // forced refresh then joins it. Stamping the record against the joined
+    // result would publish this edit's text over the *pre-edit* render -- the
+    // hazard the comment above `refresh` names, arriving by the other door.
+    const viewerInstance = viewer();
+    await viewerInstance.openDocument(DOC_A);
+    const staleKey = viewerInstance.doc.key;
+
+    let release;
+    const gate = new Promise((resolve) => {
+        release = resolve;
+    });
+    const slowRefresh = cache.refresh.bind(cache);
+    cache.refresh = async (docPath) => {
+        await gate;
+        return slowRefresh(docPath);
+    };
+
+    cache.nextChanged = false; // the echo sees a file that has not moved yet
+    const first = viewerInstance.refresh({});
+    await Promise.resolve();
+    const second = viewerInstance.refresh({ force: true, change: record({ text: "Landed during a no-op." }) });
+
+    const freshKey = cache.touch(DOC_A); // the save lands while both are in flight
+    release();
+    await Promise.all([first, second]);
+
+    assert.equal(cache.refreshCalls, 2, "the forced caller must refresh for real rather than return the no-op");
+    assert.equal(viewerInstance.doc.key, freshKey, "the render must advance past the pre-edit key");
+    assert.notEqual(viewerInstance.doc.key, staleKey);
+    assert.equal(
+        viewerInstance.state.change?.text,
+        "Landed during a no-op.",
+        "and the record is stamped against that render, not the stale one",
+    );
 });
 
 test("a record arriving during an in-flight refresh is not swallowed", async () => {
