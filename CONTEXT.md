@@ -286,6 +286,41 @@ it cannot answer "has this round come back?" either.
 Select on author *and* body: a review is authored by the reviewer, opens with a
 state headline (🟢/🟡) and closes with a *comments generated* count.
 
+**There are three producers of review records, not two, and the cheap first cut
+is `user.type`.** Measured across #36, #43 and #47:
+
+| producer | author | `user.type` | body | `Review details` | owns an `in_reply_to` comment |
+| --- | --- | --- | --- | --- | --- |
+| genuine round | the reviewer | **Bot** | 370–7135 | **yes** | no |
+| billing phantom | the reviewer | **Bot** | exactly 120 | no | no |
+| reply wrapper | whoever replied | **User** | empty | no | **yes, exactly one each** |
+
+`Bot` removes every reply wrapper before the body is inspected at all; the
+`Review details` block then splits a genuine round from a phantom among what
+remains. The block is a sound **negative** test — no record lacking it is a round
+— and its discriminating case passes: #47's round-2 approval is only 370 bytes,
+the shortest genuine review observed, and still carries the block. But it cannot
+say what a non-round *is*, and the two kinds of non-round mean opposite things:
+one is the reviewer failing to run, the other is you talking.
+
+The reply wrapper is identified structurally rather than by shape or timing —
+each such record owns exactly one comment, and that comment has `in_reply_to`
+set. Shape alone would have called #43's two pre-outage wrappers phantoms, which
+is the sufficient-cause trap one paragraph up.
+
+**Operationally: a counter derived from record counts is already wrong, in the
+direction that costs rounds.** #36 has 7 records and 2 rounds, #47 has 4 and 2,
+#43 has 3 and 1. Five of #36's seven are not rounds and come from two different
+producers — and four of those five were produced by *replying to the review*,
+which is exactly the action a round exists to invite. The counter would advance
+every time someone answers.
+
+One drift worth naming, since it is this file's subject: the check-run annotation
+says *"recent **account** payments have failed"* while the review-record body
+says *"recent **GitHub Actions** payments have failed"*. Different strings from
+different surfaces, describing one condition. **Match on record shape, never on
+the sentence.**
+
 **And that closing count is load-bearing, because a review that never ran is
 also recorded as a review.** Measured on #36 and #47 simultaneously: both carried
 a third record authored by `copilot-pull-request-reviewer[bot]`, `state:
