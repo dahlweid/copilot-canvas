@@ -36,12 +36,37 @@ import path from "node:path";
 import { fileRevisionToken } from "../revision-token.mjs";
 import { describeSpec, validateSpec } from "./create-intent.mjs";
 
+/**
+ * A typed create failure.
+ *
+ * Identical to `EditError` in `document-editor.mjs`, deliberately and by
+ * adoption rather than by coincidence: `details` is copied onto `data` as well
+ * as onto the error, and the `data` half is the one that reaches the agent,
+ * because `asToolError` forwards only `code`, `message` and `data`.
+ *
+ * This class previously did the `Object.assign` half and not the mirror, so a
+ * detail reached the agent only if the *caller* remembered to nest it under
+ * `data` by hand. All four call sites did remember, so nothing was broken and
+ * no test was red. It was still the wrong shape, for the reason `EditError`'s
+ * own comment gives about the bug it was extracted from: "a per-site fix could
+ * not close the class; a constructor can." This was that per-site fix, written
+ * after the constructor that supersedes it, and it made the natural mistake --
+ * passing a flat detail, as every `EditError` call site does -- silently
+ * unobservable rather than loud. It was found by asking whether the neighbours
+ * had already solved this, not by a failure.
+ *
+ * Nine of the eleven error classes here take no details at all; of the two that
+ * do, this was the only one whose contract differed. There is now one contract.
+ */
 export class CreateError extends Error {
     constructor(code, message, details = {}) {
         super(message);
         this.name = "CreateError";
         this.code = code;
         Object.assign(this, details);
+        // Only when there is something to carry, so an error without details
+        // does not arrive at the boundary with an empty object attached.
+        if (details && Object.keys(details).length > 0) this.data = { ...details };
     }
 }
 
@@ -120,7 +145,7 @@ function failFromStatus(result, docPath) {
                     (leftBehind
                         ? `A partial document was left at ${docPath} and could not be removed.`
                         : `No document was left behind.`),
-                { data: { exception: result.exception ?? null, detail: result.detail ?? null, leftBehind } },
+                { exception: result.exception ?? null, detail: result.detail ?? null, leftBehind },
             );
         }
         default:
@@ -158,12 +183,25 @@ export class DocumentAuthor {
      *
      * No per-document lock, unlike the edit path. That lock exists because two
      * concurrent edits can both pass their preconditions against the same bytes
-     * and both apply. Here the precondition is "this file does not exist", and
-     * the host re-checks it immediately before `SaveAs2` — so the losing call of
-     * a racing pair sees the winner's file and is refused. The window is not
-     * fully closed by that check, but what fits inside it is a `SaveAs2` that
-     * overwrites a file created microseconds earlier by a call the agent issued
-     * itself, against a path it chose twice.
+     * and both apply. Two concurrent creates cannot: the host's dispatch loop is
+     * a single `ReadLine` switch, so the second `create` does not begin until
+     * the first has returned, and its existence check then sees the finished
+     * file. Serialization, not locking, is what closes that case.
+     *
+     * This comment used to say the host "re-checks immediately before
+     * `SaveAs2`", and that what fitted in the remaining window was an overwrite
+     * of a file created "microseconds earlier by a call the agent issued
+     * itself". Both halves were wrong, and wrong in opposite directions. The
+     * re-check was at the top of `Cmd-Create`, with a cold Word start and the
+     * whole block build between it and the save, so the window was seconds
+     * rather than microseconds. And the racing pair it reasoned about was the
+     * one case that could not happen, while the case it did not mention -- any
+     * other writer to that path, which `SaveAs2` overwrites without a prompt --
+     * was the one the window actually exposed.
+     *
+     * The check now is where this comment always claimed it was, so the window
+     * is the gap between two adjacent lines. It is still not zero: `SaveAs2`
+     * has no create-exclusive mode, so a check is the only instrument available.
      */
     async create(docPath, rawSpec) {
         const spec = validateSpec(rawSpec);
@@ -231,7 +269,7 @@ export class DocumentAuthor {
                 throw new CreateError(
                     "create_not_persisted",
                     `Word reported ${path.basename(docPath)} as created but there is no file at that path.`,
-                    { data: { created: false, cause } },
+                    { created: false, cause },
                 );
             }
             // States what was observed and names no cause beyond the errno the
@@ -243,17 +281,15 @@ export class DocumentAuthor {
                     `(${verifyFailure?.message ?? "no error was reported"}). Do not create it again — a document may ` +
                     `exist at that path, and re-authoring would overwrite it. Use read_document to find out.`,
                 {
-                    data: {
-                        created: null,
-                        cause,
-                        // Rides along for the same reason it does on
-                        // `document_unreadable`: a document may have been
-                        // authored on this path, so the question the tool
-                        // description tells callers to ask still has a subject.
-                        autoCorrect: {
-                            suppressed: Boolean(result.autoCorrect?.suppressed),
-                            reason: result.autoCorrect?.reason ?? null,
-                        },
+                    created: null,
+                    cause,
+                    // Rides along for the same reason it does on
+                    // `document_unreadable`: a document may have been
+                    // authored on this path, so the question the tool
+                    // description tells callers to ask still has a subject.
+                    autoCorrect: {
+                        suppressed: Boolean(result.autoCorrect?.suppressed),
+                        reason: result.autoCorrect?.reason ?? null,
                     },
                 },
             );
@@ -282,18 +318,15 @@ export class DocumentAuthor {
                 // actually authored. The tool description tells callers to check
                 // that field to learn whether text was written verbatim; on this
                 // path there is a document to ask the question about, so dropping
-                // it would make the description true only on success. It goes
-                // inside `data` because `asToolError` forwards only code, message
-                // and data — a top-level property would be stripped before any
-                // caller saw it.
+                // it would make the description true only on success. Reaching
+                // `data`, which is what the agent sees, is the constructor's job
+                // and no longer this call site's.
                 {
-                    data: {
-                        created: true,
-                        cause: err.code ?? null,
-                        autoCorrect: {
-                            suppressed: Boolean(result.autoCorrect?.suppressed),
-                            reason: result.autoCorrect?.reason ?? null,
-                        },
+                    created: true,
+                    cause: err.code ?? null,
+                    autoCorrect: {
+                        suppressed: Boolean(result.autoCorrect?.suppressed),
+                        reason: result.autoCorrect?.reason ?? null,
                     },
                 },
             );

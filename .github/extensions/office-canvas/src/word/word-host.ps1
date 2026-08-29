@@ -1697,6 +1697,34 @@ function Cmd-Create($a) {
         $buildMs = [int]$buildStarted.ElapsedMilliseconds
 
         $saveStarted = [Diagnostics.Stopwatch]::StartNew()
+
+        # The authoritative existence check, here rather than only at the top.
+        #
+        # The check at the head of this function runs before `Initialize-Word`,
+        # so a cold Word start (~4.5 s measured, plus up to 1.5 s of ownership
+        # polling) and the whole block build -- up to MAX_BLOCKS of them -- sit
+        # between it and this line. `SaveAs2` takes no "fail if exists" flag and
+        # overwrites an existing file silently -- measured, not inferred from
+        # `DisplayAlerts` being `wdAlertsNone`: with both of this function's
+        # existence checks deleted, the create smoke test's direct-host arm
+        # reports `created` for a path that already held a document, and the
+        # document's bytes change. That made the early check a sample taken
+        # seconds before the write it was supposed to guard.
+        #
+        # Not a guard against a racing `create_document`: the dispatch loop is a
+        # single `ReadLine` switch, so a second create cannot begin until this
+        # one has returned, and the loser's *early* check already sees the
+        # winner's file. It guards the writer this function does not control --
+        # the user saving from Word, a sync client, a scaffolding step -- for
+        # which the window was seconds wide and is now the gap to the next line.
+        #
+        # It `return`s and does not throw, which is load-bearing rather than
+        # stylistic: the catch below deletes `$path` to clear a half-authored
+        # document, so raising here would destroy the very file this check just
+        # found. The `finally` still closes the document. Do not "tidy" this into
+        # a throw for symmetry with the checks above.
+        if (Test-Path -LiteralPath $path -PathType Leaf) { return @{ status = 'file_exists'; path = $path } }
+
         $doc.SaveAs2($path, $WD_FORMAT_XML_DOCUMENT)
         $saveMs = [int]$saveStarted.ElapsedMilliseconds
 

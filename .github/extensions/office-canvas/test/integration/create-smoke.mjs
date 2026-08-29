@@ -399,6 +399,37 @@ try {
         assert.deepEqual(await readFile(target), before, "the refused create still changed the file");
     });
 
+    await check("the host refuses an existing file on its own, not only the JS preflight", async () => {
+        // The check above cannot see the host at all. `createDocument` refuses in
+        // JavaScript before the host is asked anything, so it passes whether the
+        // host would overwrite or not -- and the mutant for it removes that same
+        // JS preflight, so the mutation check inherited the blind spot. The
+        // guarantee in the tool description is "will not overwrite", and until
+        // this arm nothing tested the layer that actually holds the file handle.
+        //
+        // Calling `host.create` directly is the point, not a shortcut: it is the
+        // only way to reach `Cmd-Create` with the preflight out of the way.
+        //
+        // What this pins is the refusal, not *which* of the host's two checks
+        // produced it. With the file present before the call, the early check at
+        // the head of `Cmd-Create` fires and the one before `SaveAs2` is
+        // unreachable. The late check is verified by a positive control instead:
+        // with the early check deleted, this arm still reports `file_exists`,
+        // and reports `created` if the late check is also deleted. That is a
+        // mutation result, recorded here because it is not something this
+        // assertion can show on its own.
+        const host = new WordHost({ log: () => {} });
+        try {
+            const before = await readFile(target);
+            const out = await host.create({ path: target, blocks: [{ kind: "paragraph", text: "Overwrite." }] });
+
+            assert.equal(out.status, "file_exists", `the host reported ${out.status} for a path that already exists`);
+            assert.deepEqual(await readFile(target), before, "the host overwrote a document that already existed");
+        } finally {
+            await host.dispose().catch(() => {});
+        }
+    });
+
     await check("a path in a folder that does not exist is refused before Word is started", async () => {
         await assert.rejects(
             () => cache.createDocument(path.join(docs, "nope", "x.docx"), spec),
