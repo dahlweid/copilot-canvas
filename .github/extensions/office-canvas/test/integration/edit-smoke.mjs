@@ -489,6 +489,15 @@ try {
         assert.equal(result.protectedView, true, "the direct open path was used on a marked file");
         assert.equal(result.paragraph.text, "Edited through Protected View.");
 
+        // The Protected View route opens a second COM object -- a
+        // ProtectedViewWindow -- that the ordinary path never creates, and that
+        // window holds the user's file. Nothing asserted it was gone, so a
+        // retained handle here would have surfaced only as the next edit hanging
+        // on its open. It is checked through `lockReleased`, which the host sets
+        // by polling `Test-FileWritable`: that grants `FileShare::None` and
+        // requests write, so it conflicts with any handle whatever it shares.
+        assert.equal(result.lockReleased, true, "the Protected View path left the file held after the edit");
+
         const zoneAfter = (
             await powershell(`Get-Content -LiteralPath $env:SMOKE_DOC -Stream Zone.Identifier -Raw`, { SMOKE_DOC: marked })
         ).stdout;

@@ -217,13 +217,14 @@ function Get-NormalizedText([string]$value) {
 # True when a *write* handle can be taken. Note what that does and does not
 # mean, because the answer is reported to callers: it is false for a sharing
 # violation, but equally for an ACL that denies write and for the read-only
-# attribute. Measured: the read-only attribute and Word's own lock -- a *write*
-# handle granting FileShare::ReadWrite -- both still allow *reading* and copying,
-# so `writable = $false` must never be reported as "another process has it open"
-# -- that is one of three causes. Note also that this function grants
-# FileShare::None, so it conflicts with *any* existing handle whatever that
-# handle shares: a document open in Word reports writable = $false, correctly,
-# while still being perfectly readable.
+# attribute. Measured: the read-only attribute and Word's own lock -- a handle
+# with *write access* granting FileShare::Read -- both still allow *reading*
+# and copying, so `writable = $false` must never be reported as "another
+# process has it open" -- that is one of three causes. Note also that this
+# function grants FileShare::None *and* requests write access, so it conflicts
+# with any existing handle on both of Windows' checks -- whatever that handle
+# shares, and whatever access it holds: a document open in Word reports
+# writable = $false, correctly, while still being perfectly readable.
 function Test-FileWritable([string]$path) {
     try {
         $stream = [IO.File]::Open($path, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
@@ -435,15 +436,17 @@ function Open-DocInternal([string]$docId, [string]$path, [string]$workDir, [bool
         #
         #   FileShare::None (exclusive)      -> System.IO.IOException
         #   ACL denying read                 -> System.UnauthorizedAccessException
-        #   Word's own lock (write handle,   -> copy succeeds
-        #     granting FileShare::ReadWrite)
+        #   Word's own lock (write access,   -> copy succeeds
+        #     granting FileShare::Read)
         #   read-only attribute              -> copy succeeds
         #
         # The last two are why a read works against a document the user has
-        # open, and why "read-only" is not a failure at all. Copy-Item grants
-        # ReadWrite, which is what makes it compatible with Word's write handle;
-        # a reader granting only FileShare::Read would fail here on a file that
-        # copies fine.
+        # open, and why "read-only" is not a failure at all. Copy-Item requests
+        # read and grants ReadWrite, so it passes both of Windows' checks
+        # against Word's handle: Word's Read share admits a reader, and
+        # Copy-Item's ReadWrite share admits Word's writer. A reader granting
+        # only FileShare::Read fails the second check and would error here on a
+        # file that copies fine.
         $ex = $_.Exception
         $name = [IO.Path]::GetFileName($path)
         if ($ex -is [System.UnauthorizedAccessException]) {
@@ -852,13 +855,40 @@ function Open-OriginalForEdit([string]$path) {
             # window holds the user's file. Our own hidden Word would then be
             # the "other program" every later edit tells the user to close --
             # recreated on every retry, until idle shutdown. Close it here.
+            #
+            # Closed but deliberately not released -- see the note below the
+            # try/catch. Releasing this RCW leaks WINWORD processes across
+            # later operations, measured.
             try { $window.Close() } catch { }
             throw
         }
-        # Edit() transitions the window into a normal document; closing it is a
-        # no-op or throws, and either way the window must not be left holding a
-        # reference.
+        # Edit() transitions the window into a normal document, so closing it is
+        # a no-op or throws; either way the Protected View window is done.
         try { $window.Close() } catch { }
+        # DO NOT add ReleaseComObject($window) here. It is the obvious tidy-up,
+        # every other COM object in this file gets one, and a review asked for it
+        # on exactly that reasoning -- consistency, plus a stated risk of
+        # "leaking COM references and prolonging file/Word resource retention".
+        # Adding it *causes* that leak instead of preventing it. Measured on the
+        # full edit suite, one variable, twice from opposite directions:
+        #
+        #   with ReleaseComObject($window)     19/20, 7 WINWORD alive 90 s after
+        #                                      teardown, +7 on the machine
+        #   without it (everything else same)  20/20, zero left, count unchanged
+        #
+        # The single-operation probe that ought to have caught it says the
+        # opposite -- file free in 16 ms and Word exiting in ~2.8 s either way,
+        # against a control that shows the probe can see retention. Both are
+        # true. The release costs nothing *within* an operation and breaks Word's
+        # lifecycle *across* them, so a probe that runs one operation and quits
+        # Word itself measures the wrong axis, however careful its controls are.
+        # Protected View also spawns a second WINWORD we never hold a handle to
+        # (measured: one per open), which is the likely route, but the mechanism
+        # is not pinned and this note deliberately does not invent one.
+        #
+        # The concern behind the review is real, so it is now asserted rather
+        # than argued: the Protected View case in edit-smoke.mjs checks
+        # `lockReleased`, which the host sets by polling for a write handle.
         return @{ doc = $doc; protectedView = $true }
     }
 
