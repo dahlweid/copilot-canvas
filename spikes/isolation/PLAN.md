@@ -1175,7 +1175,7 @@ and Word are German on this machine.
 | --- | --- | --- |
 | `FileShare::None` (exclusive hold) | `EBUSY` | `System.IO.IOException` |
 | ACL denying read | `EPERM` | `System.UnauthorizedAccessException` |
-| Word's own lock — a **write** handle granting `ReadWrite` | succeeds | succeeds |
+| Word's own lock — **write** access granting `FileShare::Read` | succeeds | succeeds |
 | Read-only attribute | succeeds | succeeds |
 | `chmod 000` | succeeds (ignored on Windows) | — |
 
@@ -1188,10 +1188,11 @@ will not and is not. So the codes are justified.
 
 **Most things that sound like they would block a read do not block a read.** The
 read-only attribute does not. `chmod` does not. And decisively, *Word's own lock
-does not* — Word holds a write handle granting `FileShare::ReadWrite`, and both
-our readers grant `ReadWrite` too, which is why a copy-based read works at all
-against a document the user is looking at. This is why `file_locked` means
-**"held more strictly than Word holds it"**, not "open in Word". A message
+does not* — Word holds a handle with **write access** granting
+`FileShare::Read`, while both our readers request *read* access and grant
+`ReadWrite`. Those requests are compatible, which is why a copy-based read works
+at all against a document the user is looking at. This is why `file_locked`
+means **"held more strictly than Word holds it"**, not "open in Word". A message
 telling a user to close Word would name the one cause that has been measured not
 to be the cause.
 
@@ -1208,23 +1209,66 @@ assumption wearing a measurement's clothes, and every reader in that probe grant
 `ReadWrite`, which succeeds against *either* holder. So the probe could not have
 detected its own mispremise.
 
-`probe-fileshare-algebra.ps1` separates them. It runs the same four readers
-against two synthetic holders and then against a document held by real Word:
+`probe-fileshare-algebra.ps1` separates them. It runs its readers against
+synthetic holders and then against a document held by real Word:
 
-| reader asks | holder grants `Read` | Word's write handle granting `ReadWrite` | **real Word** |
-| --- | --- | --- | --- |
-| read, grants `ReadWrite` (`Copy-Item`, Node) | ok | ok | **ok** |
-| read, grants `Read` — *the discriminator* | ok | violation | **violation** |
-| read, grants `None` | violation | violation | **violation** |
-| `ReadWrite`, grants `None` (`Test-FileWritable`) | violation | violation | **violation** |
+| reader asks | `Read`/`Read` | `Write`/`ReadWrite` | **`Write`/`Read`** | **real Word** |
+| --- | --- | --- | --- | --- |
+| read, grants `ReadWrite` (`Copy-Item`, Node) | ok | ok | ok | **ok** |
+| read, grants `Read` — *access discriminator* | ok | violation | violation | **violation** |
+| read, grants `None` | violation | violation | violation | **violation** |
+| `ReadWrite`, grants `None` (`Test-FileWritable`) | violation | violation | violation | **violation** |
+| write, grants `ReadWrite` — *share discriminator* | violation | **ok** | violation | **violation** |
 
-Real Word matches the write-handle column on every row and contradicts the other
-on the discriminator. **Word holds a write handle and grants `ReadWrite`.**
+**Word matches the `Write`/`Read` column on every row and matches nothing else.**
+
+#### 19.0.2 The correction was itself half wrong, and in the half it claimed to have measured
+
+The row above ending "**ok**" is the one that took two revisions to reach. The
+first correction concluded "write handle granting `ReadWrite`", and recorded
+that the *share* half was measured and the *access* half merely inferred. Both
+statements are backwards, and a third probe —
+`spikes/isolation/probes/probe-share-vs-access.ps1` — settled it.
+
+**Windows checks two things on every open**, and this is the whole explanation:
+
+- **(a)** the access *you* request, against the share mode of each existing handle;
+- **(b)** the access of each existing handle, against the share mode *you* offer.
+
+A reader therefore probes whichever of the holder's two properties its own
+request puts on the other side of the comparison, and is **blind to the other**.
+Until the share discriminator existed, **every reader in this repo asked for
+read access**, so every one of them landed on rule (b): they all measured the
+holder's *access* and not one of them could see its *share* mode. The share half
+could be asserted in either direction with nothing going red — and was, twice.
+
+The two measurements now force one answer. A write-requesting reader granting
+`ReadWrite` cannot fail rule (b), so its violation must be rule (a): Word's share
+mode excludes write. A read-requesting reader granting `ReadWrite` succeeds, so
+that share mode permits read. `FileShare::Read` is the only value left. And with
+read permitted, the refusal of the `read`/`Read` reader can only be rule (b), so
+Word's access includes write.
+
+**Word holds write access and grants `FileShare::Read`** — the combination
+neither earlier model proposed. Note what that means about the original claim:
+it named the correct share value, for a reason that was wrong, and the
+correction fixed the access half while breaking the share half.
 
 A caller's `FileShare` value is what it grants to **others**, so a reader asking
 for `FileShare::Read` refuses to let anyone else write, conflicting with the
-write handle Word already holds. **A reader of a possibly-open document must
-itself grant `ReadWrite`.**
+write access Word already holds. **A reader of a possibly-open document must
+itself grant `ReadWrite`** — unchanged through all three revisions, and the
+reason given for it was correct throughout. `Test-FileWritable` (write access,
+granting `None`) now fails *both* checks rather than one, so its refusal is more
+firmly guaranteed, not less.
+
+**The most direct disproof was already in this repository, two lines from the
+sentence it disproves.** ADR 0005 records that a *write* request fails against a
+Word-held document under any share mode — which cannot be true of a
+`ReadWrite`-granting holder. It survived several rounds of review in a document
+whose subject is that claim. Evidence does not announce itself; a table row and
+a prose sentence can contradict each other indefinitely if nobody asks which one
+the other predicts.
 
 Three things generalise, and they are why this is written up rather than quietly
 corrected:
