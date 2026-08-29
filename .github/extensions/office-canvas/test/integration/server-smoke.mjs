@@ -148,7 +148,12 @@ try {
         assert.equal(res.status, 200);
         assert.match(res.headers.get("content-type"), /text\/html/);
         const body = await res.text();
-        assert.match(body, /<iframe/i);
+        // The shell used to be an `<iframe>` around the host's native PDF
+        // plugin. ADR 0004 replaced that with pdf.js drawing into canvases the
+        // page owns, which is the only way anything can be drawn over the
+        // rendered document -- so the absence of the iframe is the assertion.
+        assert.doesNotMatch(body, /<iframe/i);
+        assert.match(body, /id="pages"/);
         assert.match(body, /app\.js/);
     });
 
@@ -346,7 +351,7 @@ try {
         assert.equal((await (await get("/api/state")).json()).lastPage, 2);
     });
 
-    await check("goToPage broadcasts to the iframe", async () => {
+    await check("goToPage broadcasts to the viewer", async () => {
         viewer.goToPage(3);
         const entry = await events.wait("goto", 5_000);
         assert.equal(entry.data.page, 3);
