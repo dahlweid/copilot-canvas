@@ -55,9 +55,19 @@ Write-Output '=== PART A: sharing algebra against a synthetic holder ==='
 Write-Output ''
 
 # The three models this claim has passed through -- the third of which is also
-# the configuration read-smoke.mjs now uses as its stand-in for Word -- plus a
-# control that varies access alone (ReadWrite vs Write) while holding the share
-# mode fixed, to show the two W-access holders are indistinguishable here.
+# the configuration read-smoke.mjs now uses as its stand-in for Word -- plus the
+# row that proves the model's own limit: a holder differing from row 3 in access
+# alone, share mode fixed.
+#
+# That fourth row is not bookkeeping. A holder's ACCESS mode cannot be observed
+# from outside at all -- every reader sees only the consequences of the SHARE
+# mode. So "Word holds write access" is an *inference* from the fact that Word
+# saves the file, and only "grants Read" is measured. Rows 3 and 4 coming back
+# byte-identical is the demonstration of that, and it is asserted below rather
+# than left for a reader to notice. If those rows ever diverge, access mode has
+# become observable and every claim in this repo that leans on the inference
+# needs revisiting -- so the probe says so instead of printing a table nobody
+# diffs.
 #
 # Two of these readers discriminate, and they discriminate different things.
 # Windows checks the access you request against the holder's SHARE mode, and the
@@ -70,11 +80,15 @@ Write-Output ''
 # read access, so the share half could be -- and was -- asserted in either
 # direction with nothing going red.
 $holders = @(
-    @{ Label = 'holder: READ  access, grants Read      (the original claim)      '; Access = 'Read'; Share = 'Read' },
-    @{ Label = 'holder: WRITE access, grants ReadWrite (the first correction)    '; Access = 'Write'; Share = 'ReadWrite' },
-    @{ Label = 'holder: WRITE access, grants Read      (WHAT WORD ACTUALLY DOES) '; Access = 'Write'; Share = 'Read' },
-    @{ Label = 'holder: READWRITE access, grants Read  (control: access W vs RW) '; Access = 'ReadWrite'; Share = 'Read' }
+    @{ Key = 'r-read';  Label = 'holder: READ  access, grants Read      (the original claim)      '; Access = 'Read';      Share = 'Read' },
+    @{ Key = 'w-rw';    Label = 'holder: WRITE access, grants ReadWrite (the first correction)    '; Access = 'Write';     Share = 'ReadWrite' },
+    @{ Key = 'w-read';  Label = 'holder: WRITE access, grants Read      (WHAT WORD ACTUALLY DOES) '; Access = 'Write';     Share = 'Read' },
+    @{ Key = 'rw-read'; Label = 'holder: READWRITE access, grants Read  (ACCESS IS UNOBSERVABLE)  '; Access = 'ReadWrite'; Share = 'Read' }
 )
+
+# Per-holder result vectors, so the identity above can be asserted rather than
+# eyeballed.
+$vectors = @{}
 
 foreach ($holder in $holders) {
     $target = Join-Path $scratch ("holder-" + [guid]::NewGuid().ToString('N').Substring(0, 6) + '.bin')
@@ -86,23 +100,48 @@ foreach ($holder in $holders) {
         [System.IO.FileAccess]::$($holder.Access),
         [System.IO.FileShare]::$($holder.Share))
 
+    $vector = @()
     Write-Output $holder.Label
     foreach ($r in $readers) {
         $result = Try-Open -Path $target -Access $r.Access -Share $r.Share
+        $vector += $result
         Write-Output ("    {0} -> {1}" -f $r.Label, $result)
     }
 
     $copyDest = Join-Path $scratch ('copy-' + [guid]::NewGuid().ToString('N').Substring(0, 6) + '.bin')
     try {
         Copy-Item -LiteralPath $target -Destination $copyDest -ErrorAction Stop
+        $vector += 'ok'
         Write-Output '    Copy-Item                                  -> ok'
     } catch {
+        $vector += $_.Exception.GetType().Name
         Write-Output ("    Copy-Item                                  -> {0}" -f $_.Exception.GetType().Name)
     }
 
+    $vectors[$holder.Key] = $vector
     $handle.Dispose()
     Write-Output ''
 }
+
+# The assertion the fourth row exists for. Two holders differing only in access
+# mode must be indistinguishable to every reader; if they are not, the shorthand
+# "Word holds a write handle" has stopped being a harmless inference.
+$wRead  = $vectors['w-read']
+$rwRead = $vectors['rw-read']
+$differences = @()
+for ($i = 0; $i -lt $wRead.Count; $i++) {
+    if ($wRead[$i] -ne $rwRead[$i]) {
+        $differences += ("cell {0}: WRITE->{1} vs READWRITE->{2}" -f $i, $wRead[$i], $rwRead[$i])
+    }
+}
+if ($differences.Count -eq 0) {
+    Write-Output ("ACCESS-MODE IDENTITY HOLDS: WRITE and READWRITE holders granting Read are identical across all {0} readers." -f $wRead.Count)
+    Write-Output '  => a holder access mode is not observable from outside; only the share mode is measured.'
+} else {
+    Write-Output 'ACCESS-MODE IDENTITY BROKEN -- the inference this repo relies on no longer holds:'
+    foreach ($d in $differences) { Write-Output ("  {0}" -f $d) }
+}
+Write-Output ''
 
 Write-Output '=== PART B: the same readers against a document held by real Word ==='
 Write-Output ''
