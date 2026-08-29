@@ -314,6 +314,24 @@ produce — and the reason that works is precisely that the failure modes cannot
 forge it. Zero findings is what a healthy PR, a reply-record, and an unbilled
 job all look like.
 
+**Re-running discriminates flaky from deterministic; it does not discriminate
+environment from tree.** Diagnosing the same outage from the other end, #36 saw
+`validate` go red on a comment-only change, re-ran the identical commit, saw it
+fail again, and concluded the tree had caused it. The reasoning applied this
+repo's own rule — *a static diff cannot alternate* — outside its range. A
+billing block reproduces perfectly on an unchanged tree, so non-alternation
+narrows the cause to {tree fault, deterministic environment} and does not select
+between them. What settled it was a **control** (the last green run reported nine
+steps, so "zero steps" was a signal and not an artefact of the query) and then
+**asking the system what happened** — the check-run annotations endpoint states
+the cause in one sentence, for less than either re-run cost. **Read the
+annotation before inferring from the outcome.**
+
+The failure mode this outage produces is the one worth remembering: a job that
+never started is, from outside, indistinguishable from a job still running.
+Waiting is the natural response and it never terminates, with every dependent
+session parked behind it.
+
 Note this pulls the opposite way from the rule above it, and both are true. Do
 not use login as a **filter** you trust to be complete, because the reviewer
 renders as three different strings; do read login as a **discriminator**, because
@@ -613,6 +631,25 @@ list that started this had no citation, so nothing was even eligible. The second
 half is caught by asking *"is this a measurement or a memory?"*, which is a
 habit and not a gate. And a guard that cannot fire today is still worth keeping
 if it is labelled as one — the label is the part that has to be true.
+
+**What travels is rarely the measurement; it is a one-line summary of the
+measurement, and a summary is exactly what discards a scope.** #36 declined a
+`ReleaseComObject` finding partly on the grounds that this repo had measured
+`ReleaseComObject` *causing* a leak. Reading the cited source instead of the
+citation: #16 round 5 measured it on a **Protected View window** RCW, **across
+operations** of a long-lived host, and explicitly refused to pin a mechanism
+beyond Protected View's uninstrumented second Word. It had been applied to an
+**`Application`** RCW in a script that exits milliseconds later — different
+object, different lifecycle, named mechanism not in play. Nothing about the
+original note was wrong; it is correctly scoped. The summary of it was not, and
+the summary is what shipped.
+
+**A cheap discriminator for this, worth reaching for first: does the general
+claim convict your own codebase?** One grep settled it — `Stop-Word`, in the very
+file doing the citing, calls `ReleaseComObject($script:App)` itself. If the #16
+result generalised, it would condemn the host's own teardown inside the PR that
+exists to fix that teardown. **A general claim that would convict the code
+around it is not a general claim.**
 
 **The cheapest instruments fail this way too, and they are the ones nobody
 checks.** Two within ten minutes on #26, and both recur here: a summary grep
