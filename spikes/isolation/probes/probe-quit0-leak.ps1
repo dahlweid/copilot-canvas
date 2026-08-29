@@ -109,7 +109,24 @@ function Stop-OwnedWord {
     $proc = Get-Process -Id $WordPid -ErrorAction SilentlyContinue
     if ($proc -and $proc.ProcessName -eq 'WINWORD') {
         Write-Host ("cleanup: killing pid {0} ({1})" -f $WordPid, $Why)
-        $proc.Kill()
+        # Measured: Get-Process reports nothing once the process has gone, and
+        # Kill() on an exited Process throws InvalidOperationException -- so the
+        # check above can pass and the call still fail, purely from the race.
+        # Swallowing the call is not enough on its own: a kill that failed for a
+        # real reason would then be indistinguishable from one that raced a normal
+        # exit, and this probe exists because of Words that outlive their owner.
+        # So the exception is swallowed and the *outcome* is observed and reported.
+        try { $proc.Kill() } catch { }
+        $deadline = (Get-Date).AddSeconds(15)
+        while ((Get-Date) -lt $deadline -and (Get-Process -Id $WordPid -ErrorAction SilentlyContinue).ProcessName -eq 'WINWORD') {
+            Start-Sleep -Milliseconds 250
+        }
+        if ((Get-Process -Id $WordPid -ErrorAction SilentlyContinue).ProcessName -eq 'WINWORD') {
+            Write-Host ("cleanup: pid {0} STILL ALIVE after kill -- leaked" -f $WordPid)
+        }
+        else {
+            Write-Host ("cleanup: pid {0} is gone" -f $WordPid)
+        }
     }
 }
 
@@ -129,7 +146,9 @@ function Invoke-Arm {
     $head = $lines[0].Split(' ')
 
     if (-not $p.HasExited) {
-        $p.Kill()
+        # Same race as the Word kill above: HasExited can be false and the process
+        # gone by the time Kill() runs.
+        try { $p.Kill() } catch { }
         if ($head[0] -eq 'PID') { Stop-OwnedWord -WordPid ([int]$head[1]) -Why "$Mode worker hung" }
         elseif ($head[0] -eq 'START') {
             # Hung before attribution completed. A Word may exist and cannot be

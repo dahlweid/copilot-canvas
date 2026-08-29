@@ -125,17 +125,29 @@ if (-not (Test-Path $docPath)) {
     # .ps1 here runs under -- the argument form throws and the Word survives, and
     # process exit does not reap it either (probe-quit0-leak.ps1). Unswallowed,
     # this threw under $ErrorActionPreference = 'Stop' and aborted the probe
-    # before the sweep below could run.
-    #
-    # That sweep is also not a safety net at this site: $before is snapshotted
-    # *after* New-Object, so $seedPid is not something this probe can rely on.
-    # Sound attribution is the hwnd route (#25); it is deliberately not
-    # retrofitted here, because a differencing sweep that starts firing could
-    # kill a Word belonging to another session.
+    # before the cleanup below could run.
     try { $w.Quit() } catch { Report "Quit() FAILED (Word may leak)" $_.Exception.Message.Split([char]10)[0] }
     [Runtime.InteropServices.Marshal]::ReleaseComObject($w) | Out-Null
-    Start-Sleep -Milliseconds 1000
-    if ($seedPid -and (Get-Process -Id $seedPid -ErrorAction SilentlyContinue)) { Stop-Process -Id $seedPid -Force }
+    # $seedPid is NOT sound attribution: $before is snapshotted *after*
+    # New-Object, so the instance this block created is usually already in it and
+    # $seedPid picks up whatever WINWORD appeared next -- which on this machine is
+    # measurably often a Word belonging to a concurrent session (PLAN.md census
+    # control: 2 appeared in a 40 s window with nothing launched). This used to
+    # Stop-Process -Force that pid, which destroys unsaved work with no prompt.
+    # It is now polled and reported, never killed: #25's rule is that a Word which
+    # cannot be attributed must not be killed, and a reported orphan beats a
+    # destroyed document. The sound instrument is the hwnd route; retrofitting it
+    # here would mean this fixture-seed block starts differencing-sweeping, which
+    # is the change #25 forbids.
+    if ($seedPid) {
+        $seedDeadline = (Get-Date).AddSeconds(30)
+        while ((Get-Date) -lt $seedDeadline -and (Get-Process -Id $seedPid -ErrorAction SilentlyContinue).ProcessName -eq 'WINWORD') {
+            Start-Sleep -Milliseconds 250
+        }
+        if ((Get-Process -Id $seedPid -ErrorAction SilentlyContinue).ProcessName -eq 'WINWORD') {
+            Report "seed-adjacent WINWORD pid $seedPid still alive, NOT killed (unattributable)" 'reported only'
+        }
+    }
 }
 Report "fixture" (Test-Path $docPath)
 
@@ -177,8 +189,16 @@ try {
 }
 finally {
     if ($ownPid -and (Get-Process -Id $ownPid -ErrorAction SilentlyContinue)) {
-        Stop-Process -Id $ownPid -Force
-        Write-Output "killed pid $ownPid"
+        # $ownPid comes from CreateProcess, so it is genuinely ours. Guarded
+        # anyway: the pid can exit between the test and the call, and measured
+        # under $ErrorActionPreference = 'Stop' that throws a terminating error
+        # inside this finally -- which would skip CloseDesktop below and leak the
+        # desktop handle. Outcome observed rather than asserted.
+        Stop-Process -Id $ownPid -Force -ErrorAction SilentlyContinue
+        $kd = (Get-Date).AddSeconds(15)
+        while ((Get-Date) -lt $kd -and (Get-Process -Id $ownPid -ErrorAction SilentlyContinue)) { Start-Sleep -Milliseconds 250 }
+        if (Get-Process -Id $ownPid -ErrorAction SilentlyContinue) { Write-Output "pid $ownPid STILL ALIVE after kill -- leaked" }
+        else { Write-Output "killed pid $ownPid" }
     }
     Start-Sleep -Milliseconds 500
     [DesktopProbe]::CloseDesktop($desk) | Out-Null

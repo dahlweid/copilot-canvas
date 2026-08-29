@@ -1441,3 +1441,123 @@ would multiply an already generous budget by N — polls the set until every own
 pid has gone or the deadline passes, and derives each label from the elapsed
 time that was actually measured. Reported outcomes are now `exited on Quit()
 pid <n> after <m> ms`, so the number in the label is one the probe observed.
+
+### 20.5 Measured: `New-Object -ComObject Word.Application` never attached; PowerPoint always did
+
+`probe-newobject-attach.ps1`. This settles a contradiction inside this file. §2.3
+states the call "goes through the Running Object Table and may hand back the
+*user's* Word", and uses that to justify the HWND bind. Every Word probe here
+obtains its instance that way and then calls `Quit()` on it, so if that were true
+of Word the fix in §20 would have converted eight no-ops into eight paths that can
+close a document the user is editing.
+
+Attribution is `ActiveWindow.Hwnd` + `GetWindowThreadProcessId`, never pid
+differencing. A worker quits only an instance whose attributed pid is absent from
+the baseline census; one that attributes to a pre-existing pid is reported and
+left strictly alone.
+
+| arm | setup | result |
+| --- | --- | --- |
+| cross-process | a worker holds a live Word open while a second process calls `New-Object` | holder 34208 vs fresh 67952 — **DIFFERENT** |
+| same-process | two `New-Object` calls in one process | 20184 vs 63648 — **DIFFERENT** |
+| membership | is any attributed pid in the baseline census? | 0 of 4, all `OWNED` |
+
+11 Words were already running. Corroborated by a second, independent instrument:
+`probe-single-instance.ps1` S3 reaches the same conclusion by pid differencing
+(42820 then 60732, distinct). The same run shows PowerPoint doing the opposite in
+both arms — a second in-process call and a separate process each **attached** to
+the running instance.
+
+So §2.3's mechanism is real but is **not true of Word**. The distinction is not
+academic: `probe-single-instance.ps1` is the one file that holds an attaching
+application and a non-attaching one in the same script, and it is the file where
+the teardown hazard below was found.
+
+A negative result over 6 instances in 2 runs is not proof that attachment can
+never happen, which is why the gates below no longer depend on it.
+
+### 20.6 The broken call was load-bearing: fixing `Quit(0)` armed eight guards that had never run
+
+While `Quit(0)` threw, every ownership guard in front of it was dead code, and a
+wrong guard cost nothing. Making the call bind executed all of them for the first
+time. Audit of the eight sites, asking at each: *if this call now actually runs,
+what does it close, and is the guard sound enough to bear that?*
+
+| site | what `Quit()` closes | guard | verdict |
+| --- | --- | --- | --- |
+| `probe-darkmode.ps1:64` | its own `New-Object` instance | none needed — single instance, hwnd-attributed pid polled | sound |
+| `probe-caret.ps1:65` | its own instance | same | sound |
+| `probe-export.ps1:76` | its own instance | same | sound |
+| `probe-events.ps1:109` | its own instance | same | sound |
+| `probe-hide.ps1:140` | its own instance | **was broken** — see §20.7 | fixed |
+| `probe-desktop.ps1:135` | the fixture-seed instance | `$seedPid` unattributable; used to `Stop-Process -Force` it | fixed — now reported, never killed |
+| `live-word.ps1:205` | the host's instance | fixed 200 ms wait then `Kill()` | fixed — kill was the reaper on every run |
+| `probe-single-instance.ps1:160` | **whichever of two instances the loop holds** | gate asked "has *any* new WINWORD appeared?" | fixed — per-instance |
+
+The last one is the data-loss case. `$newNow` was a property of the machine, not
+of `$w`, and two independent things opened it: `Quit()` returns seconds before its
+process exits (§16), so `$w2`'s still-exiting pid kept the gate open for the `$w1`
+pass; and an external producer creates Words here at a measured rate (§20.1), so a
+stranger's Word could open it alone. `$wOwned1`/`$wOwned2` were computed a few
+lines above and never joined to the decision they exist to inform.
+
+Its fallback sweep was worse than the gate it followed: it `Stop-Process -Force`d
+every WINWORD absent from the baseline, which on this machine includes any Word a
+concurrent session started meanwhile — and a force-kill destroys unsaved work with
+no prompt at all, so it was strictly more destructive than the `Quit()` above it.
+It is now scoped to pids the probe attributed to its own two calls; anything else
+new is reported and left alone (#25).
+
+Measured after the fix, end to end: WINWORD 10 → 10 with an identical pid list,
+POWERPNT 0 → 0, both Word instances reporting `exited on Quit()`. The kill path
+never ran.
+
+### 20.7 Pid differencing has a third failure mode: silently refusing to attribute
+
+#37 records differencing false-reddening a gate. `probe-hide.ps1` showed the
+opposite direction, and it is quieter. Its attribution loop required *exactly*
+one new pid:
+
+```powershell
+if ($new.Count -eq 1) { $ownPid = $new[0] } else { Start-Sleep -Milliseconds 100 }
+```
+
+With an external producer minting Words concurrently, `$new.Count` came back 2,
+`$ownPid` was never assigned, and the loop simply expired. Because the entire
+teardown is guarded by `if ($ownPid)`, the probe then **skipped its own leak
+check** and printed an empty `owned pid`. A Word it started could outlive it with
+nothing said — and the round-2 repair to its kill was, on this machine, inside
+code that never ran.
+
+Measured across one run: census 10 → 13. Of the three new pids, two (36828, 40704)
+had exited unprompted within the minute, one (56100) remained and was **not
+attributable to anything**, and a fourth (31132) appeared after the probe had
+finished with nothing of ours running. All twelve Words on the box carry
+`/Automation -Embedding` and share the DCOM launcher as parent, so neither command
+line nor parentage discriminates. That delta is reported unexplained rather than
+rounded to clean.
+
+The repair is the hwnd route — which the file was **already computing on the next
+line** and simply not joining to the attribution it bore on. After it: `owned pid
+23992`, `exited on Quit() 23992`, census 11 → 11 with an identical pid list.
+
+### 20.8 A kill racing a normal exit is terminating, and truncates the teardown
+
+`Get-Process` stops listing a process the moment it exits, so every `if (Get-Process ...) { kill }`
+here has a real TOCTOU window. Measured under Windows PowerShell 5.1:
+
+| call | on an already-exited pid |
+| --- | --- |
+| `Stop-Process -Force`, `$ErrorActionPreference = 'Stop'` | `ProcessCommandException` — **statements after it in the `finally` did not run** |
+| `Stop-Process -Force -ErrorAction SilentlyContinue` | continues |
+| `$proc.Kill()` | `MethodInvocationException` wrapping `InvalidOperationException`, regardless of preference |
+
+So the consequence is not noise. In a `finally` under `Stop` the race skips the
+rest of teardown — in `probe-desktop.ps1` that meant `CloseDesktop` never running
+and the desktop handle leaking. Six sites were unguarded, of which the review
+named two.
+
+Guarding alone would trade a flake for a silence, which is the swallow this whole
+change removes. Every site now swallows the *race* and then observes the
+*outcome*: poll the pid, and report `killed` or `STILL ALIVE after kill (leaked)`
+from what was seen rather than from having made the call.

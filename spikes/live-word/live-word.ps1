@@ -208,12 +208,32 @@ function Stop-LiveWord {
     }
     $script:win = $null
     $script:hwnd = [IntPtr]::Zero
-    Start-Sleep -Milliseconds 200
     if ($script:ownedPid -gt 0) {
-        try {
-            $p = Get-Process -Id $script:ownedPid -ErrorAction SilentlyContinue
-            if ($p) { $p.Kill() }
-        } catch { }
+        # Application.Quit() returns seconds before its process exits (2.7-6.1 s
+        # idle, longer under load -- ADR 0005), so the fixed 200 ms wait that used
+        # to sit here made this kill the actual reaper on every run: Word was
+        # SIGKILLed while still shutting down normally, and whether Quit() worked
+        # was unobservable. Poll to a generous deadline instead; on success that
+        # costs only the real exit time. The ProcessName check keeps a recycled pid
+        # from being killed as if it were the Word.
+        $deadline = (Get-Date).AddSeconds(30)
+        while ((Get-Date) -lt $deadline -and (Get-Process -Id $script:ownedPid -ErrorAction SilentlyContinue).ProcessName -eq 'WINWORD') {
+            Start-Sleep -Milliseconds 250
+        }
+        if ((Get-Process -Id $script:ownedPid -ErrorAction SilentlyContinue).ProcessName -eq 'WINWORD') {
+            # Swallow the exit race, then observe the outcome. A bare catch here
+            # would turn a Word that survived the kill into silence, which is the
+            # failure this whole file is being corrected for.
+            try { (Get-Process -Id $script:ownedPid -ErrorAction SilentlyContinue).Kill() } catch { }
+            $kd = (Get-Date).AddSeconds(15)
+            while ((Get-Date) -lt $kd -and (Get-Process -Id $script:ownedPid -ErrorAction SilentlyContinue).ProcessName -eq 'WINWORD') {
+                Start-Sleep -Milliseconds 250
+            }
+            if ((Get-Process -Id $script:ownedPid -ErrorAction SilentlyContinue).ProcessName -eq 'WINWORD') {
+                [Console]::Error.WriteLine("STILL ALIVE after 30 s and after kill (leaked): pid $($script:ownedPid)")
+            }
+            else { [Console]::Error.WriteLine("STILL ALIVE after 30 s, killed: pid $($script:ownedPid)") }
+        }
     }
     Remove-PidFile
     $script:ownedPid = 0
