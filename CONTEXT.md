@@ -399,6 +399,35 @@ exception. What caught it was a layer session **applying the discriminator to it
 own PR instead of accepting the claim**, which is the only reason any of this
 gets caught at all.
 
+**A verified observation has a shelf life, and verifying it does not extend
+one.** A layer session reported that #22 was still open — `state=OPEN`,
+`mergedAt=null`, `origin/main` still at the previous merge — noted it was the
+third time the merge had been relayed to it, and correctly refused to act,
+since rebasing would only have manufactured the conflict it had been told to
+avoid. It did everything this file asks: checked rather than trusted, showed
+the fields, declined to change anything. The message carried a state refresh
+stamped `23:37:42Z`. **#22 merged at `23:45:48Z`, eight minutes later**, and
+the message reached its reader some twelve hours after that. So the relayers
+were right, the session's check was right when it ran, and by the time the
+correction was read it was itself the stale claim. No one was careless at any
+point.
+
+The transportable half is that **a check's conclusion travels and its timestamp
+does not**. *"#22 is still open"* reads as a property of #22; it was an
+observation with an expiry, and the expiry is the part that gets dropped —
+scope-discarding again, with time as the discarded dimension rather than
+applicability. This is why the SHA discipline here works and no equivalent
+exists for state: **a claim about the tree can be pinned by a commit, and a
+claim about a pull request's state cannot be pinned by anything the message is
+able to carry.** So the two are not interchangeable evidence, however similar
+they look side by side in the same report.
+
+This is not an argument for re-verifying everything. It is narrower: a claim
+about *mutable remote state* either carries when it was observed or it is not a
+claim. What caught this one was not judgement — the harness printed the
+warning, and re-reading it cost one API call that contradicted the message in
+its first line. Cheaper than deciding whether to believe it.
+
 The failure mode this outage produces is the one worth remembering: a job that
 never started is, from outside, indistinguishable from a job still running.
 Waiting is the natural response and it never terminates, with every dependent
@@ -498,6 +527,34 @@ bytes — because **a reviewer reasoning about a function does not reason about
 the boundary that function's output has to cross.** That blind spot is
 structural, not a matter of effort level, so it is not something a better review
 fixes. Test at the surface a caller consumes.
+
+**And if that surface cannot be imported, the unimportable surface is the
+defect — not a constraint to design the test around.** The rule above was
+written from this instance and was not available to follow *in* it:
+`asToolError` lived in `extension.mjs`, which calls `joinSession()` at module
+scope, so a test importing it would start a session. There was nowhere to stand
+where the agent stands. The result was not that the boundary went untested —
+it was that the rule quietly degraded into its own failure mode, and assertions
+landed one layer beneath the boundary because that was the only layer
+reachable. The defect then recurred **after being found**: three fields were
+patched at a single call site, while the constructor that dropped them served
+21 raise sites in that file alone, every one of them losing whatever it
+carried — including both revision tokens. The repair was to set `data` once in
+the constructor, and to move the boundary into `src/tool-error.mjs` unchanged
+and test it there.
+
+The tell is a module-scope side effect. **A module that connects, joins or
+spawns at import time cannot be asserted through**, and every test written
+against it will be a test of something else.
+
+The clause has a range, and it is worth stating now rather than after someone
+carries it past it. The same discard happens once more at the CLI bridge, where
+a tool failure reaches the agent as a bare `Tool execution failed` with the code
+and message dropped — the identical defect, one boundary further out, on a
+boundary that is **not ours and cannot be extracted**. "Extract it" is no
+remedy there; the only move left is a probe that observes what the agent
+actually received. So the clause governs boundaries we own, and says nothing
+about the ones we merely call.
 
 **Neither side of a boundary can be inferred from the other, and a fix on one
 side makes the other look covered.** The Word host set `[Console]::OutputEncoding`
