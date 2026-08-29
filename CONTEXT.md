@@ -140,12 +140,19 @@ what it grants to *others*, so a reader asking for `FileShare::Read` is refusing
 to let anyone else write, which conflicts with the write access Word already
 holds. Measured against a real open document, such a reader gets a sharing
 violation on a file `Copy-Item` copies fine. **A reader must itself grant
-`ReadWrite`.** `spikes/isolation/probes/probe-fileshare-algebra.ps1` runs five
-readers against four holders and against real Word, and is the whole evidence
-trail: its `read, grants Read` row separates the candidate *access* mechanisms,
-and its `write, grants ReadWrite` row is what finally measured the *share* half.
+`ReadWrite`.** Two probes carry the evidence, and they were built in that order
+for a reason: `spikes/isolation/probes/probe-fileshare-algebra.ps1` runs five
+readers against four holders and against real Word — its `read, grants Read`
+row measures the holder's *access*, and its `write, grants ReadWrite` row, the
+last to be added, is what finally measured the *share* half.
+`spikes/isolation/probes/probe-share-vs-access.ps1` reaches the same answer from
+three holders that differ by one property each, so the two agree by different
+constructions rather than by sharing a mistake.
 Every reader that asks only for read access is blind to the share mode — which
-is how this claim was revised twice with nothing going red.
+is how this claim was revised twice with nothing going red. Re-run against real
+Word: its row is byte-identical to the synthetic `write access, grants Read`
+holder and differs from `write access, grants ReadWrite` in exactly the share
+column, which is the cell that took three attempts to put on the table.
 _Avoid_: in use, open elsewhere, busy
 
 **`permission_denied`**:

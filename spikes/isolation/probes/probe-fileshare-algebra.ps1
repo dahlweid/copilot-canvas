@@ -59,15 +59,23 @@ Write-Output ''
 # row that proves the model's own limit: a holder differing from row 3 in access
 # alone, share mode fixed.
 #
-# That fourth row is not bookkeeping. A holder's ACCESS mode cannot be observed
-# from outside at all -- every reader sees only the consequences of the SHARE
-# mode. So "Word holds write access" is an *inference* from the fact that Word
-# saves the file, and only "grants Read" is measured. Rows 3 and 4 coming back
-# byte-identical is the demonstration of that, and it is asserted below rather
-# than left for a reader to notice. If those rows ever diverge, access mode has
-# become observable and every claim in this repo that leans on the inference
-# needs revisiting -- so the probe says so instead of printing a table nobody
-# diffs.
+# That fourth row is not bookkeeping, but it proves something narrower than it
+# used to claim. It shows that a WRITE holder and a READWRITE holder granting
+# the same share mode are indistinguishable -- so a reader cannot tell whether
+# a holder that writes *also* reads. It does not show that access is invisible.
+# A read-requesting reader that grants Read sees the holder's access through
+# rule (b), and that is how "Word's access includes write" is measured rather
+# than inferred. What stays unobservable is only the read half of it. Rows 3
+# and 4 coming back byte-identical is the demonstration, asserted below rather
+# than left for a reader to notice. If those rows ever diverge, Write and
+# ReadWrite have become distinguishable and the shorthand needs revisiting --
+# so the probe says so instead of printing a table nobody diffs.
+#
+# This paragraph previously read "a holder's ACCESS mode cannot be observed
+# from outside at all ... only 'grants Read' is measured." Both halves were
+# backwards, and they were backwards in the direction that made the then-current
+# model unfalsifiable: if access is unobservable, no measurement can contradict
+# a claim about it.
 #
 # Two of these readers discriminate, and they discriminate different things.
 # Windows checks the access you request against the holder's SHARE mode, and the
@@ -83,7 +91,7 @@ $holders = @(
     @{ Key = 'r-read';  Label = 'holder: READ  access, grants Read      (the original claim)      '; Access = 'Read';      Share = 'Read' },
     @{ Key = 'w-rw';    Label = 'holder: WRITE access, grants ReadWrite (the first correction)    '; Access = 'Write';     Share = 'ReadWrite' },
     @{ Key = 'w-read';  Label = 'holder: WRITE access, grants Read      (WHAT WORD ACTUALLY DOES) '; Access = 'Write';     Share = 'Read' },
-    @{ Key = 'rw-read'; Label = 'holder: READWRITE access, grants Read  (ACCESS IS UNOBSERVABLE)  '; Access = 'ReadWrite'; Share = 'Read' }
+    @{ Key = 'rw-read'; Label = 'holder: READWRITE access, grants Read  (WRITE VS READWRITE ALIKE)'; Access = 'ReadWrite'; Share = 'Read' }
 )
 
 # Per-holder result vectors, so the identity above can be asserted rather than
@@ -126,7 +134,8 @@ foreach ($holder in $holders) {
 
 # The assertion the fourth row exists for. Two holders differing only in access
 # mode must be indistinguishable to every reader; if they are not, the shorthand
-# "Word holds a write handle" has stopped being a harmless inference.
+# "Word holds a write handle" has become more precise than the evidence, since
+# it would then be claiming the read half too.
 #
 # Columns are named, not indexed. An index is the failure this file is about in
 # miniature: "cell 4" makes the reader reconstruct which column that was from
@@ -143,10 +152,11 @@ for ($i = 0; $i -lt $wRead.Count; $i++) {
 }
 if ($differences.Count -eq 0) {
     Write-Output ("ACCESS-MODE IDENTITY HOLDS: WRITE and READWRITE holders granting Read are identical across all {0} readers plus Copy-Item." -f $readers.Count)
-    # The apostrophe is doubled because this is a single-quoted PowerShell
-    # literal. Kept single-quoted rather than switched to double quotes so the
-    # string stays free of interpolation by construction.
-    Write-Output '  => a holder''s access mode is not observable from outside; only the share mode is measured.'
+    # Single-quoted so the strings stay free of interpolation by construction;
+    # they contain `*` and `/` that would otherwise invite it.
+    Write-Output '  => a holder that writes cannot be told apart from one that reads and writes.'
+    Write-Output '     Its access is still observable as *including write* -- that is what the'
+    Write-Output '     read/grants-Read column measures. Only the read half is invisible.'
 } else {
     # Recorded rather than thrown, so PART B still runs and reports against real
     # Word -- but the run must not exit 0, or an assertion nobody reads is worth

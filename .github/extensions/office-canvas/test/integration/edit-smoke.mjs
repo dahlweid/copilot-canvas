@@ -461,12 +461,23 @@ try {
         // hangs indefinitely, with DisplayAlerts already off, and both processes
         // have to be killed by hand. The pre-flight write-handle probe is what
         // stops us ever making that call.
-        // The holder grants FileShare::ReadWrite because that is what Word itself
-        // grants: probed, Word holds a *write* handle and shares ReadWrite. It is
-        // not FileShare::Read, and that distinction is not cosmetic here -- of the
-        // share modes a holder can take, ReadWrite is the most permissive, so it
-        // is the hardest case for a refusal to fire. A test holding a stricter
-        // mode would pass while proving strictly less.
+        // The holder grants FileShare::ReadWrite because that is the *hardest*
+        // case, not because it is Word's. Of the share modes a holder can take,
+        // ReadWrite is the most permissive, so it is the one a refusal has the
+        // most trouble firing against; a test holding a stricter mode would pass
+        // while proving strictly less. That argument stands on its own and needs
+        // no claim about Word at all -- which is the point, because the claim
+        // that used to carry it was false.
+        //
+        // It read: "probed, Word holds a write handle and shares ReadWrite."
+        // Word holds write access and grants FileShare::Read -- see ADR 0006 and
+        // `spikes/isolation/probes/probe-share-vs-access.ps1`. So this holder is
+        // strictly *more* permissive than the thing it stands in for, which
+        // strengthens the test rather than weakening it. The word "probed" was
+        // the load-bearing error: every reader in the repo requested read access
+        // at the time, and a read-requesting reader measures the holder's access
+        // and is blind to its share mode, so the share half had never been
+        // measured by anything.
         //
         // It fires anyway because Test-FileWritable opens with FileShare::None,
         // which conflicts with any existing handle regardless of what that handle
