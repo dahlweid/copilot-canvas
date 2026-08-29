@@ -153,9 +153,13 @@ finally {
         if ($w) {
             try {
                 $newNow = @(Get-Process WINWORD -ErrorAction SilentlyContinue | ForEach-Object Id | Where-Object { $wordBefore -notcontains $_ })
-                if ($newNow.Count -gt 0) { $w.Quit(0) }
+                # Quit(), never Quit(<arg>): under Windows PowerShell 5.1 -- the
+                # runtime every .ps1 here runs under -- the argument form throws
+                # and the Word survives, and process exit does not reap it either
+                # (probe-quit0-leak.ps1).
+                if ($newNow.Count -gt 0) { $w.Quit() }
             }
-            catch { }
+            catch { Rep "  Quit() FAILED (Word may leak)" $_.Exception.Message.Split([char]10)[0] }
             try { [Runtime.InteropServices.Marshal]::ReleaseComObject($w) | Out-Null } catch { }
         }
     }

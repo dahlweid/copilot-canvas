@@ -195,7 +195,15 @@ function Stop-LiveWord {
         $script:doc = $null
     }
     if ($script:app) {
-        try { $script:app.Quit(0) } catch { }
+        # Quit(), never Quit(<arg>): under Windows PowerShell 5.1 -- the runtime
+        # this host runs under -- the argument form throws and the Word survives,
+        # and process exit does not reap it either (probe-quit0-leak.ps1).
+        # The report goes to STDERR on purpose: stdout here is the newline-
+        # delimited JSON protocol, and run-spike.mjs forwards stderr with a [ps]
+        # prefix. A "reporting" catch writing to a channel nobody reads is still
+        # a swallow.
+        try { $script:app.Quit() }
+        catch { [Console]::Error.WriteLine("Quit() FAILED (Word may leak): " + $_.Exception.Message.Split([char]10)[0]) }
         $script:app = $null
     }
     $script:win = $null

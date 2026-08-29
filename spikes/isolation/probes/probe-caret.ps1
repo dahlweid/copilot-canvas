@@ -58,13 +58,29 @@ try {
 }
 catch { Rep "ERROR" $_.Exception.Message.Split([char]10)[0] }
 finally {
-    try { $word.Quit(0) } catch { }
+    # Quit(), never Quit(<arg>): under Windows PowerShell 5.1 -- the runtime every
+    # .ps1 here runs under -- the argument form throws and the Word survives, and
+    # process exit does not reap it either (probe-quit0-leak.ps1). The catch
+    # reports rather than swallows; a silent swallow is what hid this for months.
+    try { $word.Quit() } catch { Rep "Quit() FAILED (Word may leak)" $_.Exception.Message.Split([char]10)[0] }
     try { [Runtime.InteropServices.Marshal]::ReleaseComObject($word) | Out-Null } catch { }
-    Start-Sleep -Seconds 2
-    foreach ($p in $owned) { if (Get-Process -Id $p -ErrorAction SilentlyContinue) { Stop-Process -Id $p -Force } }
-    Start-Sleep -Seconds 1
+    # Application.Quit() returns long before its process exits (measured 2.7-6.1 s
+    # idle, longer under load -- ADR 0005), so a fixed 2 s sleep made this sweep
+    # the actual reaper on every run and hid whether Quit() worked at all. Poll to
+    # a generous deadline instead; on success that costs only the real exit time.
+    # The label states what was observed, never a cause the code cannot know.
+    $deadline = (Get-Date).AddSeconds(30)
+    foreach ($p in $owned) {
+        while ((Get-Date) -lt $deadline -and (Get-Process -Id $p -ErrorAction SilentlyContinue).ProcessName -eq 'WINWORD') {
+            Start-Sleep -Milliseconds 250
+        }
+        if ((Get-Process -Id $p -ErrorAction SilentlyContinue).ProcessName -eq 'WINWORD') {
+            Stop-Process -Id $p -Force
+            Rep "STILL ALIVE after 30 s, killed" $p
+        }
+        else { Rep "exited on Quit()" $p }
+    }
     Remove-Item $out -Recurse -Force -ErrorAction SilentlyContinue
     $left = @(Get-Process WINWORD -ErrorAction SilentlyContinue | ForEach-Object Id)
     Rep "WINWORD after cleanup" ($(if ($left) { $left -join ',' } else { '(none)' }))
 }
-

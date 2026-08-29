@@ -121,7 +121,18 @@ if (-not (Test-Path $docPath)) {
     $d.SaveAs2($docPath, 16)
     $d.Close(0)
     $seedPid = (Get-Process -Name WINWORD -ErrorAction SilentlyContinue | Where-Object { $before -notcontains $_.Id } | Select-Object -First 1).Id
-    $w.Quit(0)
+    # Quit(), never Quit(<arg>): under Windows PowerShell 5.1 -- the runtime every
+    # .ps1 here runs under -- the argument form throws and the Word survives, and
+    # process exit does not reap it either (probe-quit0-leak.ps1). Unswallowed,
+    # this threw under $ErrorActionPreference = 'Stop' and aborted the probe
+    # before the sweep below could run.
+    #
+    # That sweep is also not a safety net at this site: $before is snapshotted
+    # *after* New-Object, so $seedPid is not something this probe can rely on.
+    # Sound attribution is the hwnd route (#25); it is deliberately not
+    # retrofitted here, because a differencing sweep that starts firing could
+    # kill a Word belonging to another session.
+    try { $w.Quit() } catch { Report "Quit() FAILED (Word may leak)" $_.Exception.Message.Split([char]10)[0] }
     [Runtime.InteropServices.Marshal]::ReleaseComObject($w) | Out-Null
     Start-Sleep -Milliseconds 1000
     if ($seedPid -and (Get-Process -Id $seedPid -ErrorAction SilentlyContinue)) { Stop-Process -Id $seedPid -Force }

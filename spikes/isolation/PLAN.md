@@ -1299,3 +1299,60 @@ it: `writable` is reported as a fact alongside a typed code, never used to infer
 a cause. The rule the review was reaching for holds — split where the platform
 distinguishes, stay collapsed where it does not — and the two halves of this
 section are the two sides of it.
+
+## 20. Measured: `Quit(<arg>)` does not bind under Windows PowerShell 5.1, and the survivor is not reaped by process exit
+
+Six probes here ended with `try { $word.Quit(0) } catch { }`, and two more called
+`Quit(0)` unswallowed. Every one of them leaked a `WINWORD.EXE` per run.
+
+**The runtime split.** Every `.ps1` in this repo runs under `powershell.exe` —
+Windows PowerShell 5.1 — and the agent shells that check them do not. That is the
+whole reason this survived so long: the reduction was repeatedly run in a 7.x
+shell, where it passes.
+
+| | `Quit(0)` | `Quit($var)` | `Quit()` |
+| --- | --- | --- | --- |
+| Windows PowerShell 5.1 | **throws, Word survives** | **throws, Word survives** | binds, exits |
+| PowerShell 7.6.5 (Core) | binds | binds | binds |
+
+First-hand, from `probe-quit0-leak.ps1`:
+`Argument: "1" muss System.Management.Automation.PSReference sein. Verwenden Sie [ref].`
+
+**The leak outlives the process.** The obvious objection is that an ordinary
+process exit releases the RCW and lets Word go regardless. Measured — attribution
+by `ActiveWindow.Hwnd` + `GetWindowThreadProcessId`, never by pid differencing:
+
+| arm | `Quit` threw | Word alive 30 s **after the owning process exited** |
+| --- | --- | --- |
+| `try { $app.Quit(0) } catch { }` — the shape that shipped | yes | **yes — leaked** |
+| `try { $app.Quit() } catch { }` — control | no | no — reaped |
+
+So the RCW finalizer at process exit does not reap Word. The probe `exit 2`s and
+refuses a verdict when its two arms agree, since arms that agree have measured
+nothing; run it under `pwsh` and that is exactly what it reports.
+
+`Close(<arg>)` is **not** affected: `Close(0)`, `Close()` and `Close([ref]0)` all
+return OK under 5.1. Why the two differ is unmeasured, so neither may be inferred
+from the other — and argument-less `Document.Close()` prompts on a dirty document,
+which in a hidden Word is a hang. Those call sites are deliberately left alone.
+
+### 20.1 Two things the fix exposed
+
+**A fixed sleep after `Quit()` made the fallback sweep the real reaper.** These
+probes slept 1.2–2 s and then killed the pid. `Application.Quit()` returns ~120 ms
+but its process exits 2.7–6.1 s later idle and longer under load (§16, ADR 0005),
+so the sweep fired on *every* run — including runs where `Quit()` worked. It
+therefore could not distinguish a leak from a Word that was merely still exiting,
+and it labelled the outcome "leaked". The sleeps are now bounded polls to a
+generous deadline, and the label states what was observed rather than a cause the
+code cannot know. After the fix three probes report `exited on Quit()` with the
+kill path never taken.
+
+**The WINWORD census on this machine has an external producer, and it is fast.**
+Verifying the fix by census alone is unsound. Control, run against a **40-second
+window in which nothing was launched**: two new `WINWORD.EXE` appeared
+(`3200@08:22:35`, `4056@08:22:39`), and earlier external instances exited on their
+own during the same session. So a `+1` across a probe run is inside the noise
+floor and attributes to nothing. The evidence that a probe is clean is its own
+attributed pid reporting `exited on Quit()`, not the census — which is the same
+lesson as #25, reached from the other direction.
