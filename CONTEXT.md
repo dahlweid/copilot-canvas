@@ -1171,3 +1171,83 @@ suppression was an unrelated API constraint about stacks**, not any gate in this
 file. Before merging, ask what assertion would go red if the PR's *title* were
 false; a full green board does not answer that question and will not raise it.
 
+
+### The autocorrect claim was wrong in the other direction too
+
+The read-back defect above was the smaller half. The recorded finding that the
+autocorrect settings are **per-process, not per-user and not persisted** is
+false. Measured sequentially: set a value, **quit the writer**, start a fresh
+instance, read -- the value is there. All five, every time.
+
+**The original probe could not have found this, and it looked like a clean
+result.** It switched the settings off on instance A and read them from a second
+process B *while A was still alive*. The value is flushed at or after the
+writer's exit, so a concurrent reader sees the stale one -- and **per-process
+isolation and persistence-with-a-lag are the same observation.** The instrument
+could not distinguish the two states it was cited as distinguishing. That is the
+`FileShare` share-column defect again: a probe blind to the property its own
+construction puts on the near side, every arm agreeing. The discriminator is one
+line -- quit the writer before reading -- and it was missing because holding A
+open is the natural way to write that test.
+
+The consequence was not theoretical. A fresh Word on this machine read all five
+settings off, and Word's factory state for them is on; `Suppress-AutoCorrect`
+ran on every authoring run and is a sufficient cause. **Our tool had been
+turning the user's autocorrect off and leaving it off.** Verified independently
+from the coordinator with a read-only check -- no assignments in it, so it could
+not perturb what it measured.
+
+Three rules come out of it.
+
+**Cleanup belongs inside the operation that made the mess, not in the teardown
+that may be skipped.** Save-and-restore at quit was the obvious repair and is
+defeated by our own measured kill path: `#send("quit", {}, 20_000)` expiring
+kills the host, so the restore is protected by exactly the code least likely to
+run. A repair a known failure path skips is not a repair. Suppress, author and
+restore inside the single operation, in a `finally`, while the COM object is
+still held.
+
+**Restore to the state you found, never to defaults.** The true original was
+never recorded, so restoring "Word's factory values" would be a second
+unrequested write dressed as a repair. Found-state is auditable; a guessed
+original is not, and it silently destroys the evidence of what we did.
+
+**A feature whose success state is "nothing happened" needs its instruments
+proven against a forced failure, every time** -- because the passing case and
+the broken case are the same observation. Both autocorrect checks that turned
+out to be unable to go red were in this one area, and that is why: suppression
+working and suppression silently failing look identical unless something is
+made to fail on purpose. The mutation must exist for the **restore** as well as
+the suppression, since the restore is what now carries the user-safety claim.
+
+### What survives a rebase is decided by what the artefact measures
+
+`merge-base --is-ancestor` answers whether the tree changed. It does not answer
+whether a given artefact is still valid, and treating it as though it does
+retires evidence that is still good. The sharper form: **a review of content
+survives a rebase when the rebase does not touch the hunks it read; a gate does
+not survive when the code it exercises was rewritten.** Same pending rebase,
+opposite conclusions for a content review and a Word-teardown gate, and the
+discriminator is whether the thing under test changed -- not whether the
+ancestry did.
+
+### A test double that cannot produce the state under test
+
+The probe rule has a unit-test form, found in this repo's own viewer code: a
+fake cache returned `changed: true` unconditionally, which made an early-return
+branch unreachable -- including from the test named after the bug that branch
+causes. And an assertion naming exactly the right invariant,
+`owners.length === text.length`, could not fail because every fixture was ASCII,
+where code points and UTF-16 code units coincide. **The arms agreed by
+construction, in the fixtures rather than in the harness.** When a test double
+returns a constant, ask which real state it has made unreachable.
+
+### A correction is a claim, and a restated number has no instrument
+
+Three instrument failures in one session, all self-caught, all worth keeping:
+a verification step searching for `[regex]::Escape`-d backslashes with
+`-SimpleMatch` and reporting four good fixes as **LOST**; a file count restated
+in prose as `30` when it was 29, minutes after being measured; and a PR body
+overwritten by composing destructive input inline. **Prepare the artefact, then
+submit it** -- write the payload to a file and pass it, never compose it in the
+call that destroys the old value.
