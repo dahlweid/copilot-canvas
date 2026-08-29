@@ -266,6 +266,28 @@ inline findings when it had two. Select comments by `created_at` against the
 review's `submitted_at` instead, and cross-check the body's *comments generated*
 count against the number retrieved.
 
+**One request produces two review records, and the first is empty.** Requesting
+a review creates a stub within seconds; the substantive review arrives minutes
+later against the same commit. Measured twice on #42:
+
+| record | submitted | commit | body |
+| --- | --- | --- | --- |
+| `5057359653` | 08:14:49Z | `b6ebdb5` | **empty** |
+| `5057365906` | 08:17:58Z | `b6ebdb5` | the finding |
+| `5057371102` | 08:21:27Z | `bac53f3` | **empty** |
+| `5057375339` | 08:24:08Z | `bac53f3` | the finding |
+
+Stub within ~30 s of the request, content 2m41s–3m09s later. Inside that window
+both obvious questions return a wrong answer: reading the *latest* review yields
+a record with no findings — indistinguishable from a clean round — and
+`requested_reviewers` has **already emptied**, so "is a review pending?" reads as
+*no*. Counting records to find the round number also double-counts, which walks
+a PR into the six-round cap at round three.
+
+Discriminate on the body, not on recency or on the reviewer list: every review
+actually performed here opens with a state headline (🟢/🟡) and closes with a
+*comments generated* count. An empty body means the review has not happened yet.
+
 **Six rounds, then merge.** This is a hard cap, not a target. At round six the
 PR merges with any remaining comments declined explicitly in a reply. The one
 thing that may go past six is a **correctness or data-loss defect**, and it buys
@@ -428,4 +450,58 @@ conflict whose resolution showed `main` already held the same rule in better
 wording — the commits were redundant, not stranded. Only searching `main` for
 the content itself distinguished the two, and the two look identical from every
 count and every diff.
+
+**A mutation gate can report on a mutant it never applied.** Three independent
+mechanisms turned up here, one per layer session, which is what makes this a
+class rather than three bugs. In all three the run completes and prints a verdict,
+so nothing about the result says the instrument misfired. **None of this tooling
+is on `main` yet** — the runners arrive with #26 and #43 — so the file names below
+are provenance, not paths a reader of `main` can open.
+
+- **The anchor moved.** The mutator patches by matching a snippet of source. That
+  snippet can match zero times after a refactor, or more than once, and a run that
+  patched nothing — or patched a different line — still produces a verdict for the
+  line you named. Two outcomes cannot express this, so use four: `KILLED`,
+  `SURVIVED`, `MISSING` when the anchor did not match exactly once, and
+  `AMBIGUOUS` when it matched more than once. Abort on any match count you did not
+  predict in advance, rather than on a count of zero.
+- **The runner never started.** `mutate-create.ps1` (#26) resolves paths relative
+  to the extension root and exits 1 when invoked from the repo root. It fails
+  *loudly* and is still dangerous, because "gate ran, gate red" and "gate never
+  ran" are the same exit code. This is the `MISSING` category one level up, aimed
+  at the runner instead of a mutant, and only reading the output caught it.
+- **The mutation was inert.** A guard asserting that `.gitattributes` marks the
+  vendored pdf.js parts `-text` (#43) was mutated by moving that file aside. Once
+  `.gitattributes` was itself committed, git resolves attributes **from the index**
+  when the working-tree file is absent, so the mutation stopped disabling anything
+  and both mutants went from `KILLED` to `SURVIVED` with no change to the test.
+  Generalises past this one file: **mutating a tracked config file by moving or
+  editing the working copy is inert the moment that file is committed.**
+
+The remedy common to all three is to treat the mutant itself as the thing under
+test: assert that the mutation was applied, and that the *specific* test you
+expect to go red is the one that did. A gate that only counts failures cannot
+tell a killed mutant from an unrelated breakage.
+
+**An instrument that measures correctly and reports illegibly is still a wrong
+answer.** The autocorrect probe on #26 (not on `main`, so it is named here as
+provenance only) runs each arm in a child
+process and captures stdout to a file. The child writes **CP850** and the parent
+reads it back as **Windows-1252**, so `(c) → ©` printed as a cedilla and the
+curly quotes best-fitted back to `"`. The arm that exists to catch Word's
+substitutions was printing lines marked `[REWRITTEN]` whose *asked* and *got*
+were character-for-character identical on screen — the substitution rendered as a
+no-op. The comparisons themselves are `-ceq` against the live COM string and
+never touch the console, so nothing measured was ever wrong; only the report was,
+and two comments in the tree had been written from that report.
+
+Two things follow. **Treat "a PowerShell child-process boundary silently
+transcodes" as the class**, of which #40's stdin defect is one instance and this
+one — output rather than input, probe rather than host — is another; they were
+found independently and neither instrument would have caught the other. And
+**prose about a measurement drifts from the measurement, because nothing checks
+prose**: the same PR found a comment promising a bait character that its own
+probe had never rewritten, and both findings on #42 were the wording asserting
+behaviour the code did not have. Print evidence escaped (`<U+XXXX>`) rather than
+rendered, and re-run rather than recall when writing about what a probe found.
 
