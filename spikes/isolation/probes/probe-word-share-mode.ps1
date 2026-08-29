@@ -60,16 +60,27 @@ function Test-Reader {
         $fs.Dispose()
         return 'ok'
     } catch {
-        # The innermost exception, not $_.Exception. Measured: PowerShell wraps
-        # anything thrown out of a constructor or method call in a
-        # MethodInvocationException whose own HResult is the generic 0x80131501,
-        # and it does so for New-Object, [Type]::new() and [IO.File]::Open
-        # alike -- there is no construction style that avoids it. `catch
-        # [System.IO.IOException]` still *matches*, because PowerShell tests the
-        # inner type, which is what made this so easy to miss: the catch fired,
-        # so the classification looked like it was working, while every real
-        # sharing violation was being reported as `IOException(5377)` -- 5377
-        # being 0x1501, the low word of the wrapper.
+        # The innermost exception, not $_.Exception. This call is `New-Object`
+        # under an untyped catch, and in that cell PowerShell wraps what was
+        # thrown in a MethodInvocationException whose own HResult is the generic
+        # 0x80131501 -- so reading .HResult here without walking would report
+        # every sharing violation as 5377, the low word of the wrapper.
+        #
+        # This comment used to add "and it does so for New-Object, [Type]::new()
+        # and [IO.File]::Open alike -- there is no construction style that avoids
+        # it". That was measured under an untyped catch and then stated as though
+        # it held everywhere, which it does not: probe-fileshare-algebra.ps1
+        # reads .HResult directly, from a static call under a TYPED catch, and is
+        # correct to. Wrapping depends on the call kind AND the typed-ness of the
+        # catch, not on either alone. The 2x2 is in
+        # spikes/isolation/probes/probe-exception-wrapping.ps1.
+        #
+        # What does hold everywhere, and is the reason this walk stays: `catch
+        # [System.IO.IOException]` matches in every cell, because PowerShell
+        # tests the INNER type. So a typed catch firing is never evidence that
+        # $_.Exception is the type it named -- which is what made the original
+        # bug so easy to miss. The catch fired, the classification looked like it
+        # was working, and the label was wrong.
         $root = $_.Exception
         while ($null -ne $root.InnerException) { $root = $root.InnerException }
 
