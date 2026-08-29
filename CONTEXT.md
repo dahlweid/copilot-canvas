@@ -485,6 +485,44 @@ another session's branch without owning it — reviewing is not mutating. Never
 let a session be the sole reviewer of its own diff; self-review re-reads the
 author's intent, which is the blind spot the loop exists to cover.
 
+### Write the squash message; never let the merge capture the PR body
+
+**A PR body is current, a commit message is historical, and only one of those is
+the right home for a claim meant to outlive the conversation.** A body is mutable
+right up to the instant of the squash, and the squash can capture it at any
+moment without warning — so its content at merge time is a race, not a decision.
+
+Measured, on #26, by the session that lost the race: the squash landed at
+`16:53:05Z` and their correction to the body was submitted at `16:53:31Z`, **26
+seconds late**. Both timestamps are independently checkable and were checked —
+`merged_at` against the squash commit's own date, `updated_at` against it. What
+the replaced body *said* is their report and cannot be re-measured, because an
+edited body overwrites its predecessor: it still headlined *"Per-process. Not
+per-user, not persisted"* — the exact claim retracted everywhere else on that
+branch — together with the concurrent-read table presented as evidence and three
+stale counts. Had the merge taken the body, the most durable copy of a retracted
+claim in this repo would have been the one commit message nobody ever revisits,
+while every other site carried the correction.
+
+The margin is not the point and the rule does not depend on it being small. What
+makes a commit message the right home is one structural property: it is
+**immutable and timestamped at the merge**. That is true of every commit message
+regardless of who wrote it, and it is the whole of what the mechanism gives you.
+
+**It is not a warrant that anyone verified anything.** A maintainer merging
+someone else's PR with a message assembled from a review they did not run
+produces an artifact of identical form and none of the standing — and a reader
+can see that a message is a commit message without learning whether its author
+ran the gate. So the second half is a **stated practice, not an inferred
+property**: the coordinator writes the squash message, citing what was verified
+and where. Recording "written by the verifier" as the *reason* a commit message
+is trustworthy would be this repo's own named failure — a record asserting a
+cause the mechanism producing it never distinguished.
+
+The same mutability cuts the other way, which is why the rule is not "bodies are
+untrustworthy": it is precisely what let that session correct #26's body *after*
+the merge, so the PR page now carries the retraction. One property, both signs.
+
 Two properties of the local reviewer that the GitHub one does not have, both
 worth exploiting. It takes an **explicit diff range**, so a review can be scoped
 to exactly the commits that will land rather than to whatever the PR page thinks
