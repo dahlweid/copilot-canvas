@@ -121,6 +121,19 @@ async function check(name, fn) {
  * spaces only, so it cannot contain a quote, a dash, or a parenthesised (c),
  * (r), (e) or (tm). Adding a bait whose anchor does not match is a hard failure.
  *
+ * This is a convention rather than an invention, and the precedent is stricter
+ * than what is done here. edit-smoke.mjs:601 locates by MARKbr, MARKnbh, MARKtab
+ * and MARKsoft -- markers deliberately free of the character each case is about,
+ * so "MARKnbh e-mail" carries the hyphen under test in the payload and none in
+ * the locator. read-smoke.mjs does the same with "DUPLICATE LINE:". This file
+ * was the outlier in locating by the payload itself.
+ *
+ * The other locators here -- "Quarterly Report", "First point", "End of report."
+ * -- carry no trigger sequence, so the rule above does not convict them, but
+ * that is luck rather than construction: nothing stopped a heading being given
+ * bait-like text. A substitution in one of those would be caught and named by
+ * the bait check below, which is the one place now built for it.
+ *
  * mustNotContain is checked BEFORE the equality assertion, so a substitution is
  * reported as "smart quotes appeared in: ..." rather than as the generic "Word
  * rewrote the text". Equality still runs afterwards as the catch-all for a
