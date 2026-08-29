@@ -92,10 +92,53 @@ refusal against a document open in Word is **guaranteed rather than incidental**
 it does not depend on Word's share mode being any particular value, which is
 exactly the assumption that turned out to be wrong everywhere else on this page.
 
-So Word holds a **write** handle while granting `ReadWrite` sharing. The
-tempting one-line summary — "Word locks the file with `FileShare::Read`" — is
-**false**, and the table is what disproves it: if that were the lock, a reader
-requesting `FileShare::Read` would succeed, and it does not.
+So Word holds a handle with **write access** that grants **`FileShare::Read`**.
+The tempting one-line summary — "Word locks the file with `FileShare::Read`" —
+is right about the share mode and wrong about the access, which is why it
+survived so long and why replacing it wholesale was also wrong.
+
+**This paragraph said `ReadWrite` until the table above was read properly, and
+the table is what disproves it.** Look at the last row: a *write* request fails
+against a Word-held document under any share mode it offers. If Word granted
+`ReadWrite`, a writer that itself granted `ReadWrite` would be admitted. It is
+not. The contradiction sat two lines apart on this page, in a document whose
+whole subject is a claim about locking, and neither I nor the review noticed —
+because the row was there to support a different argument and nobody asked what
+else it ruled out.
+
+The measurement that settles both halves, and why nothing here had settled
+either. Windows checks two things on every open: the **access** you request
+against the **share** mode of each existing handle, and the **access** of each
+existing handle against the **share** mode you offer. So a reader only probes
+whichever of the holder's two properties its own request puts on the other side
+of that comparison:
+
+| the reader | what it actually measures about the holder |
+| --- | --- |
+| access `Read`, grants `Read` | its **access** — fails iff the holder can write |
+| access `Write`, grants `ReadWrite` | its **share** — fails iff the holder forbids writers |
+
+Against three synthetic holders differing in exactly one property each:
+
+| holder | reader `read`/`Read` | reader `write`/`ReadWrite` |
+| --- | --- | --- |
+| access `Read`, grants `Read` | ok | violation |
+| access `Read`, grants `ReadWrite` | ok | ok |
+| access `ReadWrite`, grants `ReadWrite` | violation | ok |
+| **real Word** | **violation** | **violation** |
+
+Word matches none of the three: it is the missing fourth row, **write access
+granting `Read`**. Every reader this repo has ever probed with asks for *read*
+access, so all of them measure the access half and none measure the share half —
+which is why the share half was free to be asserted in either direction. The
+control table is the reproduction (`spikes/isolation/probes/probe-share-vs-access.ps1`),
+and the free-file column rules out the file simply being unwritable.
+
+Nothing operational changes. A reader of a possibly-open document must still
+grant `ReadWrite`, and the reason is unchanged — a reader granting only `Read`
+refuses to admit writers, which conflicts with the write access Word holds. The
+pre-flight refusal is, if anything, more firmly guaranteed: `Test-FileWritable`
+now fails *both* checks rather than one.
 
 The rule is subtler and worth stating exactly, because it is a share-mode
 negotiation and not a permission check. A caller's `FileShare` value is what it
