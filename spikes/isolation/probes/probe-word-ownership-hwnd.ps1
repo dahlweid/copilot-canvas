@@ -83,13 +83,26 @@ Write-Host "  same pid as the first: $($pid2 -eq $pidFromHwnd)"
 
 Write-Host ""
 Write-Host "=== cleanup ==="
-try { $doc.Close(0) } catch { }
-try { $doc2.Close(0) } catch { }
+# Reporting catches, not swallowing ones. `Close(0)` was measured here and does
+# *not* throw -- `Close(0)`, `Close()` and `Close([ref]0)` all returned OK and
+# left `Documents.Count` at 0 -- so this is not a fix for a live leak, and saying
+# otherwise would be the overclaiming-comment defect in the commit that cites it.
+# It is the instrument: `Quit(0)` also bound cleanly in a minimal script while
+# throwing on every instance inside this probe family, so a minimal-script green
+# is weak evidence and the swallow is what converted that into a silent leak.
+#
+# The argument is kept. Unlike `Quit`, `Document.Close()` with no argument
+# *prompts* when the document is dirty, and a modal prompt in a hidden Word is a
+# hang -- so `0` (wdDoNotSaveChanges) is load-bearing here rather than a default
+# spelled out, and swapping it for the argument-less form to dodge a binding
+# hazard would trade a hypothetical throw for a real deadlock.
+try { $doc.Close(0) } catch { Write-Host "  doc.Close threw -- $($_.Exception.Message.Split([char]10)[0])" }
+try { $doc2.Close(0) } catch { Write-Host "  doc2.Close threw -- $($_.Exception.Message.Split([char]10)[0])" }
 # `Quit()`, not `Quit(0)`: the argument form binds `VARIANT*` parameters and was
 # measured throwing "Argument 1 must be ... PSReference" in probe-word-ownership.ps1,
 # inside a `catch { }` that hid it while every instance leaked.
 try { $app.Quit() } catch { Write-Host "  Quit threw -- $($_.Exception.Message.Split([char]10)[0])" }
-try { [Runtime.InteropServices.Marshal]::ReleaseComObject($app) | Out-Null } catch { }
+try { [Runtime.InteropServices.Marshal]::ReleaseComObject($app) | Out-Null } catch { Write-Host "  ReleaseComObject threw -- $($_.Exception.Message.Split([char]10)[0])" }
 [System.GC]::Collect(); [System.GC]::WaitForPendingFinalizers()
 
 # Poll rather than sleep flat: Quit-to-exit is 2.7-6.1s idle and longer loaded.

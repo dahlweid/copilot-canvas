@@ -44,6 +44,7 @@ Write-Host "WINWORD alive before: $($baseline.Count)"
 $foreign = $null
 $ready = Join-Path ([IO.Path]::GetTempPath()) ("word-probe-ready-" + [guid]::NewGuid().ToString('N'))
 $release = Join-Path ([IO.Path]::GetTempPath()) ("word-probe-release-" + [guid]::NewGuid().ToString('N'))
+$outcome = Join-Path ([IO.Path]::GetTempPath()) ("word-probe-outcome-" + [guid]::NewGuid().ToString('N'))
 try {
 
 # --- Arm B: caption tagging --------------------------------------------------
@@ -108,14 +109,31 @@ $before = Get-WordPids
 # is not hypothetical -- `Documents.Add` was measured going ~700 ms to 9-11 s
 # as the population grew. A probe about attributing Word processes must not
 # manufacture unattributable ones.
+# The two paths reach the helper in the *environment*, never on its command
+# line. They are built from `[IO.Path]::GetTempPath()`, so their prefix is the
+# user's profile: on a `C:\Users\O'Brien\...` machine an apostrophe would close
+# the single-quoted literal they used to be interpolated into, and the helper
+# would fail before its release-and-quit loop -- leaking exactly the Word this
+# probe exists to account for. Escaping per character is the wrong fix, because
+# the next parser has a different dangerous set; remove the parser instead.
+$env:WORDPROBE_READY = $ready
+$env:WORDPROBE_RELEASE = $release
+$env:WORDPROBE_OUTCOME = $outcome
+# The helper's own `Quit()` was swallowed here too, which is the same defect as
+# the one that leaked three instances per run -- in the very process this probe
+# was fixed to stop leaking. A reporting catch is not enough on its own: the
+# helper is `-WindowStyle Hidden` with no captured stdout, so anything it writes
+# to the console goes nowhere. It reports through a file the parent prints
+# instead, which is the only channel it actually has.
 $foreign = Start-Process powershell.exe -PassThru -WindowStyle Hidden -ArgumentList @(
     '-NoProfile', '-NonInteractive', '-Command',
     "`$w = New-Object -ComObject Word.Application; `$w.Visible = `$false; " +
-    "Set-Content -LiteralPath '$ready' -Value `$PID; " +
-    "for (`$i = 0; `$i -lt 600; `$i++) { if (Test-Path -LiteralPath '$release') { break }; Start-Sleep -Milliseconds 100 }; " +
-    "try { `$w.Quit() } catch { }; " +
-    "try { [Runtime.InteropServices.Marshal]::ReleaseComObject(`$w) | Out-Null } catch { }; " +
-    "[System.GC]::Collect(); [System.GC]::WaitForPendingFinalizers()"
+    "Set-Content -LiteralPath `$env:WORDPROBE_READY -Value `$PID; " +
+    "for (`$i = 0; `$i -lt 600; `$i++) { if (Test-Path -LiteralPath `$env:WORDPROBE_RELEASE) { break }; Start-Sleep -Milliseconds 100 }; " +
+    "`$o = 'quit ok'; try { `$w.Quit() } catch { `$o = 'QUIT THREW -- ' + `$_.Exception.Message.Split([char]10)[0] }; " +
+    "try { [Runtime.InteropServices.Marshal]::ReleaseComObject(`$w) | Out-Null } catch { `$o += '; release threw' }; " +
+    "[System.GC]::Collect(); [System.GC]::WaitForPendingFinalizers(); " +
+    "try { Set-Content -LiteralPath `$env:WORDPROBE_OUTCOME -Value `$o } catch { }"
 )
 
 # Wait for the helper to signal that its Word exists, rather than sleeping a
@@ -205,19 +223,38 @@ $created = @()
 # and not the plan, because it is the thing that leaked; if we ever take it, say
 # so, since the census below will then be reporting our own damage.
 #
-# `-Path`, not `-LiteralPath`: Windows PowerShell 5.1's `New-Item` has no
-# `-LiteralPath`, and under `Stop` the resulting parameter-binding error killed
-# the whole teardown. These are GUID names in the temp directory, so there is no
-# wildcard to protect against.
+# `[IO.File]::WriteAllText` rather than `New-Item`: 5.1's `New-Item` has no
+# `-LiteralPath` (using it threw a binding error that, under `Stop`, killed this
+# whole teardown), and its `-Path` globs. An earlier comment here argued that was
+# safe "because these are GUID names" -- which inspects only the half of the path
+# this file chose and ignores the profile prefix it inherited, the same half the
+# quoting defect above lived in. The .NET call takes a literal path and crosses
+# no parser, so neither argument is needed.
 if ($foreign) {
-    try { New-Item -ItemType File -Path $release -Force | Out-Null } catch { }
+    # A swallowed failure here is not cosmetic: if the release file is never
+    # written the helper waits out its full 60 s loop, we force-kill it, and
+    # killing a COM client orphans its Word. That is the leak this probe is about,
+    # reached by way of a silent one-line failure.
+    $released = $true
+    try { [IO.File]::WriteAllText($release, '') }
+    catch { $released = $false; Write-Host "  WARNING: could not write the release file -- $($_.Exception.Message.Split([char]10)[0])" }
+    if (-not $released) { Write-Host "  the helper will now time out rather than quit, and its Word will be orphaned" }
     $foreign | Wait-Process -Timeout 45 -ErrorAction SilentlyContinue
     if (-not $foreign.HasExited) {
         Write-Host "  WARNING: helper did not exit in 45s -- force-killing, which orphans its Word"
-        try { Stop-Process -Id $foreign.Id -Force -ErrorAction SilentlyContinue } catch { }
+        try { Stop-Process -Id $foreign.Id -Force -ErrorAction SilentlyContinue }
+        catch { Write-Host "  and the force-kill itself failed -- $($_.Exception.Message.Split([char]10)[0])" }
+    }
+    # What the helper's own teardown did. Without this the helper could throw on
+    # Quit and exit looking clean, which is exactly how this probe leaked before.
+    if (Test-Path -LiteralPath $outcome) {
+        Write-Host "  helper teardown: $(Get-Content -LiteralPath $outcome -Raw)".TrimEnd()
+    } else {
+        Write-Host "  WARNING: the helper never reported a teardown outcome"
     }
 }
-Remove-Item -Path $ready, $release -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $ready, $release, $outcome -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath Env:WORDPROBE_READY, Env:WORDPROBE_RELEASE, Env:WORDPROBE_OUTCOME -ErrorAction SilentlyContinue
 
 # --- census: did this probe leave anything behind? ---------------------------
 # Poll rather than sleep flat. `Quit()` returns in ~120 ms while the process
