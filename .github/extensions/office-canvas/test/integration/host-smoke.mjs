@@ -13,6 +13,7 @@ import path from "node:path";
 import assert from "node:assert/strict";
 
 import { WordHost } from "../../src/word/word-host.mjs";
+import { codepoints } from "./docx-zip.mjs";
 import { assertNoLeakedWord, killOwnedWord, ownedWordLedger, wordPids } from "./word-pids.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -164,8 +165,24 @@ try {
     });
 
     await check("non-ASCII survives the stdio round trip", async () => {
-        const res = await host.search({ docId, query: "Muenchen" });
-        assert.ok(res.count > 0, "expected to find the umlaut-check sentence");
+        // It said `Muenchen` -- no umlaut in it -- and so proved nothing about
+        // the property in its own name. The whole of issue #40 lived through two
+        // merged layers behind tests like this one.
+        //
+        // The query is built from codepoints so the assertion cannot depend on
+        // how this file's own bytes are decoded, which is the class of question
+        // being measured.
+        const strasse = `Stra${String.fromCharCode(0x00df)}e`;
+        const res = await host.search({ docId, query: strasse });
+        // Both directions in one response, which is what makes it self-proving.
+        // `query` is the host's own decoding of what we sent, so it carries the
+        // inbound crossing; `snippet` originates from the document over COM, so
+        // it carries the outbound one. When only stdin was broken, this same
+        // response held a correct sz in the snippet and a corrupted one in the
+        // echoed query -- no control run needed, because the clean half is the
+        // control.
+        assert.equal(res.query, strasse, `the host decoded the query as ${codepoints(res.query)}, sent ${codepoints(strasse)}`);
+        assert.ok(res.count > 0, `searching for ${codepoints(strasse)} found nothing, though the fixture contains it`);
     });
 
     await check("info reports document properties", async () => {

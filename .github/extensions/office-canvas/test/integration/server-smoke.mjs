@@ -12,6 +12,7 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { RenderCache, normalizeDocPath } from "../../src/render-cache.mjs";
 import { ViewerInstance } from "../../src/server.mjs";
+import { codepoints } from "./docx-zip.mjs";
 import { assertNoLeakedWord, wordPids } from "./word-pids.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -285,6 +286,34 @@ try {
     await check("search for something absent returns no hits", async () => {
         const body = await (await get("/api/search?q=QQZZNOTPRESENT")).json();
         assert.deepEqual(body.hits, []);
+    });
+
+    await check("a canvas search for a non-ASCII term finds it", async () => {
+        // Issue #40, and not redundant with the tool-side tests: the canvas
+        // action boundary and the tool boundary have already been measured
+        // behaving differently from one another (integer schema bounds are
+        // enforced on one and not the other, issue #28), so neither is inferable
+        // from the other even though one line fixes both.
+        //
+        // The symptom this guards is the quietest of the three the defect
+        // caused, and the one a user meets first: `count: 0` with no error, no
+        // warning, indistinguishable from the term genuinely not being there.
+        //
+        // Built from codepoints, so the assertion does not rest on how this
+        // file's bytes are decoded.
+        const strasse = `Stra${String.fromCharCode(0x00df)}e`;
+        const body = await (await get(`/api/search?q=${encodeURIComponent(strasse)}&limit=5`)).json();
+        // One response, both directions. `query` is echoed from the host's
+        // decoding of what we sent (inbound); the snippet comes from the
+        // document over COM (outbound). Broken, this response carried a correct
+        // sz in the snippet and a corrupted one in the query -- same character,
+        // same request, one right and one wrong.
+        assert.equal(body.query, strasse, `the query came back as ${codepoints(body.query)}, sent ${codepoints(strasse)}`);
+        assert.ok(body.count > 0, `no hits for ${codepoints(strasse)}, which the fixture contains`);
+        assert.ok(
+            body.hits.some((h) => h.snippet.includes(strasse)),
+            `hits found but no snippet contains the term: ${body.hits.map((h) => codepoints(h.snippet)).join(" | ")}`,
+        );
     });
 
     await check("an empty search query is a typed 400", async () => {
