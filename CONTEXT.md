@@ -1285,15 +1285,26 @@ that returned a plausible wrong number rather than failing**:
 | check | reported | actual | why |
 | --- | --- | --- | --- |
 | `git show HEAD:f \| Out-String`, counting `` `r `` | CR=1357 | **CR=0** | the PowerShell text pipeline re-inserts CRLF on the way out, so the number was the *line count* wearing the label of a defect |
-| `Select-String -Pattern 'A\|B\|C' -Context 3,3` | the block appears twice | **once** | `-Context` prints one window per match, and an alternation matching several alternatives inside the same region re-prints that region once each |
+| `Select-String -Context 3,3`, then projecting `.Context` in a pipeline | the block appears twice | **once** | one `MatchInfo` is emitted per matching **line**; the default formatter merges overlapping windows, but a manual projection emits one block each, so an overlapping region is duplicated |
 
 The second is the more dangerous, because a duplicated block is exactly what a
-genuinely duplicated code site looks like. **A `-Context` window under an
-alternation pattern reports properties of the query, not of the file** -- count
-with a plain loop, or match one alternative at a time. Both errors were caught
-only because the number was load-bearing enough to re-measure with a second
-instrument, which is the whole rule: **a verification step is evidence code, so
-it needs the stricter discrimination, not the looser.**
+genuinely duplicated code site looks like -- it was read as "the comment appears
+at two sites" when it appears once, at `structure-map.mjs:266`. **The display
+de-duplicates and the object model does not.** Running the same command
+interactively shows one clean merged block and hides the defect completely; only
+a script that projects `.Context` itself ever sees double. Measured on a
+purpose-built fixture: two alternatives matching on two adjacent lines yield
+**2** `MatchInfo` objects with overlapping windows, which `Out-String` renders as
+**one** block and
+`$_.Context.PreContext + $_.Line + $_.Context.PostContext` renders as **two**.
+Count occurrences with a plain loop over the lines instead.
+
+Both errors were caught only because the number was load-bearing enough to
+re-measure with a second instrument, which is the whole rule: **a verification
+step is evidence code, so it needs stricter discrimination than production
+code, not looser.** And the second one twice over -- the first correction to it
+named the wrong mechanism (*"re-prints once per alternative"*), was right about
+the count, and had to be measured again.
 
 ### When a claim names a mechanism, read the source that would have to be true
 
@@ -1366,7 +1377,7 @@ artefact can -- there is no record of the comment being routed for review, but
 an absent record is not evidence of absence. The narrow reading is the useful
 one anyway: **the comment was fixed by someone working on that line, not by
 anyone checking comments.** Nothing here routes a comment to the layer it
-addresses, so co-location is the only mechanism that has ever corrected one.
+addresses; on the one instance on record, co-location is what corrected it.
 
 So: **a comment addressed to a future layer should say what was measured and
 when, never what to do.** The honest form of the original is *"the English name
