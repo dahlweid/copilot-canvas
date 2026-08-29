@@ -6,7 +6,7 @@
 #
 # Where a property is defended in more than one place, the mutant removes *every*
 # guard of it. A single-guard mutation here would "confirm" a test that was only
-# half live -- which has already happened once in this repo.
+# half live -- a mistake this repo has made before.
 #
 # ## This file must keep its UTF-8 BOM
 #
@@ -14,7 +14,9 @@
 # decodes a BOM-less script as ANSI. Every anchor here was pure ASCII until an
 # em dash appeared in one, at which point three mutants stopped matching their
 # anchors and were silently never applied -- a mutation gate reporting a kill it
-# never made, which is the third distinct mechanism for that this repo has found.
+# never made. That family is enumerated in spikes/pdfjs/FINDINGS.md; this file
+# deliberately does not restate how many members it has, because the count is
+# maintained there and grows as other sessions find them.
 # The BOM makes 5.1 read the file as UTF-8 and the anchors match again.
 #
 # The `MISSING` category below is what caught it, and is why it exists: a mutant

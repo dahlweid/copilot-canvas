@@ -203,14 +203,38 @@ an em dash appeared in one, at which point three mutants stopped matching and
 were never applied. The failure is worse than it looks: the mutants with ASCII
 anchors keep passing, so the run still ends in a wall of `KILLED` and only the
 count moves. Fixed by giving the script a UTF-8 BOM, and guarded by a self-check
-that asserts an em dash is one character before any mutant runs — placed first,
-because a partial run is the hardest kind to notice. The self-check was itself
-mutation-checked by stripping the BOM from a copy: it exits 1.
+placed before any mutant, because a partial run is the hardest kind to notice.
 
-Both belong to one family: **a mutation gate can report a kill it never made.**
-Three sessions have now found different members of it independently — a moved
-anchor, a config read from the index, and a mis-decoded anchor — which suggests
-the category is worth naming in `CONTEXT.md` rather than the instances.
+The guard tests a **literal** em dash read from the script's own text —
+`'X—X'.Length -ne 3` — which is 3 decoded as UTF-8 and 5 as ANSI, the em dash
+arriving as its three UTF-8 bytes. Mutation-checked by stripping the BOM from a
+copy: it exits 1, and passes with the BOM present.
+
+**The guard originally had a second condition, and that one could never fire.**
+It read `"$([char]0x2014)".Length -ne 1`, which builds the character from a
+*number* — so it is one character however the file was decoded, measured at 1 in
+both arms. It came first and read as the primary check, so a later simplification
+would plausibly have kept the inert half and the guard would have died with the
+file still green. Removed in `edb2c1c`. It was found by asking whether the
+missing BOM was the *exclusive* cause of the three `MISSING` mutants rather than
+merely a sufficient one: holding anchors and target fixed, the em-dash anchor
+matches only with the BOM, while an ASCII anchor in the same two arms matches
+either way — which is also the measurement behind the "only the count moves"
+claim above.
+
+Mechanisms 1 and 2 belong to one family: **a mutation gate can report a kill it
+never made.** The two above are this branch's contribution to it; other sessions
+have found others — a moved anchor and a runner-level variant — and the family is
+enumerated in `CONTEXT.md`, which is where the count belongs. It is deliberately
+not restated here, because it grows whenever another session finds a member and a
+copy of it would be wrong without anything having changed in this file. The
+generalisation that covers every member so far: **the mutant must be applied to
+the artefact the tool actually reads.**
+
+The dead condition above is a *different* failure and should not be counted among
+them: nothing reported a false kill, and the guard worked throughout. It is an
+instrument carrying a part that cannot move — the hazard is what a later reader
+would keep, not what it did.
 
 ## Two font probes, declined
 
