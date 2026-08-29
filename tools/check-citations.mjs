@@ -56,6 +56,7 @@
 
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 // The whole written citation, including any directory segments in front of it,
 // so the check can tell `spikes/powerpoint/probes/probe-export.ps1` from a bare
@@ -74,7 +75,20 @@ function git(...args) {
   return execFileSync("git", args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
 }
 
-const tracked = git("ls-files", "-z").split("\0").filter(Boolean);
+// Everything is anchored to the repo root rather than the current directory.
+// `git ls-files` scopes itself to the directory it runs in *and* reports paths
+// relative to it, so running from a subdirectory silently changes both the set
+// of files searched and the set of probes considered to exist. Measured, both
+// halves go wrong at once and in opposite directions: from `docs/` the probe
+// list is empty so every correct citation is reported dangling, and from
+// `spikes/isolation/` a genuinely dangling citation at the repo root is not
+// seen at all. The second is the dangerous one, because a guard that reports
+// OK is indistinguishable from a healthy repo. CI does not set a
+// `working-directory` today, so this was latent -- but it is one workflow edit
+// away from silently passing forever.
+const ROOT = git("rev-parse", "--show-toplevel").trim();
+
+const tracked = git("-C", ROOT, "ls-files", "-z").split("\0").filter(Boolean);
 
 // Every probe that actually ships, by full repo-relative path. Keeping the
 // paths rather than the basenames is the fix: the set has to be able to say
@@ -110,15 +124,23 @@ function candidatesFor(written) {
 
 const dangling = [];
 const ambiguous = [];
+const unreadable = [];
 
 for (const path of tracked) {
   if (path === EXEMPT || SKIP.test(path)) continue;
 
   let text;
   try {
-    text = readFileSync(path, "utf8");
-  } catch {
-    continue; // unreadable or genuinely binary; nothing to cite
+    text = readFileSync(join(ROOT, path), "utf8");
+  } catch (err) {
+    // A tracked path can legitimately be unreadable: a submodule lists as a
+    // directory (EISDIR), and a sparse or partial checkout lists files that are
+    // not materialized (ENOENT). Those are skipped -- but they are *reported*,
+    // never swallowed. A guard that prints OK while having quietly declined to
+    // look at part of the repo is the exact failure this tool exists to stop,
+    // and it would look identical to a clean run.
+    unreadable.push({ path, why: err.code ?? String(err) });
+    continue;
   }
   if (text.includes("\0")) continue;
 
@@ -153,6 +175,12 @@ for (const path of tracked) {
       if (winners.length !== 1) ambiguous.push({ ...where, found });
     }
   }
+}
+
+if (unreadable.length > 0) {
+  console.error(`WARN — ${unreadable.length} tracked file(s) could not be read and were not checked:`);
+  for (const u of unreadable) console.error(`  ${u.path}  (${u.why})`);
+  console.error("");
 }
 
 if (dangling.length > 0 || ambiguous.length > 0) {
