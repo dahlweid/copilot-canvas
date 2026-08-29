@@ -225,7 +225,25 @@ export class DocumentAuthor {
                 `${path.basename(docPath)} was created and saved, but reading it back afterwards failed ` +
                     `(${err.message}). Do not repeat the call — the file exists. Read it with read_document to get ` +
                     `its addresses.`,
-                { data: { created: true, cause: err.code ?? null } },
+                // `autoCorrect` rides along here and nowhere else among the
+                // failures, because this is the only one where a document was
+                // actually authored. The tool description tells callers to check
+                // that field to learn whether text was written verbatim; on this
+                // path there is a document to ask the question about, so dropping
+                // it would make the description true only on success. It goes
+                // inside `data` because `asToolError` forwards only code, message
+                // and data — a top-level property would be stripped before any
+                // caller saw it.
+                {
+                    data: {
+                        created: true,
+                        cause: err.code ?? null,
+                        autoCorrect: {
+                            suppressed: Boolean(result.autoCorrect?.suppressed),
+                            reason: result.autoCorrect?.reason ?? null,
+                        },
+                    },
+                },
             );
         }
 

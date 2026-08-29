@@ -276,6 +276,37 @@ test("every floor the validator enforces is also declared by the schema", () => 
     }
 });
 
+test("the text length is declared on every field that carries text", () => {
+    // Found by auditing the whole boundary rather than the two fields review
+    // round 1 named. The floors were the reported instance; the text length was
+    // the same defect on three more fields, and the more expensive one, because
+    // MAX_TEXT_LENGTH is a bound a caller can plausibly exceed by accident
+    // where an empty list is mostly a typo.
+    const long = "x".repeat(MAX_TEXT_LENGTH + 1);
+    rejects({ blocks: [{ kind: "paragraph", text: long }] }, "invalid_text");
+    rejects({ blocks: [{ kind: "list", items: [long] }] }, "invalid_text");
+    rejects({ blocks: [{ kind: "table", rows: [[long]] }] }, "invalid_text");
+
+    // Three sites: `text`, each list item, and each table cell. Counting them
+    // is what makes this fail if one is fixed and the others are missed, which
+    // is exactly how the floors shipped -- `blocks` had one and the rest did not.
+    const declared = [...createToolSource().matchAll(/maxLength:\s*MAX_TEXT_LENGTH\b/g)];
+    assert.equal(declared.length, 3, `expected maxLength on text, list items and table cells; found ${declared.length}`);
+});
+
+test("the line-break rule is stated in prose on every field that carries text", () => {
+    // The one bound deliberately not declared machine-readably. A `pattern`
+    // wrong in the other direction would refuse legal text at the schema layer,
+    // which is worse than the gap. So it is prose -- but prose that has to
+    // actually be there, on each field, or the decision is an oversight wearing
+    // a comment.
+    rejects({ blocks: [{ kind: "paragraph", text: "a\nb" }] }, "invalid_text");
+    rejects({ blocks: [{ kind: "list", items: ["a\nb"] }] }, "invalid_text");
+    rejects({ blocks: [{ kind: "table", rows: [["a\nb"] ] }] }, "invalid_text");
+    assert.match(createToolSource(), /line breaks are refused/, "the text field does not state the rule");
+    assert.match(createToolSource(), /one paragraph each/i, "list items do not state the rule");
+});
+
 test("the schema's per-kind clauses are derived from BLOCKS, not written alongside them", () => {
     // `required` in the schema holds only `kind`, because JSON Schema cannot
     // make it conditional on `kind` here. That pushes the per-kind rule into
@@ -301,6 +332,26 @@ test("fieldUsage refuses a field no kind takes", () => {
     // it in the schema now fails at extension load, rather than shipping a
     // schema that advertises a field the validator refuses as unsupported.
     assert.throws(() => fieldUsage("caption"), /no block kind takes/);
+});
+
+test("the handler forwards unknown arguments so the validator can refuse them", () => {
+    // `additionalProperties: false` in the schema enforces nothing -- measured on
+    // this CLI host (issue #28): required, enum, type, minItems, maximum and
+    // additionalProperties were each violated and every one reached the handler.
+    // So the only thing that can refuse an unknown argument is `validateSpec`,
+    // and it can only do that if the handler passes it one.
+    //
+    // The handler used to pick `blocks` out, which put the refusal below out of
+    // reach: `title` was dropped silently, which is the defect that refusal was
+    // written for in the first place.
+    const source = createToolSource();
+    assert.match(source, /const \{ path: _path, \.\.\.spec \} = args \?\? \{\};/, "the handler does not forward the rest of args");
+    assert.match(source, /createDocument\(docPath, spec\)/, "the handler does not pass the forwarded spec");
+    assert.doesNotMatch(source, /createDocument\(docPath,\s*\{\s*blocks:/, "the handler picks fields out instead of forwarding");
+
+    // The other half, which the source check cannot show: that the validator
+    // does refuse what it is now handed.
+    rejects({ blocks: [para()], title: "Report" }, "invalid_spec");
 });
 
 test("the create_document description does not claim autocorrect is always off", () => {

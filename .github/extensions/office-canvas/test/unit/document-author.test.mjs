@@ -311,6 +311,39 @@ test("a document that cannot be read back is still reported as created", async (
     });
 });
 
+test("the autocorrect outcome survives to the caller on the failure that still authored a document", async () => {
+    // The tool description tells callers to check `autoCorrect` to learn whether
+    // their text was written verbatim. That has to be true on the paths where
+    // there is a document to ask about -- and this is the only failure where
+    // there is one. Everywhere else the create did not happen and the question
+    // is meaningless.
+    //
+    // Asserted *through* `asToolError`, which forwards only code, message and
+    // data. A check one layer beneath that strip would happily confirm a
+    // property no caller can observe; that has bitten this stack twice.
+    //
+    // The unsuppressed case specifically, because it is the one that carries
+    // information: `suppressed: true` is the default assumption a caller would
+    // make anyway.
+    await withTemp(async (dir) => {
+        const doc = path.join(dir, "report.docx");
+        const author = new DocumentAuthor({
+            reader: {
+                read: async () => {
+                    throw Object.assign(new Error("Word did not respond"), { code: "word_timeout" });
+                },
+            },
+            host: goodHost({ autoCorrect: { suppressed: false, reason: "attached_instance" } }),
+        });
+
+        const err = throughToolBoundary(await failed(author, doc));
+
+        assert.equal(err.code, "document_unreadable");
+        assert.equal(err.data?.autoCorrect?.suppressed, false, "the autocorrect outcome is dropped at the tool boundary");
+        assert.equal(err.data?.autoCorrect?.reason, "attached_instance");
+    });
+});
+
 test("a document still held after Close is flagged rather than passed off as clean", async () => {
     await withTemp(async (dir) => {
         const doc = path.join(dir, "report.docx");

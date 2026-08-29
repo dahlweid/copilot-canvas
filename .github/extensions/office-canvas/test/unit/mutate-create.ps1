@@ -67,8 +67,12 @@ $mutants = @(
 
     @{ name = 'created flag set top-level, dropped at the tool boundary'
        file = 'src/word/document-author.mjs'
-       from  = '                { data: { created: true, cause: err.code ?? null } },'
-       to    = '                { created: true, cause: err.code ?? null },' }
+       from  = '                {
+                    data: {
+                        created: true,'
+       to    = '                {
+                    ...{
+                        created: true,' }
 
     @{ name = 'no check that the file actually exists after SaveAs2'
        file = 'src/word/document-author.mjs'
@@ -162,6 +166,34 @@ export function paragraphsIn(spec) { return spec.blocks.length; }
        file = 'extension.mjs'
        from  = '        "Text is written verbatim. Autocorrect is switched off first on a Word this tool started, so",'
        to    = '        "Text is written verbatim ' + $dash + ' Word' + "'" + 's autocorrect is switched off on the instance that authors it, so",' }
+
+    # Round 1 flagged the missing floors; auditing the whole boundary rather than
+    # the flagged fields found the text length undeclared as well, on all three
+    # string-bearing fields, and the autoCorrect outcome invisible on the one
+    # failure path where a document really was authored.
+
+    @{ name = 'text length enforced but not declared to the model'
+       file = 'extension.mjs'
+       from  = '            maxLength: MAX_TEXT_LENGTH,
+'
+       to    = '' }
+
+    @{ name = 'autoCorrect dropped from the one failure that still authored a document'
+       file = 'src/word/document-author.mjs'
+       from  = '                        autoCorrect: {
+                            suppressed: Boolean(result.autoCorrect?.suppressed),
+                            reason: result.autoCorrect?.reason ?? null,
+                        },
+'
+       to    = '' }
+
+    # additionalProperties: false enforces nothing on this host (issue #28), so
+    # the only thing that can refuse an unknown argument is validateSpec -- and
+    # only if the handler hands it one rather than picking `blocks` out.
+    @{ name = 'handler picks blocks out, so an unknown argument is dropped instead of refused'
+       file = 'extension.mjs'
+       from  = '        const { path: _path, ...spec } = args ?? {};'
+       to    = '        const spec = { blocks: args?.blocks };' }
 )
 
 $survived = @()
