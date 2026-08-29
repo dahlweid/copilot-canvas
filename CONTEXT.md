@@ -1279,6 +1279,33 @@ overwritten by composing destructive input inline. **Prepare the artefact, then
 submit it** -- write the payload to a file and pass it, never compose it in the
 call that destroys the old value.
 
+Two more from the coordinator, in one hour, both **ad-hoc verification steps
+that returned a plausible wrong number rather than failing**:
+
+| check | reported | actual | why |
+| --- | --- | --- | --- |
+| `git show HEAD:f \| Out-String`, counting `` `r `` | CR=1357 | **CR=0** | the PowerShell text pipeline re-inserts CRLF on the way out, so the number was the *line count* wearing the label of a defect |
+| `Select-String -Context 3,3`, then projecting `.Context` in a pipeline | the block appears twice | **once** | one `MatchInfo` is emitted per matching **line**; the default formatter merges overlapping windows, but a manual projection emits one block each, so an overlapping region is duplicated |
+
+The second is the more dangerous, because a duplicated block is exactly what a
+genuinely duplicated code site looks like -- it was read as "the comment appears
+at two sites" when it appears once, at `structure-map.mjs:266`. **The display
+de-duplicates and the object model does not.** Running the same command
+interactively shows one clean merged block and hides the defect completely; only
+a script that projects `.Context` itself ever sees double. Measured on a
+purpose-built fixture: two alternatives matching on two adjacent lines yield
+**2** `MatchInfo` objects with overlapping windows, which `Out-String` renders as
+**one** block and
+`$_.Context.PreContext + $_.Line + $_.Context.PostContext` renders as **two**.
+Count occurrences with a plain loop over the lines instead.
+
+Both errors were caught only because the number was load-bearing enough to
+re-measure with a second instrument, which is the whole rule: **a verification
+step is evidence code, so it needs stricter discrimination than production
+code, not looser.** And the second one twice over -- the first correction to it
+named the wrong mechanism (*"re-prints once per alternative"*), was right about
+the count, and had to be measured again.
+
 ### When a claim names a mechanism, read the source that would have to be true
 
 The cheapest check in this file, and the one that caught the most in a single
@@ -1310,3 +1337,55 @@ replacement account of the leak deadline claiming it "outlasts foreign churn"
 when the cited file says the tail is unbounded and load-dependent. Correcting a
 claim puts you in exactly the state that produced it: confident, and one lookup
 short.
+
+### A comment that instructs a caller who does not exist yet
+
+A description of what code does rots *passively*: something changes, the
+sentence goes stale, and the next reader meets it alongside the code it
+describes. An instruction aimed at a future layer rots **aimed**. It keeps
+pointing, and what it points at is a caller nobody has written -- so there is no
+behaviour anywhere that can contradict it.
+
+Measured instance, both versions read from the tree rather than from a report.
+`structure-map.mjs` shipped in L1 (`4abf952`) carrying, at line 266:
+
+```
+// The localized id, kept because an edit that wants to reapply this
+// style must use it -- the English name would throw.
+```
+
+Every clause of that is a claim about the write path, and the write path did not
+exist yet. When it was built, the remedy it prescribes was measured not to work:
+the localized id throws as well. The replacement on `main` states what was
+measured instead -- assigning a style *by* this id throws, the English
+`Heading 1` throws too, the write side names no style at all and uses numeric
+`wd*` constants or another paragraph's Style object -- and the field is now
+labelled "reported for identification, not for reapplication."
+
+**The half that could rot was the half nothing could test.** The comment makes
+two statements, and they are not alike. *"The localized id is kept"* describes
+the field the line sits on, and L1's own tests assert exactly that -- `styleId`
+carried verbatim rather than constructed. *"An edit that wants to reapply this
+style must use it"* addresses a caller that did not exist, and no assertion in
+the repo could go red for it, then or later. One comment, one covered clause and
+one uncoverable one -- and the uncoverable one is the one that was wrong.
+
+What history shows next is co-location, and only that: the correction landed in
+`4da84c2`, the same commit that built the write path, on the line L2 had to
+touch to record its own measurement. It does not show *why*, and no repository
+artefact can -- there is no record of the comment being routed for review, but
+an absent record is not evidence of absence. The narrow reading is the useful
+one anyway: **the comment was fixed by someone working on that line, not by
+anyone checking comments.** Nothing here routes a comment to the layer it
+addresses; on the one instance on record, co-location is what corrected it.
+
+So: **a comment addressed to a future layer should say what was measured and
+when, never what to do.** The honest form of the original is *"the English name
+throws (measured); the localized id is what the file contains"* -- which would
+have been **incomplete** when the write path measured further, rather than
+wrong. Incomplete invites the next measurement; wrong redirects it.
+
+This is the discharge rule turned forwards in time. Asserting a property of a
+neighbour discharges a claim onto code you are not testing; instructing a future
+caller discharges it onto code that does not exist, which is strictly worse,
+because the neighbour can at least be read.
