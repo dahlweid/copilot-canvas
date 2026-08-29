@@ -67,6 +67,10 @@ $FAIL_FAST_PASSWORD = '#word-canvas-no-password#'
 
 $script:App = $null
 $script:OwnedPid = $null
+# The start time of the Word at $script:OwnedPid, captured when ownership is
+# learned. A pid identifies a process only as long as that process lives; this
+# is what lets a later kill prove it is acting on the same one.
+$script:OwnedStart = $null
 $script:Docs = @{}
 # Remembers how each document was opened so a dead COM connection can be
 # recovered without the caller noticing.
@@ -130,6 +134,43 @@ function Test-IsWordPid([int]$candidate) {
     return ($null -ne $p -and $p.ProcessName -eq 'WINWORD')
 }
 
+# A pid is a handle, valid at a moment -- not an identity. Windows recycles pids,
+# so `is there a WINWORD at this pid` and `is this the WINWORD we started` are
+# different questions, and only the second one licenses a Kill. StartTime is the
+# cheapest stable discriminator available: measured, it is readable on our own
+# instance and identical across separate Get-Process calls.
+#
+# Returns $null when the start time cannot be read. Callers must treat that as
+# "ownership unproven" and refuse to kill -- never as "probably ours". Note that
+# a non-elevated probe on this machine could NOT produce an unreadable
+# StartTime, even against SYSTEM-owned pids 0 and 4, so this branch is written
+# from the documented failure rather than from an observed one. That is
+# precisely why it must not be a silent catch: an instrument that has never
+# produced a positive cannot tell us the branch is dead.
+function Get-WordStartTime([int]$candidate) {
+    try {
+        $p = Get-Process -Id $candidate -ErrorAction SilentlyContinue
+        if ($null -eq $p -or $p.ProcessName -ne 'WINWORD') { return $null }
+        return $p.StartTime
+    } catch { return $null }
+}
+
+# $expectedStart of $null means we never recorded one, which is unproven
+# ownership and answers $false -- the safe direction, because the alternative
+# is killing a Word we cannot show is ours.
+function Test-IsOurWord([int]$candidate, $expectedStart) {
+    if ($null -eq $expectedStart) { return $false }
+    $actual = Get-WordStartTime $candidate
+    if ($null -eq $actual) { return $false }
+    return ($actual -eq $expectedStart)
+}
+
+# stdout is the JSON-RPC channel and writing to it corrupts the protocol, so
+# diagnostics go to stderr, which word-host.mjs captures and surfaces.
+function Write-HostDiagnostic([string]$text) {
+    try { [Console]::Error.WriteLine($text) } catch { }
+}
+
 function Clear-OrphanedWord {
     if ([string]::IsNullOrWhiteSpace($PidDir)) { return }
     try {
@@ -142,10 +183,28 @@ function Clear-OrphanedWord {
             if (-not [int]::TryParse([IO.Path]::GetFileNameWithoutExtension($file.Name), [ref]$hostPid)) { continue }
             if ($hostPid -eq $PID) { continue }
             if ($null -ne (Get-Process -Id $hostPid -ErrorAction SilentlyContinue)) { continue }  # still running
+            # The ledger records the start time alongside the pid because this
+            # reap is the most exposed kill in the host: the file outlives a
+            # crashed host by an unbounded interval, so `there is a WINWORD at
+            # this pid` says even less here than it does in Stop-Word's 10 s
+            # window. A legacy single-field file has no recorded identity, so it
+            # is unproven by construction and the Word is reported, not killed.
+            $recorded = (Get-Content -LiteralPath $file.FullName -Raw -ErrorAction SilentlyContinue)
             $wordPid = 0
-            if ([int]::TryParse((Get-Content -LiteralPath $file.FullName -Raw -ErrorAction SilentlyContinue).Trim(), [ref]$wordPid)) {
-                if (Test-IsWordPid $wordPid) {
+            $expectedStart = $null
+            if ($null -ne $recorded) {
+                $parts = $recorded.Trim() -split '\s+'
+                if ($parts.Count -ge 1) { [void][int]::TryParse($parts[0], [ref]$wordPid) }
+                $ticks = [long]0
+                if ($parts.Count -ge 2 -and [long]::TryParse($parts[1], [ref]$ticks)) {
+                    $expectedStart = [datetime]::new($ticks)
+                }
+            }
+            if ($wordPid -gt 0 -and (Test-IsWordPid $wordPid)) {
+                if (Test-IsOurWord $wordPid $expectedStart) {
                     try { (Get-Process -Id $wordPid).Kill() } catch { }
+                } else {
+                    Write-HostDiagnostic "[word-host] refusing to reap pid ${wordPid}: a WINWORD is running there but its identity does not match the one recorded by host $hostPid. Not killed; it is either a leaked Word or an unrelated instance that inherited the pid."
                 }
             }
             Remove-Item -LiteralPath $file.FullName -Force -ErrorAction SilentlyContinue
@@ -153,12 +212,16 @@ function Clear-OrphanedWord {
     } catch { }
 }
 
-function Register-OwnedWord([int]$wordPid) {
+function Register-OwnedWord([int]$wordPid, $startTime) {
     $file = Get-PidFilePath
     if ($null -eq $file) { return }
     try {
         if (-not (Test-Path -LiteralPath $PidDir)) { New-Item -ItemType Directory -Force -Path $PidDir | Out-Null }
-        Set-Content -LiteralPath $file -Value "$wordPid" -Encoding ascii
+        # pid alone is a coordinate; the start ticks are what make it an identity
+        # a later reaper can verify. Written as one line, whitespace separated,
+        # so a file from an older host still parses as "pid, identity unknown".
+        $ticks = if ($null -ne $startTime) { $startTime.Ticks } else { '' }
+        Set-Content -LiteralPath $file -Value "$wordPid $ticks".Trim() -Encoding ascii
     } catch { }
 }
 
@@ -313,6 +376,7 @@ function Initialize-Word {
         # creating a replacement, or later calls fail with RPC_E_DISCONNECTED.
         $script:App = $null
         $script:OwnedPid = $null
+        $script:OwnedStart = $null
         $script:Docs = @{}
     }
 
@@ -341,9 +405,14 @@ function Initialize-Word {
     }
     if ($new.Count -ge 1) {
         $script:OwnedPid = [int]$new[0]
-        Register-OwnedWord $script:OwnedPid
+        # Captured here, at the moment ownership is learned, and never re-read at
+        # kill time: reading it just before the Kill would compare an impostor
+        # against itself and always match.
+        $script:OwnedStart = Get-WordStartTime $script:OwnedPid
+        Register-OwnedWord $script:OwnedPid $script:OwnedStart
     } else {
         $script:OwnedPid = $null
+        $script:OwnedStart = $null
     }
 
     if ($null -ne $script:OwnedPid) {
@@ -440,9 +509,28 @@ function Stop-Word {
                 $p = Get-Process -Id $script:OwnedPid -ErrorAction SilentlyContinue
                 if ($null -eq $p -or $p.ProcessName -ne 'WINWORD') { break }
             }
-            if ($null -ne $p -and $p.ProcessName -eq 'WINWORD') { $p.Kill() }
+            # `a WINWORD exists at this pid` was an adequate guard while the gap
+            # between looking and killing was the old incidental ~300 ms. This
+            # branch now waits up to 10 s, so the same guard spans a window
+            # thirty times longer, and a pid recycled onto another WINWORD in
+            # that gap would be killed as ours -- taking a user's unsaved
+            # documents with it. Widening the wait is what obliged the guard to
+            # become an identity check rather than an existence check.
+            if ($null -ne $p -and $p.ProcessName -eq 'WINWORD') {
+                if (Test-IsOurWord $script:OwnedPid $script:OwnedStart) {
+                    $p.Kill()
+                } else {
+                    # Refusing to kill is the safe half. Saying nothing is not:
+                    # this is either a Word we leaked or a pid collision, and
+                    # both are worth knowing. #33 replaced every bare `catch {}`
+                    # in this function for the same reason, and a silent
+                    # `else` would reintroduce it in a different shape.
+                    Write-HostDiagnostic "[word-host] declining to kill pid $($script:OwnedPid): a WINWORD is running there, but it is not the instance this host started (recorded start $($script:OwnedStart)). Either our Word exited and the pid was reused, or its identity could not be read. Not killed."
+                }
+            }
         } catch { }
         $script:OwnedPid = $null
+        $script:OwnedStart = $null
     }
     Unregister-OwnedWord
 }
