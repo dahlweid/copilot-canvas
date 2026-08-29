@@ -22,7 +22,8 @@ $suite = @(
     'test/unit/change-record.test.mjs',
     'test/unit/viewer-state.test.mjs',
     'test/unit/vendor-checkout.test.mjs',
-    'test/unit/ui-contract.test.mjs'
+    'test/unit/ui-contract.test.mjs',
+    'test/unit/change-plan.test.mjs'
 )
 
 # `tools/` lives above the extension folder, so its mutants are anchored against
@@ -185,11 +186,23 @@ $mutants = @(
        file = '.github/extensions/office-canvas/src/change-record.mjs'; at = 'repo'
        from = '    return {
         op,
-        description:'
+        page,'
        to   = '    return {
         address: result.paragraph?.address ?? null,
         op,
-        description:' }
+        page,' }
+
+    # The editor''s own description is agent-facing and spells out an address --
+    # "replace the text of p:0df86a1a0e1e". It reached the change bar once.
+    @{ name = "the editor's description is carried to the viewer"
+       file = '.github/extensions/office-canvas/src/change-record.mjs'; at = 'repo'
+       from = '    return {
+        op,
+        page,'
+       to   = '    return {
+        op,
+        description: result.applied?.description ?? null,
+        page,' }
 
     # --- the overlay lifetime -------------------------------------------------
 
@@ -241,9 +254,55 @@ $mutants = @(
        file = 'src/ui/app.js'
        from = '    jumpToChange: $("jumpToChange"),'
        to   = '    jumpToChange: null,' }
+
+    # Both spellings of the same regression, because they fail differently: the
+    # rule deleted outright, and the rule kept but demoted to a priority that
+    # loses to every component that sets its own display.
+    @{ name = 'the [hidden] rule is dropped entirely'
+       file = 'src/ui/app.css'
+       from = '[hidden] {
+    display: none !important;
+}'
+       to   = '/* no [hidden] rule */' }
+
+    @{ name = 'the [hidden] rule loses its priority'
+       file = 'src/ui/app.css'
+       from = '    display: none !important;'
+       to   = '    display: none;' }
+
+    # --- which pages get marked -----------------------------------------------
+
+    # The defect found in the running viewer: every candidate marked before
+    # anything was searched, so the page before the change carried a badge with
+    # no match behind it.
+    @{ name = 'a page is marked on adjacency rather than on a match'
+       file = 'src/ui/change-plan.mjs'
+       from = '        if (found.status === "located" || found.status === "partial") {
+            marks.push({ number: page.number, found });
+        }'
+       to   = '        marks.push({ number: page.number, found: found.status === "located" || found.status === "partial" ? found : null });' }
+
+    # "Not found on a page that has not painted" is unknown, not false. Without
+    # the guard the reported page is marked immediately and keeps its marker even
+    # after the page that really holds the text paints.
+    @{ name = 'an unpainted page counts as searched and not matching'
+       file = 'src/ui/change-plan.mjs'
+       from = '    if (searchable && reported) return [{ number: reported.number, found: null }];'
+       to   = '    if (reported) return [{ number: reported.number, found: null }];' }
+
+    @{ name = 'a deletion marks its neighbour too'
+       file = 'src/ui/change-plan.mjs'
+       from = '        return reported ? [{ number: reported.number, found: null }] : [];'
+       to   = '        return [record.page - 1, record.page].map((n) => byNumber.get(n)).filter(Boolean).map((p) => ({ number: p.number, found: null }));' }
+
+    @{ name = 'the page before the reported one is never searched'
+       file = 'src/ui/change-plan.mjs'
+       from = '    const candidates = [record.page - 1, record.page].map((n) => byNumber.get(n)).filter(Boolean);'
+       to   = '    const candidates = [record.page].map((n) => byNumber.get(n)).filter(Boolean);' }
 )
 
 $survived = @()
+$missing = @()
 
 # A mutant is only informative against a suite that is otherwise green: a red
 # baseline kills every mutant and the run reads as a clean sweep.
@@ -260,8 +319,12 @@ try {
         $file = Join-Path $base $m.file
         $original = [IO.File]::ReadAllText($file)
         if (-not $original.Contains($m.from)) {
+            # A stale anchor is its own failure, not a survivor. Reported as one it
+            # reads as "the tests do not defend this", when in fact nothing was
+            # mutated at all -- measured here: removing `description` from the
+            # record left this mutant unappliable and it reported as unkilled.
             Write-Host ("MISSING  {0} -- anchor not found in {1}" -f $m.name, $m.file) -ForegroundColor Yellow
-            $survived += $m.name
+            $missing += $m.name
             continue
         }
 
@@ -349,9 +412,13 @@ try {
 $mutantCount = $mutants.Count + $checkoutMutants.Count
 
 Write-Host ''
-Write-Host ("{0} of {1} mutants killed" -f ($mutantCount - $survived.Count), $mutantCount)
+Write-Host ("{0} of {1} mutants killed" -f ($mutantCount - $survived.Count - $missing.Count), $mutantCount)
+if ($missing.Count -gt 0) {
+    Write-Host 'Never applied (stale anchor -- these measured nothing):' -ForegroundColor Yellow
+    $missing | ForEach-Object { Write-Host ("  - {0}" -f $_) -ForegroundColor Yellow }
+}
 if ($survived.Count -gt 0) {
     Write-Host 'Unkilled:' -ForegroundColor Red
     $survived | ForEach-Object { Write-Host ("  - {0}" -f $_) -ForegroundColor Red }
-    exit 1
 }
+if ($survived.Count -gt 0 -or $missing.Count -gt 0) { exit 1 }

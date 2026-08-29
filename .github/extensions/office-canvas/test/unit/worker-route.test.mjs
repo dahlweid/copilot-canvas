@@ -7,7 +7,7 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { cp, mkdtemp, readFile, rm } from "node:fs/promises";
+import { cp, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -194,7 +194,13 @@ test("every absolute-URL import the UI makes is a route the server serves", asyn
     // still green. This closes that gap by asking the server itself.
     const { base } = await viewer();
     const uiDir = path.join(VENDOR_DIR, "..");
-    const sources = ["app.js", "pdf-view.mjs", "locate-text.mjs", "index.html"];
+    // Read the directory rather than name the files: a new UI module importing a
+    // vendored asset is the case a fixed list would miss, and it is exactly the
+    // case this test exists for.
+    const sources = (await readdir(uiDir, { withFileTypes: true }))
+        .filter((entry) => entry.isFile() && /\.(mjs|js|html|css)$/.test(entry.name))
+        .map((entry) => entry.name);
+    assert.ok(sources.length >= 4, `expected UI sources to enumerate, saw ${sources.join(", ")}`);
     const referenced = new Set();
     for (const name of sources) {
         const text = await readFile(path.join(uiDir, name), "utf8");

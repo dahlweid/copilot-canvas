@@ -37,12 +37,28 @@ test("a replacement carries the post-edit text and the page Word reported", () =
     const record = changeRecordFrom(result(), { now: CLOCK });
     assert.deepEqual(record, {
         op: "replace_text",
-        description: "Replaced the paragraph text",
         page: 3,
         text: "The replacement text.",
         locatable: true,
         at: "2024-01-01T00:00:00.000Z",
     });
+});
+
+test("the record carries no description, because the editor's names an address", () => {
+    // `applied.description` reads "replace the text of p:8f957157e47d". It is
+    // written for the agent, and it was rendered into the change banner until a
+    // run against a real document put the address on screen. The viewer words the
+    // change from `op` instead, so the field must not travel -- a record that
+    // carries it is one field away from being shown again.
+    const record = changeRecordFrom(
+        result({ applied: { op: "replace_text", description: "replace the text of p:8f957157e47d" } }),
+        { now: CLOCK },
+    );
+    assert.equal(record.description, undefined);
+    assert.ok(
+        !JSON.stringify(record).includes("p:"),
+        `the record carries an address-bearing string: ${JSON.stringify(record)}`,
+    );
 });
 
 test("the record carries no address, because an address cannot survive the edit", () => {
@@ -127,4 +143,19 @@ test("the timestamp comes from the injected clock", () => {
 test("the default clock produces a parseable ISO timestamp", () => {
     const record = changeRecordFrom(result());
     assert.ok(Number.isFinite(Date.parse(record.at)));
+});
+
+test("every operation the editor can apply has wording of its own", async () => {
+    // The viewer words a change from `op`. A table with a generic fallback means
+    // a newly added operation reaches the reader as "Changed" and nothing goes
+    // red -- so the check is against the editor's list, not against a copy.
+    const { describeChange, DESCRIBED_OPS, GENERIC_PHRASE } = await import("../../src/ui/change-wording.mjs");
+
+    const missing = OPERATION_NAMES.filter((op) => describeChange({ op }) === GENERIC_PHRASE);
+    assert.deepEqual(missing, [], `these operations reach the reader as "${GENERIC_PHRASE}": ${missing.join(", ")}`);
+
+    // And the other direction: wording for an operation that no longer exists is
+    // dead text nobody will notice is dead.
+    const orphaned = DESCRIBED_OPS.filter((op) => !OPERATION_NAMES.includes(op));
+    assert.deepEqual(orphaned, [], `wording exists for operations the editor cannot apply: ${orphaned.join(", ")}`);
 });

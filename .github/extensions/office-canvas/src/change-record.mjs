@@ -37,6 +37,15 @@
 // render key for exactly that reason, and carrying a token beside it would be a
 // second rule that could disagree with the one actually enforced.
 
+// ## The record does not carry the editor's description
+//
+// `edit_document` returns one -- "replace the text of p:8f957157e47d" -- and it
+// was on screen for a while. It is written for the agent, it names an address,
+// and an address in front of a reader is both meaningless and precisely what
+// this design exists to avoid. The viewer words the change itself from `op`
+// (`src/ui/change-wording.mjs`), so the field is not carried at all rather than
+// carried and trusted not to be shown.
+
 import { normalizeText } from "./ui/locate-text.mjs";
 
 /** Operations that leave no text on the page to anchor to. */
@@ -62,7 +71,6 @@ export function changeRecordFrom(result, { now = () => new Date().toISOString() 
 
     return {
         op,
-        description: result.applied.description ?? null,
         page,
         text: locatable ? text : null,
         locatable,

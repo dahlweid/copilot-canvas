@@ -38,8 +38,7 @@ test("every id app.js looks up exists in index.html", async () => {
     assert.deepEqual(missing, [], `app.js looks up ids that index.html does not define: ${missing.join(", ")}`);
 });
 
-test("the change bar's ids are among them", async () => {
-    // A guard against the extraction quietly matching nothing. If the regex above
+test("the change bar's ids are among them", async () => {    // A guard against the extraction quietly matching nothing. If the regex above
     // stopped finding lookups, `missing` would be empty and the test would pass
     // while measuring an empty set -- so name the ids this layer added and
     // require them to have been seen.
@@ -49,4 +48,26 @@ test("the change bar's ids are among them", async () => {
     for (const id of ["changeBar", "changeText", "jumpToChange", "dismissChange"]) {
         assert.ok(wanted.has(id), `app.js no longer looks up ${id}`);
     }
+});
+
+test("hidden elements are hidden with a declaration that outranks a component's own display", async () => {
+    // The UI hides things by setting the `hidden` attribute, and every element it
+    // hides is a flex container. The UA stylesheet's `[hidden] { display: none }`
+    // loses to any author `display`, so before this rule existed `#sidebar` and
+    // `#changeBar` both computed to `display: flex` while carrying `hidden` --
+    // measured in the running viewer, along with client rects to prove they were
+    // laid out and not merely styled.
+    //
+    // `!important` is load-bearing, not decoration: `[hidden]` and `.sidebar` have
+    // equal specificity, so without it source order decides and the component
+    // wins. Measured by mutating the live rule -- dropping `!important` returned
+    // `flex`, restoring it returned `none`.
+    //
+    // What this pins is the rule's presence and its priority. It cannot see a
+    // stylesheet loaded after app.css, and there is no second stylesheet today;
+    // the DOM-level check belongs to the smoke suite.
+    const css = await read("app.css");
+    const rule = css.match(/\[hidden\]\s*\{([^}]*)\}/);
+    assert.ok(rule, "app.css defines no [hidden] rule, so `hidden` is advisory only");
+    assert.match(rule[1], /display\s*:\s*none\s*!important/, "[hidden] must beat a component's own display");
 });

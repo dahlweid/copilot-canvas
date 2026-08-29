@@ -48,7 +48,6 @@ class FakeCache {
 
 const record = (over = {}) => ({
     op: "replace_text",
-    description: "Replaced the paragraph text",
     page: 2,
     text: "The replacement text.",
     locatable: true,

@@ -4,6 +4,20 @@
     box-sizing: border-box;
 }
 
+/* The `hidden` attribute is styled by the UA stylesheet as `display: none`, and
+   any author rule that sets `display` outranks it -- specificity does not come
+   into it, an author declaration simply beats a UA one. Every element this UI
+   hides is a flex container, so every one of them was being hidden in name only.
+   Measured in the live viewer: `#sidebar[hidden]` and `#changeBar[hidden]` both
+   computed to `display: flex` and both had client rects, which means the
+   Contents toggle has never actually closed the sidebar.
+   `!important` is the point rather than a shortcut: this must outrank whatever a
+   component sets, including a rule written later by someone who has not read
+   this comment. */
+[hidden] {
+    display: none !important;
+}
+
 html,
 body {
     height: 100%;

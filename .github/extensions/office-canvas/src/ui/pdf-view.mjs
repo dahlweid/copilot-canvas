@@ -20,7 +20,8 @@
 // save nothing on files this size.
 
 import * as pdfjs from "/vendor/pdf.min.mjs";
-import { locateText } from "./locate-text.mjs";
+import { planChangeMarks } from "./change-plan.mjs";
+import { describeChange } from "./change-wording.mjs";
 
 pdfjs.GlobalWorkerOptions.workerSrc = "/vendor/pdf.worker.min.mjs";
 
@@ -244,41 +245,17 @@ export class PdfView {
             page.overlay.replaceChildren();
             page.root.classList.remove("has-change");
         }
-        const record = this.#change;
-        if (!record) return;
+        if (!this.#change) return;
 
-        const pages = this.#candidatePages(record.page);
-        for (const page of pages) {
-            page.root.classList.add("has-change");
+        // The policy lives in `change-plan.mjs` so it can be tested; what is left
+        // here is projection into the DOM. A page the plan names is marked even
+        // when its quads come out empty -- that is a page the text was found on,
+        // and dropping it would quietly reinstate the miss the plan just avoided.
+        for (const mark of planChangeMarks(this.#change, this.#pages)) {
+            const page = this.#pages[mark.number - 1];
+            if (!page) continue;
+            this.#markPage(page, this.#change, mark.found ? this.#quadsFor(page, mark.found) : []);
         }
-        if (!record.locatable) {
-            // Nothing to find -- a deletion leaves no text behind. The page is
-            // marked and no box is drawn, because no position was determined.
-            for (const page of pages) this.#markPage(page, record, []);
-            return;
-        }
-
-        for (const page of pages) {
-            if (!page.items) continue; // not painted yet; #renderPage will call back
-            const found = locateText(page.items, record.text);
-            const quads = found.status === "located" || found.status === "partial" ? this.#quadsFor(page, found) : [];
-            this.#markPage(page, record, quads);
-        }
-    }
-
-    /**
-     * The pages worth searching for a record.
-     *
-     * Word reports the page of the *end* of the range it touched, so a paragraph
-     * that straddles a page break is reported on the later one and its opening
-     * lines are on the page before. Searching the page before as well is why a
-     * straddling paragraph gets highlighted on both halves instead of losing the
-     * first one silently.
-     */
-    #candidatePages(number) {
-        if (!Number.isFinite(number)) return [];
-        const wanted = [number - 1, number].filter((n) => n >= 1 && n <= this.#pages.length);
-        return wanted.map((n) => this.#pages[n - 1]).filter(Boolean);
     }
 
     #quadsFor(page, found) {
@@ -298,6 +275,7 @@ export class PdfView {
     }
 
     #markPage(page, record, quads) {
+        page.root.classList.add("has-change");
         page.overlay.hidden = false;
         for (const rect of quads) {
             const box = document.createElement("div");
@@ -310,24 +288,7 @@ export class PdfView {
         }
         const badge = document.createElement("div");
         badge.className = "change-badge";
-        badge.textContent = quads.length ? describe(record) : `${describe(record)} — on this page`;
+        badge.textContent = quads.length ? describeChange(record) : `${describeChange(record)} — on this page`;
         page.overlay.append(badge);
-    }
-}
-
-/** Human wording for what happened, from the operation the editor reported. */
-function describe(record) {
-    switch (record.op) {
-        case "replace_text":
-            return "Text replaced";
-        case "insert_paragraph_after":
-        case "insert_paragraph_before":
-            return "Paragraph added";
-        case "delete_paragraph":
-            return "Paragraph deleted";
-        case "set_heading_level":
-            return "Heading level changed";
-        default:
-            return "Changed";
     }
 }
