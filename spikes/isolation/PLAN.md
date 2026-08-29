@@ -1338,9 +1338,17 @@ person who would later need it** — and still not applied.
 the statement that a Word call returning is not the work completing *and a
 working implementation of the remedy* — a `Stopwatch`-bounded poll — applied to
 `Close` and not to `Quit`, in the same file. The recorded figure was also wrong
-by ~28x (`~120 ms`; measured 3138-3702 ms), and `Stop-Word`'s replacement poll
-had been **sized on it**, budgeting 3000 ms for something that takes 3.1-3.7 s.
-It passed review anyway, rescued by `Get-Process` costing ~46 ms a call.
+by ~25-30x (`~120 ms`; measured 3039-3702 ms by
+`spikes/isolation/probes/probe-quit-exit-gap.ps1`), and `Stop-Word`'s
+replacement poll had been **sized on it**, budgeting a nominal 3000 ms for
+something that takes 3.0-3.7 s.
+
+It passed review anyway, and the reason is the sharper half. The loop's real
+budget was 4014-4375 ms, and **none of that margin was chosen**: the probe's
+control run separates the sources — `Start-Sleep -Milliseconds 100` overshoots,
+so thirty sleeps alone come to ~3292 ms, and `Get-Process` adds a further
+24-46 ms per call *depending on load*. A wait can be correct in production for
+years on the accumulated overshoot of calls nobody was timing.
 
 ### What actually catches these
 

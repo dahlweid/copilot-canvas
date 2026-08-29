@@ -414,15 +414,23 @@ function Stop-Word {
     # needs the kill. Both halves are load-bearing.
     #
     # The wait is bounded by elapsed time, not by an iteration count. Measured
-    # here, `Quit()` returns in 3-28 ms and the process exits 3138-3702 ms after
-    # that, so the count-based version this replaced -- 30 x 100 ms, nominally
-    # 3000 ms -- was budgeting less than the thing it was waiting for. It worked
-    # only because `Get-Process` costs ~46 ms a call, padding the loop to 4375 ms
-    # of wall time. That margin was an accident of an unrelated API's cost, and
-    # had it ever narrowed, the kill below would have resumed firing and this fix
-    # would have silently reverted to the behaviour it exists to correct, with
-    # nothing going red. Timing out here is not a failure -- it falls through to
-    # the kill -- so the bound is deliberately generous.
+    # by probe-quit-exit-gap.ps1, `Quit()` returns in 3-28 ms and the process
+    # exits 3039-3702 ms after that, so the count-based version this replaced --
+    # 30 x 100 ms, nominally 3000 ms -- budgeted less than the thing it waits for.
+    #
+    # It worked anyway, and the reason is worth stating because it is the actual
+    # defect: the loop's real budget was 4014-4375 ms, and *none of that margin
+    # was chosen*. Its control run separates the two sources -- `Start-Sleep
+    # -Milliseconds 100` overshoots, so the sleeps alone come to ~3292 ms, and
+    # `Get-Process` adds a further 24-46 ms per call depending on load. Both are
+    # incidental costs of unrelated APIs, both are load-dependent, and nothing
+    # asserts either. Had they narrowed -- or had Word been slower, which under
+    # load it measurably is -- the kill below would have resumed firing and this
+    # fix would have silently reverted to the behaviour it exists to correct,
+    # with every test still green.
+    #
+    # Timing out here is not a failure -- it falls through to the kill -- so the
+    # bound is deliberately generous rather than fitted to the numbers above.
     if ($null -ne $script:OwnedPid) {
         try {
             $p = $null
@@ -1201,12 +1209,12 @@ function Cmd-Edit($a) {
     if ($null -ne $result) {
         # Close() returning is not proof the file is released. Quit() is cited
         # here only as precedent for "a call returning is not the work being
-        # done" -- measured, it returns 3.1-3.7 s before its process exits. It is
+        # done" -- measured, it returns 3.0-3.7 s before its process exits. It is
         # not evidence about Close, which is a different call with measurably
         # different behaviour, and nothing about either may be inferred from the
         # other; the poll below is what establishes the fact for Close. (This
         # comment read "~120 ms" until that number was actually measured. It was
-        # wrong by a factor of ~28, and Stop-Word had sized a wait on it.)
+        # wrong by a factor of ~25-30, and Stop-Word had sized a wait on it.)
         # Measure it rather than assume, because the next thing the caller does
         # is read the file to confirm the edit, and a re-open into a still-held
         # file is the hang this whole command is built to avoid.
