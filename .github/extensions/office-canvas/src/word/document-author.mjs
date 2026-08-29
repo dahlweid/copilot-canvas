@@ -98,7 +98,7 @@ function failFromStatus(result, docPath) {
                 `The folder ${result.directory ?? path.dirname(docPath)} does not exist. create_document writes into ` +
                     `an existing folder; it does not create one.`,
             );
-        case "create_failed":
+        case "create_failed": {
             // What was observed, and nothing about why.
             //
             // The only thing established here is that a COM call raised. The
@@ -106,11 +106,23 @@ function failFromStatus(result, docPath) {
             // discriminate, because the message is German on this machine and
             // matching on it is how a contract rots. The prose names no cause,
             // because none was distinguished.
+            //
+            // It also does not claim an outcome nobody checked. This used to end
+            // "and no document was written", which the host could not promise:
+            // its cleanup is a best-effort `Remove-Item` inside a swallowed
+            // `catch`, so a failed delete left a partial document on disk while
+            // the caller was told the opposite. The host now looks, and this
+            // says whichever it saw.
+            const leftBehind = result.leftBehind === true;
             throw new CreateError(
                 "create_failed",
-                `Word raised an error while authoring ${name}, and no document was written.`,
-                { data: { exception: result.exception ?? null, detail: result.detail ?? null } },
+                `Word raised an error while authoring ${name}. ` +
+                    (leftBehind
+                        ? `A partial document was left at ${docPath} and could not be removed.`
+                        : `No document was left behind.`),
+                { data: { exception: result.exception ?? null, detail: result.detail ?? null, leftBehind } },
             );
+        }
         default:
             throw new CreateError("create_failed", `Word reported '${result.status}' while creating ${name}.`);
     }

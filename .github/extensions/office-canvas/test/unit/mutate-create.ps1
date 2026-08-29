@@ -62,8 +62,8 @@ $mutants = @(
 
     @{ name = 'exception type set top-level, dropped at the tool boundary'
        file = 'src/word/document-author.mjs'
-       from  = '                { data: { exception: result.exception ?? null, detail: result.detail ?? null } },'
-       to    = '                { exception: result.exception ?? null, detail: result.detail ?? null },' }
+       from  = '                { data: { exception: result.exception ?? null, detail: result.detail ?? null, leftBehind } },'
+       to    = '                { exception: result.exception ?? null, detail: result.detail ?? null, leftBehind },' }
 
     @{ name = 'created flag set top-level, dropped at the tool boundary'
        file = 'src/word/document-author.mjs'
@@ -120,6 +120,14 @@ export function paragraphsIn(spec) { return spec.blocks.length; }
 
 /** A short, human-readable description, for logs and snapshot manifests. */
 '@ }
+
+    # The message used to assert "no document was written" unconditionally, which
+    # the host cannot promise -- its cleanup delete is best-effort inside a
+    # swallowed catch. Going back to a fixed claim must go red.
+    @{ name = 'failed-create message asserts a cleanup it never checked'
+       file = 'src/word/document-author.mjs'
+       from  = '                    (leftBehind'
+       to    = '                    (false' }
 )
 
 $survived = @()

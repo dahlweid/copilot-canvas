@@ -238,6 +238,36 @@ test("a host failure names no cause, and carries the exception type through the 
     });
 });
 
+test("a failed create reports whether it actually cleaned up after itself", async () => {
+    // The host's cleanup is a best-effort `Remove-Item` inside a swallowed
+    // `catch`, so "no document was written" was a claim it could not make. It now
+    // looks at the disk and reports what it saw. Both directions are asserted,
+    // because a message that is right by accident in one case is the failure mode
+    // being closed here.
+    await withTemp(async (dir) => {
+        const doc = path.join(dir, "report.docx");
+        const hostSaying = (leftBehind) => ({
+            create: async () => ({ status: "create_failed", exception: "System.Exception", leftBehind }),
+        });
+
+        const cleaned = throughToolBoundary(
+            await failed(new DocumentAuthor({ reader: stubReader(doc), host: hostSaying(false) }), doc),
+        );
+        assert.equal(cleaned.data?.leftBehind, false);
+        assert.match(cleaned.message, /No document was left behind/);
+        assert.doesNotMatch(cleaned.message, /partial/i);
+
+        const partial = throughToolBoundary(
+            await failed(new DocumentAuthor({ reader: stubReader(doc), host: hostSaying(true) }), doc),
+        );
+        assert.equal(partial.data?.leftBehind, true);
+        assert.match(partial.message, /partial document was left/i);
+        // And it names the path, because "a partial document exists somewhere"
+        // is not something a caller can act on.
+        assert.ok(partial.message.includes(doc));
+    });
+});
+
 test("'created' with no file on disk is reported as a failure", async () => {
     // SaveAs2 returning is not evidence that a file exists. Without this check
     // the caller is handed a revision token for nothing and an agent proceeds to

@@ -12,7 +12,8 @@
 #
 # A retraction this probe exists to correct
 # -----------------------------------------
-# An earlier probe (`probe-save-hang.ps1`, deleted) reported that `SaveAs2` hangs
+# An earlier probe of mine, since deleted along with its finding, reported that
+# `SaveAs2` hangs
 # indefinitely once a style is applied, a table is added, or `AutoFormat` is run,
 # and that only plain text survives. That was **wrong**, and it was wrong in a way
 # worth recording rather than quietly deleting: *its own control arm hung too*.

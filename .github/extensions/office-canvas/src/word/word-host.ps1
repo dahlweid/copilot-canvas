@@ -1670,6 +1670,15 @@ function Cmd-Create($a) {
             saveMs         = $saveMs
         }
     } catch {
+        # `$_` is captured before the cleanup runs. Not because the cleanup
+        # clobbers it -- measured, it does not: an empty `catch { }` in between
+        # leaves `$_` still holding the original InvalidOperationException. It is
+        # captured because the reason it survives is a scoping subtlety rather
+        # than anything stated in this file, and the cleanup below is exactly the
+        # kind of code someone extends later. Naming the error costs one line and
+        # removes the question.
+        $failure = $_
+
         # A half-authored document must not be left on disk looking like a
         # finished one. SaveAs2 either wrote the file or it did not; if we got
         # here after it wrote, the caller asked for a document we could not
@@ -1677,14 +1686,25 @@ function Cmd-Create($a) {
         try { if ($null -ne $doc) { $doc.Close($WD_DO_NOT_SAVE_CHANGES) } } catch { }
         $doc = $null
         try { if (Test-Path -LiteralPath $path -PathType Leaf) { Remove-Item -LiteralPath $path -Force } } catch { }
+
+        # Whether the cleanup actually worked, established by looking rather than
+        # by assuming the Remove-Item above did what it was asked. Its failure is
+        # deliberately swallowed -- there is nothing useful to do about it here --
+        # and for a while that meant the caller was told "no document was written"
+        # on a path where one demonstrably still was. An outcome the code never
+        # checked is exactly the kind of claim this repo keeps having to retract,
+        # so it is now checked and reported as an observation.
+        $leftBehind = Test-Path -LiteralPath $path -PathType Leaf
+
         # The exception *type*, not its message: messages are German here, and a
         # caller that discriminates on one is a caller that breaks on a machine
         # with a different display language.
         return @{
-            status    = 'create_failed'
-            path      = $path
-            exception = $_.Exception.GetType().FullName
-            detail    = $_.Exception.Message
+            status     = 'create_failed'
+            path       = $path
+            leftBehind = [bool]$leftBehind
+            exception  = $failure.Exception.GetType().FullName
+            detail     = $failure.Exception.Message
         }
     } finally {
         if ($null -ne $doc) {

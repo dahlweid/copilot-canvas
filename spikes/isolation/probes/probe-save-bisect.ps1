@@ -2,11 +2,16 @@
 #
 # Why this probe exists
 # ---------------------
-# probe-save-hang.ps1 reported that `Document.SaveAs2` hangs after a style, a
+# An earlier probe of mine -- deleted, because what follows voided it -- reported
+# that `Document.SaveAs2` hangs after a style, a
 # table or an AutoFormat. Then its own *control* arm -- two paragraphs of plain
 # text, no styling at all -- hung as well. A control that fails means the arms
 # measured the harness, not the document, and every conclusion drawn from that
 # run is void.
+#
+# It is named nowhere here on purpose: a probe that no longer ships is not
+# evidence a reader of this branch can follow, which is the whole point of the
+# retraction and is enforced by tools/check-citations.mjs.
 #
 # probe-saveas-apartment.ps1 had already saved a document in a real
 # `powershell.exe` in 149 ms. Two probes, contradictory results, so the cause is
@@ -14,9 +19,9 @@
 #
 # The two harnesses differ in exactly two respects:
 #
-#   1. probe-save-hang.ps1 passes -RedirectStandardOutput / -RedirectStandardError
+#   1. the deleted probe passed -RedirectStandardOutput / -RedirectStandardError
 #      to Start-Process; probe-saveas-apartment.ps1 does not.
-#   2. probe-save-hang.ps1 waits 45 s; probe-saveas-apartment.ps1 waits 90 s.
+#   2. the deleted probe waited 45 s; probe-saveas-apartment.ps1 waits 90 s.
 #
 # and in one respect of the document itself:
 #
