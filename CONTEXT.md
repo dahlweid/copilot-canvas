@@ -593,7 +593,11 @@ written as `^# (tests|pass|fail)` against a reporter that emits `ℹ tests 284`
 pass; and `tools/validate-extension.mjs` for `validate-extensions.mjs` **exited
 1**, which reads as "validator red" and means "gate never ran". That is the
 runner-cwd trap again with one letter instead of one directory. I hit the same
-grep twice in one session after documenting it. **Assert that the check produced
-a verdict, not merely that it exited well** — a run that matched nothing and a
-run that passed are the same observable.
+grep twice in one session after documenting it, and then posted this very
+paragraph to a PR with `gh api -f "body=@file"` — where `-f` means *literal* and
+only `-F` reads the file. It exited 0 and returned a plausible comment URL for a
+comment whose entire body was a 41-character Windows path. **Assert that the
+check produced a verdict, not merely that it exited well** — a run that matched
+nothing and a run that passed are the same observable, and a call that succeeded
+at posting the wrong bytes looks exactly like one that worked.
 
