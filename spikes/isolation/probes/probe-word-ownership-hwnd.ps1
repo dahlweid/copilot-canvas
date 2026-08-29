@@ -85,7 +85,10 @@ Write-Host ""
 Write-Host "=== cleanup ==="
 try { $doc.Close(0) } catch { }
 try { $doc2.Close(0) } catch { }
-try { $app.Quit(0) } catch { }
+# `Quit()`, not `Quit(0)`: the argument form binds `VARIANT*` parameters and was
+# measured throwing "Argument 1 must be ... PSReference" in probe-word-ownership.ps1,
+# inside a `catch { }` that hid it while every instance leaked.
+try { $app.Quit() } catch { Write-Host "  Quit threw -- $($_.Exception.Message.Split([char]10)[0])" }
 try { [Runtime.InteropServices.Marshal]::ReleaseComObject($app) | Out-Null } catch { }
 [System.GC]::Collect(); [System.GC]::WaitForPendingFinalizers()
 

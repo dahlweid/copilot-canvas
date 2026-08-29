@@ -34,6 +34,18 @@ Write-Host "=== baseline ==="
 $baseline = Get-WordPids
 Write-Host "WINWORD alive before: $($baseline.Count)"
 
+# Everything that creates a Word runs inside this `try`, so that cleanup and the
+# census below run even when an arm throws. `$ErrorActionPreference = 'Stop'` is
+# right for a probe -- an arm that fails must not be reported as a measurement --
+# but combined with straight-line cleanup it means any error anywhere skips the
+# teardown entirely. That is not hypothetical: the first run of this file's own
+# leak fix aborted on `New-Item -LiteralPath`, which Windows PowerShell 5.1 does
+# not accept, and leaked the four instances the fix was written to prevent.
+$foreign = $null
+$ready = Join-Path ([IO.Path]::GetTempPath()) ("word-probe-ready-" + [guid]::NewGuid().ToString('N'))
+$release = Join-Path ([IO.Path]::GetTempPath()) ("word-probe-release-" + [guid]::NewGuid().ToString('N'))
+try {
+
 # --- Arm B: caption tagging --------------------------------------------------
 Write-Host ""
 Write-Host "=== Arm B: is a minted caption readable from the process list? ==="
@@ -87,11 +99,42 @@ Write-Host "=== Arm A: differencing under a concurrent start ==="
 $before = Get-WordPids
 # A foreign Word, started by a *different process*, standing in for another
 # session. Word is multi-instance, so this genuinely is a separate WINWORD.
+#
+# The helper owns its Word's whole lifetime and quits it itself. An earlier
+# version slept a fixed 25 s and was force-killed from here, which orphans the
+# COM server: killing the client does not quit Word, and a hidden WINWORD with
+# no documents and no live client stays up indefinitely. That leaked four
+# instances into a machine this repo measures Word start-up on, where the cost
+# is not hypothetical -- `Documents.Add` was measured going ~700 ms to 9-11 s
+# as the population grew. A probe about attributing Word processes must not
+# manufacture unattributable ones.
 $foreign = Start-Process powershell.exe -PassThru -WindowStyle Hidden -ArgumentList @(
     '-NoProfile', '-NonInteractive', '-Command',
-    '$w = New-Object -ComObject Word.Application; $w.Visible = $false; Start-Sleep -Seconds 25'
+    "`$w = New-Object -ComObject Word.Application; `$w.Visible = `$false; " +
+    "Set-Content -LiteralPath '$ready' -Value `$PID; " +
+    "for (`$i = 0; `$i -lt 600; `$i++) { if (Test-Path -LiteralPath '$release') { break }; Start-Sleep -Milliseconds 100 }; " +
+    "try { `$w.Quit() } catch { }; " +
+    "try { [Runtime.InteropServices.Marshal]::ReleaseComObject(`$w) | Out-Null } catch { }; " +
+    "[System.GC]::Collect(); [System.GC]::WaitForPendingFinalizers()"
 )
-Start-Sleep -Milliseconds 1200
+
+# Wait for the helper to signal that its Word exists, rather than sleeping a
+# fixed interval and hoping. Cold `New-Object Word.Application` measured 4029 ms
+# here, so the 1200 ms this used to sleep was usually a false ready: arm A would
+# then difference against a foreign Word that had not started yet and report
+# "the foreign Word did not land inside the window" -- a null result produced by
+# the harness rather than by the mechanism under test.
+$foreignReady = $false
+for ($i = 0; $i -lt 300; $i++) {
+    if (Test-Path -LiteralPath $ready) { $foreignReady = $true; break }
+    if ($foreign.HasExited) { break }
+    Start-Sleep -Milliseconds 100
+}
+if ($foreignReady) {
+    Write-Host "foreign Word ready after $([int]($i * 100))ms"
+} else {
+    Write-Host "  WARNING: the foreign Word never signalled ready -- arm A measures nothing below"
+}
 
 $tagC = "word-canvas-probe-" + [guid]::NewGuid().ToString('N')
 $appC = New-TaggedWord $tagC
@@ -123,14 +166,82 @@ if ($mineByCaption.Count -eq 1) {
 }
 
 # --- cleanup -----------------------------------------------------------------
+} finally {
 Write-Host ""
 Write-Host "=== cleanup ==="
+# Report rather than swallow. An empty `catch` here is the "evidence code lies
+# rather than fails" trap in its purest form: if `Quit` refuses, the probe still
+# prints a tidy cleanup section and the leak shows up later as somebody else's
+# problem. It did exactly that -- three runs of this file leaked every instance
+# it created, and the reason was only ever one `catch { }` away:
+#
+#   $a.Quit(0)  ->  Argument "1" must be System.Management.Automation.PSReference
+#
+# `Application.Quit` takes its three parameters as `VARIANT*`, so the literal `0`
+# has to bind by reference. The no-argument form takes the same default
+# (`wdSaveChanges` is only consulted for dirty documents, and these instances
+# never open one) and sidesteps the binding entirely, which is why the four
+# probes here that already used `$word.Quit()` never leaked.
+#
+# Honest limit on that explanation: the failure does *not* reproduce in a minimal
+# script -- `Quit(0)` on a function-returned, array-stored instance binds fine
+# there. So the trigger is something this file does that the reduction does not,
+# and it is unidentified. What is measured is that the `(0)` form threw here on
+# every instance of every run, and that the no-argument form reaps them.
+$i = 0
 foreach ($a in $created) {
-    try { $a.Quit(0) } catch { }
-    try { [Runtime.InteropServices.Marshal]::ReleaseComObject($a) | Out-Null } catch { }
+    $i++
+    try { $a.Quit() } catch { Write-Host "  instance ${i}: Quit threw -- $($_.Exception.Message.Split([char]10)[0])" }
+    try {
+        $rc = [Runtime.InteropServices.Marshal]::ReleaseComObject($a)
+        if ($rc -ne 0) { Write-Host "  instance ${i}: $rc reference(s) still held after release" }
+    } catch { Write-Host "  instance ${i}: release threw -- $($_.Exception.Message.Split([char]10)[0])" }
 }
-try { Stop-Process -Id $foreign.Id -Force -ErrorAction SilentlyContinue } catch { }
+$created = @()
 [System.GC]::Collect()
 [System.GC]::WaitForPendingFinalizers()
-Start-Sleep -Seconds 3
+
+# Release the helper and let it quit its own Word. Force-killing is the fallback
+# and not the plan, because it is the thing that leaked; if we ever take it, say
+# so, since the census below will then be reporting our own damage.
+#
+# `-Path`, not `-LiteralPath`: Windows PowerShell 5.1's `New-Item` has no
+# `-LiteralPath`, and under `Stop` the resulting parameter-binding error killed
+# the whole teardown. These are GUID names in the temp directory, so there is no
+# wildcard to protect against.
+if ($foreign) {
+    try { New-Item -ItemType File -Path $release -Force | Out-Null } catch { }
+    $foreign | Wait-Process -Timeout 45 -ErrorAction SilentlyContinue
+    if (-not $foreign.HasExited) {
+        Write-Host "  WARNING: helper did not exit in 45s -- force-killing, which orphans its Word"
+        try { Stop-Process -Id $foreign.Id -Force -ErrorAction SilentlyContinue } catch { }
+    }
+}
+Remove-Item -Path $ready, $release -Force -ErrorAction SilentlyContinue
+
+# --- census: did this probe leave anything behind? ---------------------------
+# Poll rather than sleep flat. `Quit()` returns in ~120 ms while the process
+# outlives it by seconds, and the tail is load-dependent: a Quit-to-exit
+# measured at 2.7-6.1 s idle survived a 30 s poll with another session driving
+# Word concurrently.
+Write-Host ""
+Write-Host "=== census ==="
+$survivors = @()
+for ($i = 0; $i -lt 120; $i++) {
+    $survivors = @(Get-WordPids | Where-Object { $baseline -notcontains $_ })
+    if ($survivors.Count -eq 0) { break }
+    Start-Sleep -Milliseconds 500
+}
+if ($survivors.Count -eq 0) {
+    Write-Host "  RESULT: clean -- WINWORD population back to its $($baseline.Count) at start"
+} else {
+    # Differencing again, and unsound here for exactly the reason arm A measures:
+    # a Word another session started during this run lands in this set too. It is
+    # the right instrument anyway, because over-reporting a leak is a false alarm
+    # while under-reporting one is the defect. Do not kill these.
+    Write-Host "  RESULT: *** $($survivors.Count) WINWORD still alive after 60s: $($survivors -join ', ') ***"
+    Write-Host "  (some may be another session's -- this set is differenced, which arm A"
+    Write-Host "   just showed is unsound. Reported, not killed.)"
+}
 Write-Host "WINWORD alive after: $((Get-WordPids).Count) (baseline was $($baseline.Count))"
+}

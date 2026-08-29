@@ -150,23 +150,38 @@ export async function assertNoLeakedWord(
  * never reported as owned is left alone however suspicious it looks: it may be
  * another session's, and a wrong kill is silent and unrecoverable whereas a
  * missed one surfaces as a loud leak assertion.
+ *
+ * Returns the pids a kill was actually issued for, which is narrower than the
+ * pids we looked at. Two of the three outcomes below are *not* kills, and both
+ * are ordinary rather than exceptional: by the time teardown runs, the bridge's
+ * own exit hook has usually reaped the pid already (`gone`), and a reaped pid's
+ * number can be reissued to something unrelated (`notword`). Neither raises, so
+ * the outcome has to be reported out of PowerShell and read here -- inferring it
+ * from "the command did not throw" counts both as kills.
+ *
+ * "Issued" is the honest verb: `Process.Kill()` requests termination and returns
+ * without waiting, and measured `Quit()`-to-exit here is 2.7-6.1 s and rises
+ * under load. Exit is confirmed by `assertNoLeakedWord` polling to a deadline,
+ * not by this function.
  */
 export function killOwnedWord(ledger, { exec = execFileSync } = {}) {
     const killed = [];
     for (const pid of ledger.pids()) {
         try {
-            exec("powershell.exe", [
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                // Name-checked because pids are reused, and by the time we reach
-                // here the bridge's own exit hook has usually reaped this one.
-                `$p = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; ` +
-                    "if ($p -and $p.ProcessName -eq 'WINWORD') { $p.Kill() }",
-            ]);
-            killed.push(pid);
+            const outcome = String(
+                exec("powershell.exe", [
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    // Name-checked because pids are reused.
+                    `$p = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; ` +
+                        "if ($p -and $p.ProcessName -eq 'WINWORD') { $p.Kill(); 'killed' } " +
+                        "elseif ($p) { 'notword' } else { 'gone' }",
+                ]) ?? "",
+            ).trim();
+            if (outcome === "killed") killed.push(pid);
         } catch {
-            /* already gone */
+            /* already gone, or refused -- either way nothing was killed */
         }
     }
     return killed;

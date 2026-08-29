@@ -85,6 +85,40 @@ test("killing an already-dead pid is not an error", () => {
     assert.deepEqual(killOwnedWord(ledger, { exec: throwing }), []);
 });
 
+/** Stands in for PowerShell, returning the outcome token it would print. */
+function outcomeExec(byPid) {
+    return (_exe, args) => {
+        const pid = Number(/Get-Process -Id (\d+)/.exec(args[args.length - 1])[1]);
+        return byPid[pid];
+    };
+}
+
+test("only a pid actually killed is reported as killed", () => {
+    // The two non-kill outcomes are the ordinary ones, not the exotic ones: by
+    // teardown the bridge's exit hook has usually reaped the pid, and a reaped
+    // pid's number can be reissued. Neither raises, so a `killed.push` after a
+    // non-throwing exec reports both as kills.
+    const ledger = ownedWordLedger();
+    ledger.record(601); // still a Word, killed
+    ledger.record(602); // reaped already
+    ledger.record(603); // number reissued to something else
+
+    const killed = killOwnedWord(ledger, {
+        exec: outcomeExec({ 601: "killed\r\n", 602: "gone\r\n", 603: "notword\r\n" }),
+    });
+
+    assert.deepEqual(killed, [601], "gone and notword are not kills");
+});
+
+test("an exec that reports nothing is not read as a kill", () => {
+    // Belt and braces for the parse: an exec configured to capture rather than
+    // answer returns undefined, and `String(undefined)` is the truthy string
+    // "undefined". Defaulting before the coercion is what keeps that out.
+    const ledger = ownedWordLedger();
+    ledger.record(701);
+    assert.deepEqual(killOwnedWord(ledger, { exec: () => undefined }), []);
+});
+
 test("the kill is name-checked, because pids are reused", () => {
     // A recorded pid can exit and its number be reissued to something else
     // before teardown runs. Killing by number alone would end an unrelated
