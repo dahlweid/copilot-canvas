@@ -485,6 +485,70 @@ another session's branch without owning it — reviewing is not mutating. Never
 let a session be the sole reviewer of its own diff; self-review re-reads the
 author's intent, which is the blind spot the loop exists to cover.
 
+### Write the squash message; never let the merge capture the PR body
+
+**A PR body is current, a commit message is historical, and only one of those is
+the right home for a claim meant to outlive the conversation.** A body is mutable
+right up to the instant of the squash, and the squash can capture it at any
+moment without warning — so its content at merge time is a race, not a decision.
+
+Measured, on #26, by the session that lost the race: the squash landed at
+`16:53:05Z` and their correction to the body was submitted at `16:53:31Z`, **26
+seconds late**. The replaced body still headlined *"Per-process. Not per-user,
+not persisted"* — the exact claim retracted everywhere else on that branch —
+together with the concurrent-read table presented as evidence and three stale
+counts. Had the merge taken the body, the most durable copy of a retracted claim
+in this repo would have been the one commit message nobody ever revisits, while
+every other site carried the correction.
+
+**Three drafts of this section made three different false claims about GitHub's
+body retention, so the fourth does not make one.** In order: that a replaced body
+"cannot be re-measured" (false — prior versions are retained); then that GitHub
+"retains every prior version" recoverable from a named node (false twice over —
+the cap is 100 revisions, revisions can be deleted, and the node I cited holds
+the body *after* that edit, not before); then that recovering one "takes a
+deliberate query against a surface almost nobody visits" (false — the web UI
+shows an **edited** marker with a revision picker to any reader).
+
+**The claim is cut rather than corrected a fourth time.** The rule stands without
+it: what the squash captures is a race, which the timestamps above establish on
+their own. A mechanism that has been wrong three times and cannot change the
+practice is not worth a fourth attempt — the same reason this repo declines
+probes that cannot change a decision.
+
+**And the way the second error survived my own check is the part to keep.** I
+verified the reviewer's finding by grepping the retained nodes for
+`per-process|not persisted` and got a hit on **all five**, which I read as
+confirmation. Those words appear in the *retraction* as well as in the claim
+being retracted, so the pattern could not distinguish the two states it was cited
+for. Every arm agreed and it measured nothing — this file's own oldest rule,
+broken by me while checking somebody else's report of a false claim. The
+discriminating test was one line away: compare each node's `diff` against the
+current body, which shows immediately that the cited node *is* the current body.
+
+The margin is not the point and the rule does not depend on it being small. What
+makes a commit message the right home is one structural property: it is **written
+once, at the merge, and carries that timestamp**. Verified here — the squash
+commit's own date matches `merged_at` to the second. Not *immutable*: history
+gets rewritten in this repo routinely, by amend, rebase and force-push, and the
+guidance a few sections down is about exactly that. The narrower true claim is
+that a commit message is not editable **in place** the way a body is: the SHA is
+a hash of the message, so changing one produces a different commit.
+
+**It is not a warrant that anyone verified anything.** A maintainer merging
+someone else's PR with a message assembled from a review they did not run
+produces an artifact of identical form and none of the standing — and a reader
+can see that a message is a commit message without learning whether its author
+ran the gate. So the second half is a **stated practice, not an inferred
+property**: the coordinator writes the squash message, citing what was verified
+and where. Recording "written by the verifier" as the *reason* a commit message
+is trustworthy would be this repo's own named failure — a record asserting a
+cause the mechanism producing it never distinguished.
+
+The same mutability cuts the other way, which is why the rule is not "bodies are
+untrustworthy": it is precisely what let that session correct #26's body *after*
+the merge, so the PR page now carries the retraction. One property, both signs.
+
 Two properties of the local reviewer that the GitHub one does not have, both
 worth exploiting. It takes an **explicit diff range**, so a review can be scoped
 to exactly the commits that will land rather than to whatever the PR page thinks
