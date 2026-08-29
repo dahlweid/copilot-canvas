@@ -38,12 +38,12 @@ const tokenRead = (p) =>
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function withHolder(label, share) {
+async function withHolder(label, share, access = "ReadWrite") {
     const target = path.join(dir, `${label}.txt`);
     writeFileSync(target, "hello");
-    // Path and share travel in the environment rather than interpolated into
-    // the command string: a Windows profile may contain an apostrophe, which
-    // would close the PowerShell string and quietly make the holder open
+    // Path, share and access travel in the environment rather than interpolated
+    // into the command string: a Windows profile may contain an apostrophe,
+    // which would close the PowerShell string and quietly make the holder open
     // nothing -- turning a measurement into a fiction.
     const holder = spawn(
         "powershell.exe",
@@ -51,9 +51,9 @@ async function withHolder(label, share) {
             "-NoProfile",
             "-NonInteractive",
             "-Command",
-            "$fs=[IO.File]::Open($env:PROBE_PATH,'Open','ReadWrite',$env:PROBE_SHARE); Start-Sleep -Seconds 10; $fs.Close()",
+            "$fs=[IO.File]::Open($env:PROBE_PATH,'Open',$env:PROBE_ACCESS,$env:PROBE_SHARE); Start-Sleep -Seconds 10; $fs.Close()",
         ],
-        { env: { ...process.env, PROBE_PATH: target, PROBE_SHARE: share } },
+        { env: { ...process.env, PROBE_PATH: target, PROBE_SHARE: share, PROBE_ACCESS: access } },
     );
     await sleep(2000);
     const r = await tokenRead(target);
@@ -65,25 +65,35 @@ async function withHolder(label, share) {
 // 1. exclusive lock -- stricter than Word
 results.push(["FileShare::None (exclusive)", await withHolder("exclusive", "None")]);
 
-// 2. what Word itself takes, as closely as this probe can express it: a handle
-// with write access, granting ReadWrite.
+// 2. what Word itself takes: a handle with **write access**, granting
+// **FileShare::Read**.
 //
-// The **share** mode is the thing under test and the thing that was wrong. This
-// holder grants `ReadWrite`, not `Read`. The earlier version used `Read` and
-// labelled it "Word's own lock", which is where this repo's long-standing "Word
-// takes FileShare::Read" claim came from. It is wrong, and it was invisible here
-// because Node's read stream grants ReadWrite and so succeeds against *either*
-// holder. See probe-fileshare-algebra.ps1, which separates them with a reader
-// that grants only Read.
+// That is not measured here, and this probe could not measure it. It is taken
+// from probe-fileshare-algebra.ps1 and used only to configure the holder, so
+// this row asks "given the settled model, what does a Node reader see?" rather
+// than establishing the model.
 //
-// The **access** mode is deliberately not claimed precisely. `withHolder` opens
-// with `FileAccess::ReadWrite`, and a holder's access mode is not observable
-// from outside at all -- every reader here sees only the consequences of the
-// share mode. That Word holds *some* write access is an inference from the fact
-// that it saves the file, not a measurement; and probe-fileshare-algebra.ps1
-// shows `Write`/ReadWrite and `ReadWrite`/ReadWrite holders are identical on
-// every cell, so the distinction is unobservable and cannot matter here.
-results.push(["Word's own lock (write access, granting ReadWrite)", await withHolder("wordlike", "ReadWrite")]);
+// The distinction matters because this label has been wrong twice, in opposite
+// directions, and both times the wrongness was invisible from here. Windows
+// checks the access you request against the holder's share mode, *and* the
+// holder's access against the share mode you offer. Every reader in this file
+// is Node's read stream -- read access, granting ReadWrite -- so it only ever
+// exercises the second check. It measures the holder's **access** and is
+// completely blind to its **share** mode.
+//
+// So this probe could not have detected either error. The original said
+// `FileShare::Read` and modelled Word with an access=Read holder; the first
+// correction said `grants ReadWrite`; the truth is write access granting Read,
+// which neither proposed. Every version produced the same row here, because a
+// read-requesting reader succeeds against all three.
+//
+// probe-fileshare-algebra.ps1 is what settled it, with a reader that requests
+// *write* access while granting ReadWrite -- the only shape that puts the
+// holder's share mode on the other side of the comparison.
+results.push([
+    "Word's own lock (write access, granting FileShare::Read)",
+    await withHolder("wordlike", "Read", "Write"),
+]);
 
 // 3. read-only attribute
 {
@@ -146,11 +156,14 @@ console.log();
 $dir = Join-Path $env:TEMP ("errno-ps-" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $dir -Force | Out-Null
 $rows = @()
-foreach ($case in @(@{n='FileShare::None (exclusive)';s='None'}, @{n="Word's own lock (write access, granting ReadWrite)";s='ReadWrite'})) {
-    $src = Join-Path $dir ($case.s + '.txt')
+foreach ($case in @(
+    @{n='FileShare::None (exclusive)'; s='None'; a='ReadWrite'; f='exclusive'},
+    @{n="Word's own lock (write access, granting FileShare::Read)"; s='Read'; a='Write'; f='wordlike'}
+)) {
+    $src = Join-Path $dir ($case.f + '.txt')
     Set-Content -Path $src -Value 'hello'
-    $fs = [IO.File]::Open($src, 'Open', 'ReadWrite', $case.s)
-    try { Copy-Item $src (Join-Path $dir ($case.s + '.copy')) -ErrorAction Stop; $rows += ,@($case.n, 'copy SUCCEEDED') }
+    $fs = [IO.File]::Open($src, 'Open', $case.a, $case.s)
+    try { Copy-Item $src (Join-Path $dir ($case.f + '.copy')) -ErrorAction Stop; $rows += ,@($case.n, 'copy SUCCEEDED') }
     catch { $rows += ,@($case.n, $_.Exception.GetType().FullName) }
     finally { $fs.Close() }
 }

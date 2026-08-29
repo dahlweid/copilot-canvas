@@ -29,6 +29,14 @@ jobs:
       - name: Check extension packaging invariants (C1-C4)
         run: node tools/validate-extensions.mjs
 
+      # A probe cited by an ADR is that claim's evidence. Work here is split
+      # across sibling worktrees, so a probe run by the coordinator can resolve
+      # on disk while living on another branch — the citation then dangles for
+      # everyone else. This asks git, not the filesystem, for exactly that
+      # reason.
+      - name: Check every probe citation resolves
+        run: node tools/check-citations.mjs
+
       # `node --test <dir>` fails to resolve modules on some Node versions;
       # the quoted glob is the form that works.
       - name: Run Office-free unit tests

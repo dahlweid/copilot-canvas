@@ -127,21 +127,25 @@ on and the message is what a user acts on.
 
 **`file_locked`**:
 The original is held **more strictly than Word itself holds it**. Measured: Word
-takes a **write** handle and grants `FileShare::ReadWrite`, so a reader that
-also grants `ReadWrite` — which is what `Copy-Item` and Node both do — opens a
-document the user has open in Word without complaint. That case *succeeds*.
+takes a handle with **write access** granting **`FileShare::Read`**, while
+`Copy-Item` and Node both request *read* access and grant `ReadWrite` — a
+compatible pair, so either opens a document the user has open in Word without
+complaint. That case *succeeds*.
 "The user has it open in Word" is therefore provably **never** the cause of a
 read failure, and a message saying so names the one condition incapable of
 producing it. Worth retrying, because the holder may let go.
 
 The mechanism matters, not just the outcome: a caller's `FileShare` value is
 what it grants to *others*, so a reader asking for `FileShare::Read` is refusing
-to let anyone else write, which conflicts with the write handle Word already
+to let anyone else write, which conflicts with the write access Word already
 holds. Measured against a real open document, such a reader gets a sharing
 violation on a file `Copy-Item` copies fine. **A reader must itself grant
-`ReadWrite`.** `spikes/isolation/probes/probe-fileshare-algebra.ps1` is the
-evidence and separates the two candidate mechanisms, which agree on every
-common reader and disagree only here.
+`ReadWrite`.** `spikes/isolation/probes/probe-fileshare-algebra.ps1` runs five
+readers against four holders and against real Word, and is the whole evidence
+trail: its `read, grants Read` row separates the candidate *access* mechanisms,
+and its `write, grants ReadWrite` row is what finally measured the *share* half.
+Every reader that asks only for read access is blind to the share mode — which
+is how this claim was revised twice with nothing going red.
 _Avoid_: in use, open elsewhere, busy
 
 **`permission_denied`**:

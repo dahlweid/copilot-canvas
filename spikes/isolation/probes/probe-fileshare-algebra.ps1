@@ -44,24 +44,36 @@ function Try-Open {
 
 $readers = @(
     @{ Label = 'read, grants ReadWrite  (Copy-Item / Node) '; Access = 'Read'; Share = 'ReadWrite' },
-    @{ Label = 'read, grants Read       (DISCRIMINATOR)    '; Access = 'Read'; Share = 'Read' },
+    @{ Label = 'read, grants Read       (ACCESS discrim.)  '; Access = 'Read'; Share = 'Read' },
     @{ Label = 'read, grants None                          '; Access = 'Read'; Share = 'None' },
-    @{ Label = 'ReadWrite, grants None (Test-FileWritable) '; Access = 'ReadWrite'; Share = 'None' }
+    @{ Label = 'ReadWrite, grants None (Test-FileWritable) '; Access = 'ReadWrite'; Share = 'None' },
+    @{ Label = 'write, grants ReadWrite (SHARE discrim.)   '; Access = 'Write'; Share = 'ReadWrite' }
 )
 
 Write-Output ''
 Write-Output '=== PART A: sharing algebra against a synthetic holder ==='
 Write-Output ''
 
-# Two candidate models, plus the exact configuration read-smoke.mjs uses as its
-# stand-in for Word. That third row exists so the evidence and the regression
-# guard are demonstrably the same experiment: a reviewer noticed the probe held
-# `Write` while the test held `ReadWrite`, which was a real inconsistency even
-# though it turns out not to change a single cell.
+# The three models this claim has passed through -- the third of which is also
+# the configuration read-smoke.mjs now uses as its stand-in for Word -- plus a
+# control that varies access alone (ReadWrite vs Write) while holding the share
+# mode fixed, to show the two W-access holders are indistinguishable here.
+#
+# Two of these readers discriminate, and they discriminate different things.
+# Windows checks the access you request against the holder's SHARE mode, and the
+# holder's ACCESS against the share mode you offer. So a read-requesting reader
+# only ever exercises the second check and measures the holder's access; it is
+# blind to the share mode. A write-requesting reader that grants ReadWrite
+# inverts that and is the only shape here that sees the share half.
+#
+# Until the last row of $readers existed, every reader in this file asked for
+# read access, so the share half could be -- and was -- asserted in either
+# direction with nothing going red.
 $holders = @(
-    @{ Label = 'holder: READ handle granting Read       (what our docs claimed Word does)'; Access = 'Read'; Share = 'Read' },
-    @{ Label = 'holder: WRITE handle granting ReadWrite (what Word actually does)'; Access = 'Write'; Share = 'ReadWrite' },
-    @{ Label = 'holder: READWRITE handle granting ReadWrite (what read-smoke.mjs holds)'; Access = 'ReadWrite'; Share = 'ReadWrite' }
+    @{ Label = 'holder: READ  access, grants Read      (the original claim)      '; Access = 'Read'; Share = 'Read' },
+    @{ Label = 'holder: WRITE access, grants ReadWrite (the first correction)    '; Access = 'Write'; Share = 'ReadWrite' },
+    @{ Label = 'holder: WRITE access, grants Read      (WHAT WORD ACTUALLY DOES) '; Access = 'Write'; Share = 'Read' },
+    @{ Label = 'holder: READWRITE access, grants Read  (control: access W vs RW) '; Access = 'ReadWrite'; Share = 'Read' }
 )
 
 foreach ($holder in $holders) {

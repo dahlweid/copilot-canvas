@@ -47,29 +47,44 @@ import { assertNoLeakedWord, newWordPids, wordPids } from "./word-pids.mjs";
 // asserting success cannot, because an unheld read succeeds for the wrong
 // reason and looks identical. So the Word-like-holder check rests entirely on
 // this handshake, which is why it may not be relaxed back to a sleep.
-async function holdFile(target, share, readyPath) {
+// The ready-marker name is derived from the holder's own access and share
+// values rather than passed in. It was previously a literal at the call site,
+// `ready-rw`, which went stale the moment the Word-like holder changed from
+// granting ReadWrite to write-access-granting-Read -- a marker file whose name
+// contradicted the handle it stood for, in the test whose subject is a label
+// that outlived its accuracy. Derived, it cannot drift.
+async function holdFile(target, share, readyDir, access = "ReadWrite") {
+    const readyPath = path.join(readyDir, `ready-${access}-share-${share}`);
     const holder = spawn(
         "powershell.exe",
         [
             "-NoProfile",
             "-NonInteractive",
             "-Command",
-            "$fs=[IO.File]::Open($env:PROBE_PATH,'Open','ReadWrite',$env:PROBE_SHARE);" +
+            "$fs=[IO.File]::Open($env:PROBE_PATH,'Open',$env:PROBE_ACCESS,$env:PROBE_SHARE);" +
                 "Set-Content -LiteralPath $env:PROBE_READY -Value 'held';" +
                 "while ($true) { Start-Sleep -Seconds 5 }",
         ],
-        { env: { ...process.env, PROBE_PATH: target, PROBE_SHARE: share, PROBE_READY: readyPath } },
+        {
+            env: {
+                ...process.env,
+                PROBE_PATH: target,
+                PROBE_SHARE: share,
+                PROBE_ACCESS: access,
+                PROBE_READY: readyPath,
+            },
+        },
     );
 
     const deadline = Date.now() + 60_000;
     while (!existsSync(readyPath)) {
         if (holder.exitCode !== null) {
             holder.kill();
-            throw new Error(`the ${share} holder exited before taking the handle`);
+            throw new Error(`the ${access}/${share} holder exited before taking the handle`);
         }
         if (Date.now() > deadline) {
             holder.kill();
-            throw new Error(`the ${share} holder never signalled ready`);
+            throw new Error(`the ${access}/${share} holder never signalled ready`);
         }
         await new Promise((resolve) => setTimeout(resolve, 100));
     }
@@ -320,15 +335,15 @@ try {
     await check("an exclusively locked original is reported as locked, not as a generic failure", async () => {
         // The one path units cannot cover: a real sharing violation from a real
         // second process. Measured behaviour this depends on -- an exclusive
-        // hold gives EBUSY, whereas Word's own lock (a write handle granting
-        // FileShare::ReadWrite) does not fail a ReadWrite-granting reader at
-        // all -- is why `file_locked` means "stricter than Word", not "open in
-        // Word". The companion check below asserts that other half.
+        // hold gives EBUSY, whereas Word's own lock (write access granting
+        // FileShare::Read) does not fail a read-requesting, ReadWrite-granting
+        // reader at all -- is why `file_locked` means "stricter than Word", not
+        // "open in Word". The companion check below asserts that other half.
         //
         // Safe despite ADR 0005: the revision token is read before Word is
         // started, so this fails fast on the filesystem and never reaches the
         // `Documents.Open` that would hang.
-        const holder = await holdFile(fixture, "None", path.join(workRoot, "ready-none"));
+        const holder = await holdFile(fixture, "None", workRoot);
         try {
             const err = await cache.readStructure(fixture).then(
                 () => null,
@@ -354,23 +369,30 @@ try {
         // the user has open in Word reads fine; nothing failed if that stopped
         // being true.
         //
-        // The holder models Word exactly: a handle with **write** access,
-        // granting ReadWrite. That distinction is the point. This repo
-        // documented Word as taking `FileShare::Read` for months -- same
-        // conclusion, wrong mechanism -- and the wrong one predicts that *any*
-        // reader succeeds. It does not: a reader granting only `Read` refuses
-        // to let anyone else write, conflicts with Word's write handle, and
-        // gets a sharing violation on a file `Copy-Item` copies fine. So this
-        // check is also the guard against someone "hardening" our copy to a
-        // narrower share mode: that change breaks reads of open documents and
-        // nothing else would notice.
+        // The holder models Word as measured: **write access, granting
+        // `FileShare::Read`** -- the one combination two earlier models both
+        // missed. It matters that both halves are right, because a reader is
+        // blind to whichever of them its own request does not sit opposite.
+        // Windows checks the access you ask for against the holder's share
+        // mode, *and* the holder's access against the share mode you offer. Our
+        // reader asks for read access, so it only ever exercises the second
+        // check -- it measures the holder's access and cannot see its share
+        // mode at all. That blindness is why this claim was stated wrongly
+        // twice with nothing going red; see
+        // spikes/isolation/probes/probe-fileshare-algebra.ps1, whose
+        // *write*-requesting reader is what settled it.
+        //
+        // The check is still the guard against someone "hardening" our copy to
+        // a narrower share mode: a reader granting only `Read` refuses to let
+        // anyone else write, conflicts with Word's write access, and gets a
+        // sharing violation on a file `Copy-Item` copies fine.
         //
         // The holder is taken through `holdFile`, which does not return until the
         // handle is provably held -- a fixed sleep would let the read run against
         // an unheld file on a loaded machine and pass having contended nothing.
         // The `exitCode` assertion after the read closes the other end: the
         // holder never releases voluntarily, so still-running means still-holding.
-        const holder = await holdFile(fixture, "ReadWrite", path.join(workRoot, "ready-rw"));
+        const holder = await holdFile(fixture, "Read", workRoot, "Write");
         try {
             const result = await cache.readStructure(fixture);
             assert.equal(holder.exitCode, null, "the holder released during the read, so nothing was contended");
