@@ -299,21 +299,35 @@ try {
         // caused, and the one a user meets first: `count: 0` with no error, no
         // warning, indistinguishable from the term genuinely not being there.
         //
-        // Built from codepoints, so the assertion does not rest on how this
-        // file's bytes are decoded.
+        // Both terms are built from codepoints, so no assertion here rests on
+        // how this file's own bytes are decoded.
         const strasse = `Stra${String.fromCharCode(0x00df)}e`;
+        const umlautWord = `Gr${String.fromCharCode(0x00fc, 0x00df)}e`;
+
+        // Outbound control, reached with an ASCII query on purpose. Asserting
+        // the echoed query and the snippet of one *non-ASCII* search would look
+        // like it covered both directions and would not: measured, an inbound
+        // regression makes that search match nothing, so the response carries no
+        // snippet to check and the outbound half is unreachable in exactly the
+        // case it is supposed to rule out. An ASCII query matching a paragraph
+        // whose text is non-ASCII has no inbound dependency, so this stays green
+        // through an inbound regression and reddens only for an outbound one.
+        const outbound = await (await get("/api/search?q=UMLAUTMARKER&limit=5")).json();
+        assert.ok(outbound.count > 0, "the fixture has no UMLAUTMARKER paragraph to read back");
+        assert.ok(
+            outbound.hits.some((h) => h.snippet.includes(umlautWord)),
+            `text read out of the document lost its umlauts on the way to the canvas: ${outbound.hits
+                .map((h) => codepoints(h.snippet))
+                .join(" | ")}`,
+        );
+
+        // Inbound: the query the canvas sent, echoed back as the host decoded
+        // it. The two directions fail with different signatures -- expansion to
+        // `U+251C ...` for inbound, replacement with `U+FFFD` for outbound -- so
+        // this and the control above together say which boundary broke.
         const body = await (await get(`/api/search?q=${encodeURIComponent(strasse)}&limit=5`)).json();
-        // One response, both directions. `query` is echoed from the host's
-        // decoding of what we sent (inbound); the snippet comes from the
-        // document over COM (outbound). Broken, this response carried a correct
-        // sz in the snippet and a corrupted one in the query -- same character,
-        // same request, one right and one wrong.
         assert.equal(body.query, strasse, `the query came back as ${codepoints(body.query)}, sent ${codepoints(strasse)}`);
         assert.ok(body.count > 0, `no hits for ${codepoints(strasse)}, which the fixture contains`);
-        assert.ok(
-            body.hits.some((h) => h.snippet.includes(strasse)),
-            `hits found but no snippet contains the term: ${body.hits.map((h) => codepoints(h.snippet)).join(" | ")}`,
-        );
     });
 
     await check("an empty search query is a typed 400", async () => {

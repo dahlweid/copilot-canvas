@@ -169,20 +169,46 @@ try {
         // the property in its own name. The whole of issue #40 lived through two
         // merged layers behind tests like this one.
         //
-        // The query is built from codepoints so the assertion cannot depend on
-        // how this file's own bytes are decoded, which is the class of question
-        // being measured.
+        // Two probes, because the boundary has two directions and one request
+        // cannot separate them. Both terms are built from codepoints so neither
+        // assertion depends on how this file's own bytes are decoded, which is
+        // the class of question being measured.
         const strasse = `Stra${String.fromCharCode(0x00df)}e`;
-        const res = await host.search({ docId, query: strasse });
-        // Both directions in one response, which is what makes it self-proving.
-        // `query` is the host's own decoding of what we sent, so it carries the
-        // inbound crossing; `snippet` originates from the document over COM, so
-        // it carries the outbound one. When only stdin was broken, this same
-        // response held a correct sz in the snippet and a corrupted one in the
-        // echoed query -- no control run needed, because the clean half is the
-        // control.
-        assert.equal(res.query, strasse, `the host decoded the query as ${codepoints(res.query)}, sent ${codepoints(strasse)}`);
-        assert.ok(res.count > 0, `searching for ${codepoints(strasse)} found nothing, though the fixture contains it`);
+        const umlautWord = `Gr${String.fromCharCode(0x00fc, 0x00df)}e`;
+
+        // Outbound, and deliberately reached with an **ASCII** query. The
+        // obvious construction -- one non-ASCII search, asserting the echoed
+        // query and the snippet together -- cannot do this job, and measuring it
+        // is what showed why: with stdin broken the search matches nothing, so
+        // there are no hits and the snippet assertion never runs. It is
+        // unreachable in precisely the case it exists to rule out.
+        //
+        // An ASCII query that matches a paragraph whose *text* is non-ASCII has
+        // no inbound dependency at all, so this stays green through an inbound
+        // regression and goes red only for an outbound one.
+        const outbound = await host.search({ docId, query: "UMLAUTMARKER" });
+        assert.ok(outbound.count > 0, "the fixture has no UMLAUTMARKER paragraph to read back");
+        assert.ok(
+            outbound.hits.some((h) => h.snippet.includes(umlautWord)),
+            `text the host read out of the document lost its umlauts on the way back: ${outbound.hits
+                .map((h) => codepoints(h.snippet))
+                .join(" | ")}`,
+        );
+
+        // Inbound. `query` is echoed from the host's own decoding of the bytes
+        // we wrote to its stdin, so a mismatch here is the defect in #40.
+        //
+        // It is not a *pure* inbound probe -- the echo crosses stdout on the way
+        // back too -- and the two failures are still told apart, by signature
+        // rather than by site. Measured: with InputEncoding unset the sz arrives
+        // as `U+251C U+0192`, two characters where one was sent, because UTF-8
+        // bytes were decoded as OEM and expanded. With OutputEncoding unset
+        // instead it arrives as a single `U+FFFD`, because one OEM byte was
+        // decoded as UTF-8 and was not valid. Expansion means inbound;
+        // replacement means outbound. The control above then confirms which.
+        const inbound = await host.search({ docId, query: strasse });
+        assert.equal(inbound.query, strasse, `the host decoded the query as ${codepoints(inbound.query)}, sent ${codepoints(strasse)}`);
+        assert.ok(inbound.count > 0, `searching for ${codepoints(strasse)} found nothing, though the fixture contains it`);
     });
 
     await check("info reports document properties", async () => {
