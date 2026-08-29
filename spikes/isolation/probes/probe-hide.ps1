@@ -20,6 +20,7 @@ public static class Probe
     [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr dc, uint f);
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+    [DllImport("user32.dll")] public static extern int GetWindowThreadProcessId(IntPtr h, out int pid);
 
     [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
 
@@ -74,7 +75,6 @@ public static class Probe
 
 function Report($label, $value) { Write-Output ("{0,-38} {1}" -f $label, $value) }
 
-$before = @(Get-Process -Name WINWORD -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)
 $word = New-Object -ComObject Word.Application
 $ownPid = $null
 try {
@@ -83,15 +83,28 @@ try {
     $doc = $word.Documents.Add()
     $doc.Content.Text = "Probe document. " * 200
 
-    for ($i = 0; $i -lt 20 -and -not $ownPid; $i++) {
-        $now = @(Get-Process -Name WINWORD -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)
-        $new = @($now | Where-Object { $before -notcontains $_ })
-        if ($new.Count -eq 1) { $ownPid = $new[0] } else { Start-Sleep -Milliseconds 100 }
-    }
-    Report "owned pid" $ownPid
-
     $win = $word.ActiveWindow
     $hwnd = [IntPtr][int64]$win.Hwnd
+
+    # Attribute by hwnd, not by pid differencing. The differencing loop that used
+    # to sit here required *exactly one* new WINWORD ($new.Count -eq 1); measured
+    # on this machine an external producer mints Words concurrently, $new.Count
+    # came back 2, and $ownPid was therefore never assigned. That is not a noisy
+    # answer, it is no answer -- and because the whole teardown below is guarded
+    # by `if ($ownPid)`, the probe then skipped its own leak check in silence and
+    # reported an empty "owned pid". A Word it started could outlive it with
+    # nothing said. The hwnd was already being computed on the line above and
+    # simply was not joined to the attribution it bore on.
+    #
+    # Guarded the same way as the other probes: an unresolved hwnd yields pid 0
+    # (the Idle process, which never exits) and a recycled pid can name something
+    # that is not Word. Either way, refuse to name it rather than act on it.
+    $wp = 0
+    [void][Probe]::GetWindowThreadProcessId($hwnd, [ref]$wp)
+    $wproc = Get-Process -Id $wp -ErrorAction SilentlyContinue
+    if ($wp -gt 4 -and $wproc -and $wproc.ProcessName -eq 'WINWORD') { $ownPid = $wp }
+    else { Report "attribution FAILED (teardown cannot verify)" "hwnd resolved to pid $wp ($($wproc.ProcessName))" }
+    Report "owned pid" $ownPid
 
     Report "ex-style before" ("0x{0:X8}" -f [Probe]::ExStyle($hwnd))
     Report "visible before" ([Probe]::IsWindowVisible($hwnd))
@@ -133,11 +146,40 @@ try {
 }
 finally {
     try { $doc.Saved = $true } catch { }
-    try { $word.Quit(0) } catch { }
+    # Quit(), never Quit(<arg>): under Windows PowerShell 5.1 -- the runtime every
+    # .ps1 here runs under -- the argument form throws and the Word survives, and
+    # process exit does not reap it either (probe-quit0-leak.ps1). The catch
+    # reports rather than swallows; a silent swallow is what hid this for months.
+    try { $word.Quit() } catch { Report "Quit() FAILED (Word may leak)" $_.Exception.Message.Split([char]10)[0] }
     try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($word) | Out-Null } catch { }
-    Start-Sleep -Milliseconds 1200
-    if ($ownPid -and (Get-Process -Id $ownPid -ErrorAction SilentlyContinue)) {
-        Stop-Process -Id $ownPid -Force
-        Write-Output "killed leftover pid $ownPid"
+    # Application.Quit() returns long before its process exits (measured 2.7-6.1 s
+    # idle, longer under load -- ADR 0005), so the fixed 1.2 s wait made this kill
+    # the actual reaper on every run and hid whether Quit() worked at all. Poll to
+    # a generous deadline instead; on success that costs only the real exit time.
+    # The label states what was observed, never a cause the code cannot know.
+    if ($ownPid) {
+        $deadline = (Get-Date).AddSeconds(30)
+        while ((Get-Date) -lt $deadline -and (Get-Process -Id $ownPid -ErrorAction SilentlyContinue).ProcessName -eq 'WINWORD') {
+            Start-Sleep -Milliseconds 250
+        }
+        if ((Get-Process -Id $ownPid -ErrorAction SilentlyContinue).ProcessName -eq 'WINWORD') {
+            # The pid can exit between the test above and this call, and under
+            # $ErrorActionPreference = 'Stop' an unguarded Stop-Process then throws
+            # a terminating error *inside this finally* -- measured, the statements
+            # after it do not run, so the race would silently truncate the teardown
+            # report. Swallow the race, then observe the outcome: reporting "killed"
+            # without checking is the same fabricated label this probe's poll exists
+            # to avoid.
+            Stop-Process -Id $ownPid -Force -ErrorAction SilentlyContinue
+            $killDeadline = (Get-Date).AddSeconds(15)
+            while ((Get-Date) -lt $killDeadline -and (Get-Process -Id $ownPid -ErrorAction SilentlyContinue).ProcessName -eq 'WINWORD') {
+                Start-Sleep -Milliseconds 250
+            }
+            if ((Get-Process -Id $ownPid -ErrorAction SilentlyContinue).ProcessName -eq 'WINWORD') {
+                Report "STILL ALIVE after 30 s, kill FAILED (leaked)" $ownPid
+            }
+            else { Report "STILL ALIVE after 30 s, killed" $ownPid }
+        }
+        else { Report "exited on Quit()" $ownPid }
     }
 }

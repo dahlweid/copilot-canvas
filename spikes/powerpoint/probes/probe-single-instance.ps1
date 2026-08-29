@@ -131,6 +131,7 @@ finally {
 # --- S3: the Word control -----------------------------------------------------
 Say "== S3: CONTROL - the identical test against Word =="
 $w1 = $null; $w2 = $null
+$wOwned1 = @(); $wOwned2 = @()
 try {
     $w1 = New-Object -ComObject Word.Application
     Start-Sleep -Milliseconds 600
@@ -147,25 +148,72 @@ try {
 }
 catch { Rep "  ERROR (Word control)" $_.Exception.Message.Split([char]10)[0] }
 finally {
-    # Only quit Word instances this probe created; a sibling session may be
-    # driving Word right now.
-    foreach ($w in @($w2, $w1)) {
+    # Quit only the instance this iteration is actually holding. The previous gate
+    # asked "has ANY new WINWORD appeared since the probe started?" and then quit
+    # $w -- a decision about one instance taken from a fact about the whole
+    # machine. Two ways that reaches the wrong answer, and neither needs a bug
+    # anywhere else:
+    #   - Quit() returns seconds before its process exits (2.7-6.1 s idle, ADR
+    #     0005), so $w2's still-exiting pid keeps the gate open for the $w1 pass.
+    #   - an external producer creates WINWORDs on this machine at a measured
+    #     rate (PLAN.md, census control: 2 appeared in a 40 s window with nothing
+    #     launched), so a stranger's Word can unlock the gate on its own.
+    # Harmless while Quit(0) threw and the call could never execute; the fix to
+    # that made this gate load-bearing for the first time.
+    #
+    # $wOwned1/$wOwned2 are pid-differenced, so they are not sound attribution
+    # (#37) -- but they are evidence about *this* instance rather than about the
+    # population, which is the property the decision needs. The sound instrument
+    # is the hwnd route, and it is deliberately not retrofitted here: ActiveWindow
+    # throws without a document, so taking it would mean adding one, and S3
+    # measures what bare New-Object does. Changing the experiment to police the
+    # teardown is the wrong trade.
+    #
+    # Separately measured (probe-newobject-attach.ps1): New-Object never attached
+    # to a running Word in either arm, so on that evidence both instances here are
+    # ours. The gate no longer relies on that being true.
+    foreach ($inst in @(
+            [pscustomobject]@{ App = $w2; Owned = @($wOwned2); Label = '2nd' },
+            [pscustomobject]@{ App = $w1; Owned = @($wOwned1); Label = '1st' })) {
+        $w = $inst.App
         if ($w) {
-            try {
-                $newNow = @(Get-Process WINWORD -ErrorAction SilentlyContinue | ForEach-Object Id | Where-Object { $wordBefore -notcontains $_ })
-                if ($newNow.Count -gt 0) { $w.Quit(0) }
+            if ($inst.Owned.Count -gt 0) {
+                try {
+                    # Quit(), never Quit(<arg>): under Windows PowerShell 5.1 -- the
+                    # runtime every .ps1 here runs under -- the argument form throws
+                    # and the Word survives, and process exit does not reap it either
+                    # (probe-quit0-leak.ps1).
+                    $w.Quit()
+                }
+                catch { Rep "  Quit() FAILED (Word may leak)" $_.Exception.Message.Split([char]10)[0] }
             }
-            catch { }
+            else {
+                Rep "  $($inst.Label) New-Object: no pid attributed to it, NOT quit" 'released only'
+            }
             try { [Runtime.InteropServices.Marshal]::ReleaseComObject($w) | Out-Null } catch { }
         }
     }
     [GC]::Collect(); [GC]::WaitForPendingFinalizers()
-    Start-Sleep -Seconds 2
-    foreach ($p in (@(Get-Process WINWORD -ErrorAction SilentlyContinue | ForEach-Object Id) | Where-Object { $wordBefore -notcontains $_ })) {
-        if (Get-Process -Id $p -ErrorAction SilentlyContinue) {
+    # Sweep only pids this probe attributed to its own two calls. The old sweep
+    # killed every WINWORD absent from $wordBefore, which on this machine includes
+    # any Word a concurrent session started meanwhile -- and Stop-Process -Force
+    # destroys unsaved work with no prompt at all, so it is strictly worse than
+    # the Quit() above. Anything else new is reported and left alone (#25).
+    $ourPids = @($wOwned1 + $wOwned2 | Where-Object { $_ } | Select-Object -Unique)
+    $deadline = (Get-Date).AddSeconds(30)
+    while ((Get-Date) -lt $deadline -and @($ourPids | Where-Object { (Get-Process -Id $_ -ErrorAction SilentlyContinue).ProcessName -eq 'WINWORD' }).Count -gt 0) {
+        Start-Sleep -Milliseconds 250
+    }
+    foreach ($p in $ourPids) {
+        if ((Get-Process -Id $p -ErrorAction SilentlyContinue).ProcessName -eq 'WINWORD') {
             Stop-Process -Id $p -Force -ErrorAction SilentlyContinue
-            Say "  swept WINWORD pid $p (created by this probe)"
+            $gone = -not ((Get-Process -Id $p -ErrorAction SilentlyContinue).ProcessName -eq 'WINWORD')
+            Rep "  swept WINWORD pid $p (created by this probe)" $(if ($gone) { 'killed' } else { 'KILL FAILED - leaked' })
         }
+        else { Say "  WINWORD pid $p exited on Quit()" }
+    }
+    foreach ($p in (@(Get-Process WINWORD -ErrorAction SilentlyContinue | ForEach-Object Id) | Where-Object { $wordBefore -notcontains $_ -and $ourPids -notcontains $_ })) {
+        Rep "  new WINWORD pid $p is NOT attributable to this probe, left alone" 'not killed'
     }
     Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue
 }
