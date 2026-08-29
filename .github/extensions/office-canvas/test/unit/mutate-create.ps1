@@ -72,19 +72,20 @@ $mutants = @(
        from  = 'Cannot create ${docPath}: create_document does not write ${ext} files. It writes ${creatableList()}.'
        to    = '${ext} cannot be created. create_document writes ${creatableList()}.' }
 
-    @{ name = 'exception type set top-level, dropped at the tool boundary'
+    # Replaces two mutants that each moved one detail from `data` to a top-level
+    # property. Both are now unbuildable: `CreateError` mirrors `details` onto
+    # `data`, so a top-level detail is no longer a dropped one, and one of those
+    # mutants' `to` text is verbatim what the file now ships. That is the
+    # constructor closing the class rather than the mutants going stale --
+    # per-site defects cannot be injected once the site is not where the
+    # guarantee lives. So the mutant moves to where the guarantee moved.
+    #
+    # Single-line anchor deliberately: the two it replaces were multi-line, and
+    # a multi-line anchor here fails silently on the CRLF/LF split.
+    @{ name = 'details never reach data, so every create failure arrives bare'
        file = 'src/word/document-author.mjs'
-       from  = '                { data: { exception: result.exception ?? null, detail: result.detail ?? null, leftBehind } },'
-       to    = '                { exception: result.exception ?? null, detail: result.detail ?? null, leftBehind },' }
-
-    @{ name = 'created flag set top-level, dropped at the tool boundary'
-       file = 'src/word/document-author.mjs'
-       from  = '                {
-                    data: {
-                        created: true,'
-       to    = '                {
-                    ...{
-                        created: true,' }
+       from  = '        if (details && Object.keys(details).length > 0) this.data = { ...details };'
+       to    = '' }
 
     @{ name = 'no check that the file actually exists after SaveAs2'
        file = 'src/word/document-author.mjs'
@@ -196,13 +197,13 @@ export function paragraphsIn(spec) { return spec.blocks.length; }
     # have deleted the field from both failures while claiming to test one.
     @{ name = 'autoCorrect dropped from the one failure that still authored a document'
        file = 'src/word/document-author.mjs'
-       from  = '                        cause: err.code ?? null,
-                        autoCorrect: {
-                            suppressed: Boolean(result.autoCorrect?.suppressed),
-                            reason: result.autoCorrect?.reason ?? null,
-                        },
+       from  = '                    cause: err.code ?? null,
+                    autoCorrect: {
+                        suppressed: Boolean(result.autoCorrect?.suppressed),
+                        reason: result.autoCorrect?.reason ?? null,
+                    },
 '
-       to    = '                        cause: err.code ?? null,
+       to    = '                    cause: err.code ?? null,
 ' }
 
     @{ name = 'a directory refused as an existing file, shadowing the host classifier'

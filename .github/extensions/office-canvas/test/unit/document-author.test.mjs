@@ -18,7 +18,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { DocumentAuthor, creatableList } from "../../src/word/document-author.mjs";
+import { CreateError, DocumentAuthor, creatableList } from "../../src/word/document-author.mjs";
 import { asToolError } from "../../src/tool-error.mjs";
 import { fileRevisionToken } from "../../src/revision-token.mjs";
 
@@ -65,6 +65,26 @@ test("the tool boundary drops top-level properties and keeps data", () => {
     assert.equal(wrapped.code, "create_failed");
     assert.deepEqual(wrapped.data, { detail: "kept" });
     assert.equal(wrapped.exception, undefined, "a top-level property survived the boundary");
+});
+
+test("a flat detail on CreateError reaches the agent", () => {
+    // The other half of the boundary contract, and the half that used to be a
+    // convention rather than a check.
+    //
+    // `CreateError` once did `Object.assign` alone, so a detail reached `data`
+    // only if the call site nested it there by hand. All four sites did, so
+    // nothing was broken -- but the natural shape, the one every `EditError`
+    // site uses and the one a future create site will reach for, put the fact
+    // somewhere no caller could see.
+    //
+    // Asserting the boundary's *output* is what makes the mirror the thing
+    // under test. A test reading `err.leftBehind` instead would pass with the
+    // mirror deleted, because the assign puts it there either way: that is the
+    // below-the-boundary trap this file's header describes, and this is the
+    // assertion that is not subject to it.
+    const err = new CreateError("create_failed", "nope", { leftBehind: true });
+
+    assert.deepEqual(throughToolBoundary(err).data, { leftBehind: true });
 });
 
 const spec = { blocks: [{ kind: "heading", level: 1, text: "Title" }, { kind: "paragraph", text: "Body." }] };
