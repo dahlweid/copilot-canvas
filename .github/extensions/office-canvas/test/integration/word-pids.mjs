@@ -6,8 +6,33 @@
 // like ours. Differencing asserts what we actually mean -- this test left
 // nothing behind -- and is a strictly better assertion even when run alone.
 //
-// The same rule makes killing safe: only a PID that appeared after we started
-// can be ours, and nothing else may be touched.
+// This file used to add: "the same rule makes killing safe: only a PID that
+// appeared after we started can be ours". That is false, and it was load-bearing
+// for a `Stop-Process -Force`. Measured by
+// `spikes/isolation/probes/probe-word-ownership.ps1`: with one concurrent Word
+// started from a separate process, differencing reported **2 new pids for the 1
+// instance we created**. Parentage carries no signal either -- every WINWORD
+// here parents to the DCOM launcher (`svchost`, pid 1684), not to its creator.
+//
+// Asserting and killing need different standards of evidence, and serving both
+// from one rule was the mistake:
+//
+//   an over-broad assertion fails loudly; an over-broad kill destroys silently.
+//   Only the destructive operation needs provable attribution.
+//
+// So the assertion keeps differencing -- over-reporting costs a visible false
+// failure, and it catches leaks attribution cannot see, such as the second
+// WINWORD that L2 measured `ProtectedViewWindows.Open` spawning without the
+// bridge ever holding a handle to it. Killing goes through a ledger of pids the
+// *host itself* reported as owned, and touches nothing else however suspicious.
+//
+// Attribution is not yet perfect at its source: `Initialize-Word` in
+// `word-host.ps1` derives `ownedPid` by this same differencing, so a ledger
+// entry inherits that. A sound route exists and is measured in
+// `spikes/isolation/probes/probe-word-ownership-hwnd.ps1` -- once a document is
+// open, `Application.ActiveWindow.Hwnd` plus `GetWindowThreadProcessId` yields a
+// pid that is ours by construction. Wiring it into the host is issue #25's
+// second half; that file belongs to an open PR and is not this one's to change.
 
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
@@ -31,8 +56,29 @@ export async function wordPids() {
 }
 
 /** WINWORD PIDs that were not running when the test started. */
-export async function newWordPids(pidsBefore) {
-    return (await wordPids()).filter((pid) => !pidsBefore.includes(pid));
+export async function newWordPids(pidsBefore, list = wordPids) {
+    return (await list()).filter((pid) => !pidsBefore.includes(pid));
+}
+
+/**
+ * Collects the pids a `WordHost` reports as owned. Pass `record` as the host's
+ * `onOwnedPid`.
+ *
+ * A host may own several pids over one run, because it restarts Word after a
+ * crash, so this accumulates rather than replaces. A pid that has since exited
+ * stays recorded: killing a dead pid is a no-op, while forgetting a live one is
+ * a leak.
+ */
+export function ownedWordLedger() {
+    const owned = new Set();
+    return {
+        record(pid) {
+            if (Number.isInteger(pid) && pid > 0) owned.add(pid);
+        },
+        pids() {
+            return [...owned];
+        },
+    };
 }
 
 /**
@@ -54,40 +100,74 @@ export async function newWordPids(pidsBefore) {
  * per-user state (Normal.dotm and friends) that concurrent instances contend
  * for, so the tail is long and load-dependent. Polling makes the generous
  * deadline free on green runs, so there is no reason to shave it.
+ *
+ * Pass `ledger` to have a failure separate the pids the host told us it owned
+ * from the ones that merely appeared. Both still fail; the split exists so a
+ * human reading a red run knows whether to look at our teardown or at what else
+ * was running.
  */
-export async function assertNoLeakedWord(pidsBefore, { timeoutMs = 90000, intervalMs = 250 } = {}) {
+export async function assertNoLeakedWord(
+    pidsBefore,
+    { timeoutMs = 90000, intervalMs = 250, ledger = null, list = wordPids } = {},
+) {
     const started = Date.now();
     const deadline = started + timeoutMs;
-    let leaked = await newWordPids(pidsBefore);
+    let leaked = await newWordPids(pidsBefore, list);
     while (leaked.length > 0 && Date.now() < deadline) {
         await new Promise((resolve) => setTimeout(resolve, intervalMs));
-        leaked = await newWordPids(pidsBefore);
+        leaked = await newWordPids(pidsBefore, list);
     }
     const waited = ((Date.now() - started) / 1000).toFixed(1);
+
+    const ownedPids = ledger ? ledger.pids() : [];
+    const ours = leaked.filter((pid) => ownedPids.includes(pid));
+    const unattributed = leaked.filter((pid) => !ownedPids.includes(pid));
+
+    let detail = "";
+    if (ours.length > 0) {
+        detail += ` Reported as owned by this test's host: ${ours.join(", ")}.`;
+    }
+    if (unattributed.length > 0) {
+        // Deliberately not "so they are ours". That claim was wrong, and it sent
+        // readers looking for a teardown bug that need not exist.
+        detail +=
+            ` Appeared during this test but were never reported as owned: ${unattributed.join(", ")}` +
+            " -- either a Word the bridge spawned without holding a handle to, or another session's.";
+    }
+
     assert.deepEqual(
         leaked,
         [],
-        `Word processes still running ${waited}s after teardown: ${leaked.join(", ")}. ` +
-            `These started during this test, so they are ours.`,
+        `Word processes still running ${waited}s after teardown: ${leaked.join(", ")}.${detail}`,
     );
 }
 
 /**
- * Kills the Word processes this test started, for the tests that deliberately
- * simulate a crash. Processes that predate the test are never touched -- they
- * belong to someone else.
+ * Kills the Word processes the host reported owning, for the tests that
+ * deliberately simulate a crash.
+ *
+ * Only ledger pids are touched. A Word that appeared during this run but was
+ * never reported as owned is left alone however suspicious it looks: it may be
+ * another session's, and a wrong kill is silent and unrecoverable whereas a
+ * missed one surfaces as a loud leak assertion.
  */
-export function killNewWord(pidsBefore, currentPids) {
-    for (const pid of currentPids.filter((p) => !pidsBefore.includes(p))) {
+export function killOwnedWord(ledger, { exec = execFileSync } = {}) {
+    const killed = [];
+    for (const pid of ledger.pids()) {
         try {
-            execFileSync("powershell.exe", [
+            exec("powershell.exe", [
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
-                `Stop-Process -Id ${pid} -Force -ErrorAction SilentlyContinue`,
+                // Name-checked because pids are reused, and by the time we reach
+                // here the bridge's own exit hook has usually reaped this one.
+                `$p = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; ` +
+                    "if ($p -and $p.ProcessName -eq 'WINWORD') { $p.Kill() }",
             ]);
+            killed.push(pid);
         } catch {
             /* already gone */
         }
     }
+    return killed;
 }

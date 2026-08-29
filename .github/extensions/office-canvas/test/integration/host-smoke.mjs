@@ -13,7 +13,7 @@ import path from "node:path";
 import assert from "node:assert/strict";
 
 import { WordHost } from "../../src/word/word-host.mjs";
-import { assertNoLeakedWord, killNewWord, wordPids } from "./word-pids.mjs";
+import { assertNoLeakedWord, killOwnedWord, ownedWordLedger, wordPids } from "./word-pids.mjs";
 
 const execFileAsync = promisify(execFile);
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -48,8 +48,13 @@ await execFileAsync("powershell.exe", [
     fixture,
 ]);
 
+const ledger = ownedWordLedger();
 const host = new WordHost({
     log: (m) => process.stderr.write(`[host] ${m}\n`),
+    // The only sanctioned source of "this WINWORD is ours". Everything this
+    // suite kills comes from here; see word-pids.mjs for why differencing is
+    // not allowed to authorize a kill.
+    onOwnedPid: (pid) => ledger.record(pid),
     // Deliberately stable across runs: a host that crashed in a previous run
     // records its Word pid here, and the next run reaps it.
     pidDir: path.join(tmpdir(), "word-canvas-test-pids"),
@@ -185,7 +190,7 @@ try {
         // Simulates a Word crash / stuck-dialog teardown: the bridge must
         // transparently restart and replay the open.
         await host.request("__force_kill_for_test", {}).catch(() => {});
-        killNewWord(pidsBefore, await wordPids());
+        killOwnedWord(ledger);
         const res = await host.info({ docId });
         assert.ok(res.pageCount > 1, "expected the bridge to recover and reopen the document");
     });
@@ -198,7 +203,13 @@ try {
     await host.dispose();
 }
 
-await check("no new WINWORD.EXE is left behind", () => assertNoLeakedWord(pidsBefore));
+await check("no new WINWORD.EXE is left behind", async () => {
+    // Print the attribution before asserting on it. When this fails under
+    // concurrency the first question is whether the host named the right pid,
+    // and that is not reconstructable after the fact.
+    process.stderr.write(`       host reported owning: ${ledger.pids().join(", ") || "(none)"}\n`);
+    await assertNoLeakedWord(pidsBefore, { ledger });
+});
 
 await rm(workRoot, { recursive: true, force: true }).catch(() => {});
 
