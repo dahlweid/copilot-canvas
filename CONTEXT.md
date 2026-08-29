@@ -1310,3 +1310,48 @@ replacement account of the leak deadline claiming it "outlasts foreign churn"
 when the cited file says the tail is unbounded and load-dependent. Correcting a
 claim puts you in exactly the state that produced it: confident, and one lookup
 short.
+
+### A comment that instructs a caller who does not exist yet
+
+A description of what code does rots *passively*: something changes, the
+sentence goes stale, and the next reader meets it alongside the code it
+describes. An instruction aimed at a future layer rots **aimed**. It keeps
+pointing, and what it points at is a caller nobody has written -- so there is no
+behaviour anywhere that can contradict it.
+
+Measured instance, both versions read from the tree rather than from a report.
+`structure-map.mjs` shipped in L1 (`4abf952`) carrying, at two sites:
+
+```
+// The localized id, kept because an edit that wants to reapply this
+// style must use it -- the English name would throw.
+```
+
+Every clause of that is a claim about the write path, and the write path did not
+exist yet. When it was built, the remedy it prescribes was measured not to work:
+the localized id throws as well. The replacement on `main` states what was
+measured instead -- assigning a style *by* this id throws, the English
+`Heading 1` throws too, the write side names no style at all and uses numeric
+`wd*` constants or another paragraph's Style object -- and the field is now
+labelled "reported for identification, not for reapplication."
+
+**No test could have caught this, and not for want of coverage.** The comment's
+only subject was code that had not been written, so there was nothing whose
+behaviour could go red.
+
+What caught it was proximity, not process. The correction arrived in `4da84c2`,
+the *same commit* that built the write path: L2 had to touch that line to add
+its own measurement. Nobody routed the comment for review, and nothing would
+have. Had the write path been built two files away, the instruction would still
+be sitting there, still wrong, still aimed.
+
+So: **a comment addressed to a future layer should say what was measured and
+when, never what to do.** The honest form of the original is *"the English name
+throws (measured); the localized id is what the file contains"* -- which would
+have been **incomplete** when the write path measured further, rather than
+wrong. Incomplete invites the next measurement; wrong redirects it.
+
+This is the discharge rule turned forwards in time. Asserting a property of a
+neighbour discharges a claim onto code you are not testing; instructing a future
+caller discharges it onto code that does not exist, which is strictly worse,
+because the neighbour can at least be read.
