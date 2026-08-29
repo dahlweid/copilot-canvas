@@ -1,0 +1,14 @@
+# Vendored pdf.js is bytes, not text.
+#
+# Without this, a clone on Windows (`core.autocrlf=true`, which is the default
+# there) rewrites every LF in these files to CRLF on checkout. Measured on this
+# tree: `pdf.worker.min.mjs.part0` contains 28 LFs and would arrive as 600,028
+# bytes instead of 600,000, and `pdf.min.mjs` as 454,697 instead of 454,669. The
+# reassembled worker would then fail its sha256 and the canvas would not render
+# at all.
+#
+# Nothing in CI could catch it: the hosted runner is Linux, where the conversion
+# does not happen, so the suite stays green while every Windows clone is broken.
+# The two files with no LF at all (`part1`, `part2`) would survive by luck, which
+# is exactly why this is set on the directory rather than per file.
+.github/extensions/office-canvas/src/ui/vendor/** -text

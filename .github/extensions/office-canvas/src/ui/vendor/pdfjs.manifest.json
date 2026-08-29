@@ -1,0 +1,38 @@
+{
+    "version": "6.2.108",
+    "source": "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.2.108/build",
+    "generatedBy": "tools/vendor-pdfjs.mjs",
+    "files": [
+        {
+            "name": "pdf.min.mjs",
+            "bytes": 454669,
+            "sha256": "e0be3863c23c8af2305b16548febd58e7f8874a460253317d7771cddbc1c0f6d"
+        },
+        {
+            "name": "pdf-text-layer.css",
+            "bytes": 3394,
+            "sha256": "eb942b78bcf86b295cacc709c0748f8afc9d507857576abab392ee5908a54efd",
+            "extractedFrom": "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.2.108/web/pdf_viewer.css",
+            "rule": ".textLayer"
+        }
+    ],
+    "worker": {
+        "name": "pdf.worker.min.mjs",
+        "bytes": 1262398,
+        "sha256": "0613f41490dd6aaceed7a93fbbd38c85e6d6aa60474b6588c6e7709cfbe18cb3",
+        "parts": [
+            {
+                "name": "pdf.worker.min.mjs.part0",
+                "bytes": 600000
+            },
+            {
+                "name": "pdf.worker.min.mjs.part1",
+                "bytes": 600000
+            },
+            {
+                "name": "pdf.worker.min.mjs.part2",
+                "bytes": 62398
+            }
+        ]
+    }
+}

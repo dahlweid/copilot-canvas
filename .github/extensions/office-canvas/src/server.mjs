@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import { DocumentError, normalizeDocPath, SUPPORTED } from "./render-cache.mjs";
 import { FileWatcher } from "./watcher.mjs";
 import { addRecent, readRecents } from "./store.mjs";
+import { loadWorker, VENDOR_DIR } from "./vendor-assets.mjs";
 
 const UI_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "ui");
 
@@ -20,8 +21,22 @@ const MIME = {
     ".html": "text/html; charset=utf-8",
     ".css": "text/css; charset=utf-8",
     ".js": "text/javascript; charset=utf-8",
+    ".mjs": "text/javascript; charset=utf-8",
     ".svg": "image/svg+xml",
 };
+
+/**
+ * The vendored files this server will serve, and nothing else.
+ *
+ * An allowlist rather than a basename check. `src/ui/vendor/` also holds the
+ * worker *parts* and the manifest, none of which any client has business
+ * fetching -- a part served on its own is a fragment of a program, and handing
+ * one out would make a truncated worker look like a working route.
+ */
+const VENDOR_FILES = new Set(["pdf.min.mjs", "pdf-text-layer.css"]);
+
+/** Served by reassembling the committed parts; never present as one file. */
+const VENDOR_WORKER_ROUTE = "/vendor/pdf.worker.min.mjs";
 
 // The picker offers exactly what the cache will open. Its own copy of this set
 // had drifted -- it omitted `.dotx`, so a template in the workspace was hidden
@@ -47,9 +62,20 @@ const json = (res, status, body) => {
  * multi-range — RFC 9110 says ignore what we cannot honour), the string
  * `"unsatisfiable"` for a 416, or an inclusive `{ start, end }`.
  *
- * `bytes=-N` is a *suffix* range meaning the final N bytes, which is how PDF
- * readers fetch the trailer to find the cross-reference table. Reading it as
- * `0-N` returns plausible-looking bytes from the wrong end of the file.
+ * `bytes=-N` is a *suffix* range meaning the final N bytes. Reading it as `0-N`
+ * would return plausible-looking bytes from the wrong end of the file, which is
+ * why it is handled separately.
+ *
+ * **This has no measured consumer.** An earlier version of this comment said
+ * suffix ranges are "how PDF readers fetch the trailer to find the
+ * cross-reference table". That is sound as a description of the format, and it
+ * is wrong as a claim about this code: probed against the bundled pdf.js
+ * (`spikes/pdfjs/probes/probe-range-requests.mjs`), the default configuration
+ * issues one unranged GET and **zero** Range requests of any kind, computing the
+ * tail from `Content-Length` instead. Forcing ranged mode produced 14 requests
+ * and still no suffix range. The branch stays because it is correct and cheap,
+ * and because the route is reachable by anything that speaks HTTP — but nothing
+ * should be verified by assuming pdf.js exercises it.
  */
 export function parseByteRange(headerValue, size) {
     const match = /^bytes=(\d*)-(\d*)$/.exec((headerValue ?? "").trim());
@@ -121,18 +147,30 @@ export class ViewerInstance {
     #watcher = null;
     #refreshing = null;
 
-    constructor({ cache, instanceId, workspacePath, log = () => {}, spawnFn = spawn }) {
+    // Counts change records as they are recorded. `changed` tells you a render
+    // happened; this tells you whether the record in `this.change` is still the
+    // one a given render was started for. A render that began before a record
+    // existed invoked `cache.refresh` before that edit landed, so its image
+    // cannot be shown to contain it however recently it finished.
+    #changeEpoch = 0;
+
+    constructor({ cache, instanceId, workspacePath, log = () => {}, spawnFn = spawn, vendorDir = VENDOR_DIR }) {
         this.cache = cache;
         this.instanceId = instanceId;
         this.workspacePath = workspacePath ?? null;
         this.log = log;
         this.spawnFn = spawnFn;
+        this.vendorDir = vendorDir;
         this.url = null;
 
         this.doc = null; // last known describe() payload
         this.status = "idle"; // idle | opening | ready | error
         this.error = null;
         this.lastPage = 1;
+
+        // What the last operation changed, or null. Stamped with the render key
+        // of the document state it describes; see #changeIfCurrent.
+        this.change = null;
 
         this.#watcher = new FileWatcher({
             log,
@@ -171,7 +209,40 @@ export class ViewerInstance {
             wordVersion: this.cache.wordVersion,
             workspacePath: this.workspacePath,
             pdfUrl: this.doc ? `/pdf/${this.doc.key}.pdf` : null,
+            change: this.#changeIfCurrent(),
         };
+    }
+
+    /**
+     * The change record, but only while the document is still in the state it
+     * describes.
+     *
+     * The render key is `hash(path|mtimeMs|size)`, so it moves on any write --
+     * ours, the user's Word, or a generator script replacing the file. Keying
+     * the record on it means an overlay cannot outlive the content it points at,
+     * which is the address rule (ADR 0006) applied to the display. Anything else
+     * would leave a highlight sitting over text that has since moved.
+     *
+     * This is not a new assumption: the same key already decides that a rendered
+     * PDF may be cached immutably, so if it could go stale the viewer would
+     * already be showing the wrong pages.
+     */
+    #changeIfCurrent() {
+        if (!this.change || !this.doc) return null;
+        return this.change.docKey === this.doc.key ? this.change : null;
+    }
+
+    /**
+     * Ties whatever record is currently held to the render just produced.
+     *
+     * Stamping is one operation in one place, applied to whatever `this.change`
+     * holds, rather than a second expression that re-decides what the record
+     * should be. Two spellings of the same rule can drift, and here they would
+     * drift silently: both produce a plausible-looking overlay state and neither
+     * is wrong enough to throw.
+     */
+    #stampChange(docKey) {
+        if (this.change) this.change = { ...this.change, docKey };
     }
 
     #broadcast(event, data = {}) {
@@ -203,6 +274,11 @@ export class ViewerInstance {
             await this.cache.pdf(docPath);
             if (this.doc && this.doc.path !== info.path) this.lastPage = 1;
             this.doc = info;
+            // A record describes one document; carrying it to another would be
+            // meaningless. #changeIfCurrent would reject it anyway on the key,
+            // but leaving it set would make that the only thing standing between
+            // a stale overlay and the user.
+            this.change = null;
             this.status = "ready";
             await this.#watcher.watch(info.path);
             await this.#watcher.acknowledge();
@@ -217,11 +293,71 @@ export class ViewerInstance {
         }
     }
 
-    /** Re-renders if the file on disk changed. Returns the (possibly new) state. */
-    async refresh({ force = false } = {}) {
+    /**
+     * Re-renders if the file on disk changed. Returns the (possibly new) state.
+     *
+     * `change` describes what an operation just did, and is attached to the
+     * render this refresh produces. It is stamped with that render's key here
+     * rather than by the caller, because the caller cannot know the key until
+     * the re-render has happened.
+     */
+    async refresh({ force = false, change } = {}) {
         if (!this.doc) throw new DocumentError("not_open", "No document is open in this canvas.");
-        if (this.#refreshing) return this.#refreshing;
 
+        // Recorded before anything else can publish state. The render below
+        // re-assigns it with a render key, so this bare assignment matters for
+        // one reason only: it *invalidates the previous overlay immediately*.
+        // Without it, an in-flight refresh that turns out to be a no-op would
+        // broadcast state while `this.change` still held the last edit's record,
+        // stamped with a key that has not moved -- so a stale highlight would go
+        // out describing an edit that has since been superseded. Left unstamped
+        // it is dropped by #changeIfCurrent, which is the safe direction:
+        // stamping it with the *current* key here would instead publish the new
+        // edit's text over the pre-edit render.
+        if (change !== undefined) {
+            this.change = change;
+            this.#changeEpoch += 1;
+        }
+
+        if (this.#refreshing) {
+            const joined = await this.#refreshing;
+            // Only a caller with no opinion about the overlay may settle for a
+            // joined render, and `changed` is what rules out a no-op: one that
+            // returned early without advancing `this.doc` leaves the key at the
+            // pre-edit render.
+            //
+            // A caller *with* a record may never settle for one, and the reason
+            // is stronger than "usually unsafe" -- it is never provable. The
+            // joined render invoked `cache.refresh` before this record existed,
+            // so it read the file at some moment we cannot observe and may
+            // predate this edit. `changed` says a render happened; it does not
+            // say which. On two rapid edits -- A lands, its refresh starts, B
+            // lands and joins it -- the join reports `changed: true` for an
+            // image that is post-A and pre-B, and B's overlay lands on A's page.
+            //
+            // So this branch deliberately does not test the record against the
+            // render. It was written that way first and the condition could
+            // never be false: a render already in flight always began at an
+            // earlier epoch than a record created by the call that joins it.
+            // A guard with no reachable failure is worse than none, because it
+            // reads as protection.
+            if (joined.changed && change === undefined) return joined;
+            // Fall through. A forced caller renders for real, which is what makes
+            // its record safe to stamp -- the overlay is not lost, it is paid for
+            // with the one render that can be proven to contain the edit. An
+            // unforced caller returns the joined render with the record left
+            // unstamped, and #changeIfCurrent drops it: losing an overlay is the
+            // safe direction, drawing one over the wrong image is not.
+            if (!force) return joined;
+        }
+
+        // Recorded before `cache.refresh` is invoked, which is the moment this
+        // render's view of the file is fixed. If a newer record arrives while it
+        // is in flight, `this.change` below is no longer the record this render
+        // was started for, and stamping it would tie that newer edit to this
+        // older image -- the same stale pairing the join above refuses, reached
+        // from the opposite side.
+        const startedEpoch = this.#changeEpoch;
         this.#refreshing = (async () => {
             const docPath = this.doc.path;
             const result = await this.cache.refresh(docPath);
@@ -230,16 +366,28 @@ export class ViewerInstance {
             this.doc = result;
             this.status = "ready";
             this.error = null;
+            // `#stampChange` stamps whatever `this.change` currently holds, which
+            // is deliberate -- but a caller that arrived while this render was in
+            // flight has already overwritten it with a newer record. Stamping then
+            // would tie *their* edit to *this* render, which is the same stale
+            // pairing the join above refuses, reached from the opposite side.
+            if (change !== undefined && this.#changeEpoch === startedEpoch) this.#stampChange(result.key);
             await this.#watcher.acknowledge();
             this.#pushState();
             this.#broadcast("reloaded", { ...this.state, restorePage: this.lastPage });
             return { changed: true, doc: this.doc };
         })();
 
+        // Cleared only if it is still ours. A forced caller that joined a no-op
+        // falls through and installs its own promise here, and this owner's
+        // `finally` may run afterwards -- clearing the field unconditionally would
+        // null out that successor and let a third caller start a concurrent
+        // refresh against the same document.
+        const mine = this.#refreshing;
         try {
-            return await this.#refreshing;
+            return await mine;
         } finally {
-            this.#refreshing = null;
+            if (this.#refreshing === mine) this.#refreshing = null;
         }
     }
 
@@ -247,6 +395,12 @@ export class ViewerInstance {
         if (!this.doc) return;
         this.log(`document changed on disk: ${path.basename(this.doc.path)}`);
         this.#broadcast("rendering", { path: this.doc.path });
+        // Deliberately does not clear the change record. This fires for an
+        // external writer *and* as an echo of our own save, and cannot tell them
+        // apart -- clearing here would race the edit that set the record and
+        // silently lose the overlay. The render key can tell them apart: it
+        // moves only if the file actually differs, so #changeIfCurrent drops the
+        // record exactly when an external write really did land.
         try {
             await this.refresh();
         } catch (err) {
@@ -333,8 +487,80 @@ export class ViewerInstance {
 
         if (route === "/events") return this.#serveEvents(req, res);
         if (route.startsWith("/pdf/")) return this.#servePdf(req, res);
+        if (route.startsWith("/vendor/")) return this.#serveVendor(req, res, route);
         if (route.startsWith("/api/")) return this.#serveApi(req, res, route, url);
         return this.#serveStatic(res, route);
+    }
+
+    /**
+     * Serves the vendored pdf.js, reassembling the worker from its parts.
+     *
+     * Cached by ETag rather than served immutable. The URL carries no version,
+     * so a `max-age` far in the future would leave a browser holding last
+     * version's worker against this version's `pdf.min.mjs` -- two halves of
+     * pdf.js that were never tested together. Revalidation costs one loopback
+     * round trip and a 304.
+     */
+    async #serveVendor(req, res, route) {
+        if (route === VENDOR_WORKER_ROUTE) {
+            let worker;
+            try {
+                // Awaited in full before a single header is written: a part that
+                // fails to read must produce a failed request, not a 200 whose
+                // body stops in the middle of an expression.
+                worker = await loadWorker(this.vendorDir);
+            } catch (err) {
+                this.log(`could not serve the pdf.js worker: ${err.message}`);
+                return json(res, 500, {
+                    error: { code: err.code ?? "vendor_unavailable", message: err.message },
+                });
+            }
+            if (req.headers["if-none-match"] === worker.etag) {
+                res.writeHead(304, { ETag: worker.etag, "Cache-Control": "private, must-revalidate" });
+                return res.end();
+            }
+            res.writeHead(200, {
+                "Content-Type": MIME[".mjs"],
+                "Content-Length": worker.buffer.byteLength,
+                "Cache-Control": "private, must-revalidate",
+                ETag: worker.etag,
+            });
+            if (req.method === "HEAD") return res.end();
+            return res.end(worker.buffer);
+        }
+
+        const name = path.basename(route);
+        if (!VENDOR_FILES.has(name)) {
+            res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+            return res.end("Not found");
+        }
+        try {
+            const body = await readFile(path.join(this.vendorDir, name));
+            res.writeHead(200, {
+                "Content-Type": MIME[path.extname(name).toLowerCase()] ?? "application/octet-stream",
+                "Content-Length": body.length,
+                "Cache-Control": "private, must-revalidate",
+            });
+            if (req.method === "HEAD") return res.end();
+            return res.end(body);
+        } catch (err) {
+            this.log(`could not serve vendored ${name}: ${err.message}`);
+            // Re-vendoring fixes exactly one cause, so only that cause is named.
+            // A permissions or I/O failure reports its own code instead: telling
+            // someone to re-run the vendoring step would send them after the
+            // wrong thing, and for EACCES the step appears to succeed while the
+            // file stays unservable. Discriminated on `err.code`, never on the
+            // message, which is localized.
+            const missing = err.code === "ENOENT";
+            return json(res, 500, {
+                error: {
+                    code: missing ? "vendor_missing" : "vendor_unreadable",
+                    message: missing
+                        ? `The vendored pdf.js file '${name}' is missing. Run 'node tools/vendor-pdfjs.mjs'.`
+                        : `The vendored pdf.js file '${name}' could not be read (${err.code ?? "unknown error"}).`,
+                },
+            });
+        }
     }
 
     #serveEvents(req, res) {
@@ -377,8 +603,10 @@ export class ViewerInstance {
             "Accept-Ranges": "bytes",
         };
 
-        // The embedded PDF viewer requests byte ranges; without this it either
-        // refuses to load or downloads the whole file for every page jump.
+        // Range support is kept because `Accept-Ranges` is part of what lets a
+        // client choose *not* to use it: pdf.js reads `Content-Length` from the
+        // unranged response and fetches the file once. It is not here because
+        // pdf.js asks for ranges — measured, it never does.
         const range = parseByteRange(req.headers.range, info.size);
         if (range === "unsatisfiable") {
             res.writeHead(416, { "Content-Range": `bytes */${info.size}` });
