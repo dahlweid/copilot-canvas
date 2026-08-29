@@ -27,6 +27,16 @@ import { createIdleShutdown } from "./src/word-lifecycle.mjs";
 import { normalizeReadArgs, DEFAULT_READ_LIMIT, MAX_READ_LIMIT } from "./src/word/read-args.mjs";
 import { MAX_HEADING_LEVEL, MIN_HEADING_LEVEL, OPERATION_HELP, OPERATION_NAMES } from "./src/word/edit-intent.mjs";
 import { asToolError } from "./src/tool-error.mjs";
+import {
+    BLOCK_HELP,
+    BLOCK_KINDS,
+    MAX_BLOCKS,
+    MAX_LIST_ITEMS,
+    MAX_TABLE_COLUMNS,
+    MAX_TABLE_ROWS,
+    MIN_BLOCK_HEADING_LEVEL,
+} from "./src/word/create-intent.mjs";
+import { creatableList } from "./src/word/document-author.mjs";
 
 /** instanceId -> ViewerInstance */
 const instances = new Map();
@@ -417,6 +427,107 @@ const readDocumentTool = {
     },
 };
 
+// Every bound below is imported from src/word/create-intent.mjs, which is also
+// what the runtime enforces. A description that restates a limit is a second
+// copy of it, and this repo has shipped the drifted version of that three times
+// in three pull requests — a range hardcoded in prose, the constant moved, and
+// the model told something false with no test able to notice.
+
+const createBlockSchema = {
+    type: "object",
+    properties: {
+        kind: {
+            type: "string",
+            enum: BLOCK_KINDS,
+            description: `What this block is. ${BLOCK_HELP}`,
+        },
+        level: {
+            type: "integer",
+            minimum: MIN_BLOCK_HEADING_LEVEL,
+            maximum: MAX_HEADING_LEVEL,
+            description: `heading only: the heading depth, ${MIN_BLOCK_HEADING_LEVEL} being the top level.`,
+        },
+        text: {
+            type: "string",
+            description:
+                "heading and paragraph: the text. One paragraph — line breaks are refused, because a second paragraph is a second block.",
+        },
+        ordered: {
+            type: "boolean",
+            description: "list only: true numbers the items; omitted or false bullets them.",
+        },
+        items: {
+            type: "array",
+            items: { type: "string" },
+            maxItems: MAX_LIST_ITEMS,
+            description: `list only: the items, one paragraph each. At most ${MAX_LIST_ITEMS}.`,
+        },
+        rows: {
+            type: "array",
+            items: { type: "array", items: { type: "string" }, maxItems: MAX_TABLE_COLUMNS },
+            maxItems: MAX_TABLE_ROWS,
+            description: `table only: the cells, row by row. The table must be rectangular — every row the same length — and at most ${MAX_TABLE_ROWS} rows by ${MAX_TABLE_COLUMNS} columns.`,
+        },
+        headerRow: {
+            type: "boolean",
+            description:
+                "table only: true makes the first row a bold heading row that repeats if the table crosses a page break.",
+        },
+    },
+    required: ["kind"],
+    additionalProperties: false,
+};
+
+const createDocumentTool = {
+    name: "create_document",
+    description: [
+        "Creates a new Word document from an ordered list of blocks — headings, paragraphs, bulleted or",
+        "numbered lists and tables — and returns its structure map and revision token, the same ones",
+        "read_document would give, so it can be edited straight away without reading it first.",
+        "It will not overwrite: a path that already exists is refused, because replacing a document is",
+        "what edit_document is for and that path has a revision token, a snapshot and a revert behind it.",
+        "Text is written verbatim — Word's autocorrect is switched off on the instance that authors it,",
+        "so straight quotes stay straight and nothing is capitalised or substituted on the way in.",
+    ].join(" "),
+    parameters: {
+        type: "object",
+        properties: {
+            path: {
+                type: "string",
+                description: `Absolute or workspace-relative path to create (${creatableList()}). The folder must already exist, and the file must not.`,
+            },
+            blocks: {
+                type: "array",
+                minItems: 1,
+                maxItems: MAX_BLOCKS,
+                items: createBlockSchema,
+                description: `The document's content, in order. At most ${MAX_BLOCKS} blocks. ${BLOCK_HELP}`,
+            },
+        },
+        required: ["path", "blocks"],
+        additionalProperties: false,
+    },
+    handler: async (args) => {
+        // Path resolution runs before any Word work is entered, matching
+        // read_document: a malformed path should cost a string operation, not a
+        // cold Word start.
+        let docPath;
+        try {
+            docPath = resolveInputPath(args?.path);
+        } catch (err) {
+            throw asToolError(err);
+        }
+
+        return withWordWork(async () => {
+            try {
+                return await getCache().createDocument(docPath, { blocks: args?.blocks });
+            } catch (err) {
+                throw asToolError(err);
+            }
+        });
+    },
+};
+
 const editDocumentTool = {
     name: "edit_document",
     description: [
@@ -587,7 +698,7 @@ process.on("unhandledRejection", (reason) => {
 
 session = await joinSession({
     canvases: [wordCanvas],
-    tools: [readDocumentTool, editDocumentTool, revertDocumentTool],
+    tools: [createDocumentTool, readDocumentTool, editDocumentTool, revertDocumentTool],
     hooks: {
         onSessionEnd: async () => {
             await shutdown(null);

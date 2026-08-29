@@ -20,14 +20,17 @@
 #     own code does not do is worse than no rule, because it is the one a
 #     reader trusts without checking.
 #   * A Word instance we did not create is never quit and never hidden.
-#   * Global Application.Options are never modified. The reason is *not* that
-#     they persist for the user: measured, they are per-process -- toggled off
-#     in one instance, a fresh second process still read the original values,
-#     and the HKCU Word\Options key stayed absent throughout, including after
-#     both instances quit. So our hidden Word cannot reach the user's settings
-#     by construction, and this rule is belt-and-braces rather than the thing
-#     standing between them and a changed Word. Keep the rule; it costs nothing
-#     and the isolation is a measured property of Word, not a guarantee we own.
+#   * Global Application.Options are only ever modified on an instance we
+#     started. This line used to say they are never modified, which
+#     `Suppress-AutoCorrect` made false. The reason is *not* that they persist
+#     for the user: measured, they are per-process -- toggled off in one
+#     instance, a fresh second process still read the original values, and the
+#     HKCU Word\Options key stayed absent throughout, including after both
+#     instances quit. The reason is that a Word we merely attached to *is* the
+#     user's Word, and changing it changes what they are looking at right now.
+#     So the ownership gate is the thing doing the work here; the per-process
+#     isolation is a measured property of Word we benefit from, not a guarantee
+#     we own.
 
 param(
     # Directory used to record which WINWORD process this host owns, so an
@@ -92,6 +95,10 @@ $script:OwnedPid = $null
 # is what lets a later kill prove it is acting on the same one.
 $script:OwnedStart = $null
 $script:Docs = @{}
+# Whether autocorrect was switched off on the instance we are driving, and if not
+# why not. Reported on every authoring result so a caller can assert it rather
+# than assume it.
+$script:AutoCorrect = @{ suppressed = $false; reason = 'word_not_started' }
 # Remembers how each document was opened so a dead COM connection can be
 # recovered without the caller noticing.
 $script:DocArgs = @{}
@@ -421,6 +428,57 @@ function Resolve-Doc($docId) {
 
 # --- Word lifecycle ----------------------------------------------------------
 
+# Autocorrect suppression. A correctness control, not a preference.
+#
+# Autocorrect rewrites inserted text and raises nothing: straight quotes come
+# back curly, "--" becomes a dash, "(c)" becomes (c) as a symbol. There is no
+# error to catch and no return value to check, so a document authored through it
+# can differ from what was asked for with nothing anywhere reporting that.
+#
+# Two things were measured before this was written
+# (spikes/isolation/probes/probe-autocorrect.ps1, arms C and A/B/E/F/G/H):
+#
+#   1. The settings are per *process*. Switched off on one hidden instance and
+#      read back from a second, independent WINWORD while the first still held
+#      them off, all five read True. HKCU:\Software\Microsoft\Office\16.0\Word\
+#      Options read <absent> before, during and after -- including after both
+#      instances had quit. They are not per-user and they are not persisted.
+#   2. Autocorrect never fired on any programmatic insertion tested: 0 of 6 bait
+#      lines rewritten across Range.Text assignment and Selection.TypeText, typed
+#      whole and character by character, with every setting on. The one arm that
+#      rewrote anything (3 of 6) was an explicit Content.AutoFormat() call, which
+#      this host never makes.
+#
+# So this is belt and braces rather than the mechanism that makes authoring
+# correct -- but (2) is a statement about today's Word, and five property writes
+# is a cheap way to stop depending on it.
+#
+# Finding (1) is also why this is gated on ownership. Per-process means an
+# instance we merely attached to is the user's own running Word, and switching
+# their autocorrect off underneath them is exactly the thing the header rule
+# forbids. On an attached instance the settings are left alone and (2) carries
+# the correctness on its own.
+#
+# The property names are the ones that exist on this Word, taken from the probe
+# rather than from memory. A misspelled COM property reads $null silently and
+# throws only on assignment, so three plausible names -- ReplaceHyphens,
+# ReplaceHyphensWithDash, CorrectTwoInitialCapitals -- cost a run before this
+# list was pinned to something measured.
+function Suppress-AutoCorrect {
+    if ($null -eq $script:OwnedPid) { return @{ suppressed = $false; reason = 'attached_instance' } }
+
+    $failed = @()
+    foreach ($name in @('ReplaceText', 'CorrectSentenceCaps', 'CorrectInitialCaps')) {
+        try { $script:App.AutoCorrect.$name = $false } catch { $failed += $name }
+    }
+    foreach ($name in @('AutoFormatAsYouTypeReplaceQuotes', 'AutoFormatAsYouTypeReplaceSymbols')) {
+        try { $script:App.Options.$name = $false } catch { $failed += $name }
+    }
+
+    if ($failed.Count -gt 0) { return @{ suppressed = $false; reason = 'not_settable'; settings = $failed } }
+    return @{ suppressed = $true }
+}
+
 function Initialize-Word {
     if (Test-AppAlive) { return }
 
@@ -475,6 +533,7 @@ function Initialize-Word {
     # Force-disable macros before any document is opened. We render documents
     # the user may not have authored.
     try { $script:App.AutomationSecurity = $MSO_AUTOMATION_SECURITY_FORCE_DISABLE } catch { }
+    $script:AutoCorrect = Suppress-AutoCorrect
 }
 
 function Close-Doc($docId) {
@@ -1080,6 +1139,15 @@ $WD_STYLE_NORMAL = -1
 $WD_CHARACTER = 1
 $WD_COLLAPSE_START = 1
 
+# Built-in list styles, and the format SaveAs2 writes a .docx in. Every one of
+# these was read back off a live Word rather than taken from documentation, for
+# the reason the header gives: this Word is German, so the *names* that come back
+# are Aufzählungszeichen and Listennummer, and only the numbers are portable.
+# Measured, spikes/isolation/probes/probe-authoring.ps1 arm S.
+$WD_STYLE_LIST_BULLET = -49
+$WD_STYLE_LIST_NUMBER = -50
+$WD_FORMAT_XML_DOCUMENT = 16
+
 # Reads the Zone.Identifier alternate data stream. Sub-millisecond, and it
 # cannot hang, which is the entire point: the obvious test -- ask Word to open
 # it and see what happens -- is the call that wedges.
@@ -1425,6 +1493,184 @@ function Cmd-Edit($a) {
     return $result
 }
 
+# --- authoring ---------------------------------------------------------------
+
+# Writes one block of a document spec at the end of the document.
+#
+# `$state.fresh` exists because Documents.Add() does not produce an empty
+# document: it produces one containing exactly one empty paragraph. Appending
+# from the start would leave a blank first line in every authored document, so
+# the first block writes into that paragraph and every later block appends.
+function Add-SpecBlock($doc, $block, $state) {
+    $kind = [string]$block.kind
+
+    # One place that decides where the next block goes, so a block kind cannot
+    # invent its own cursor and land somewhere the others do not expect.
+    $next = {
+        if ($state.fresh) { $state.fresh = $false; return $doc.Paragraphs.Item(1) }
+        return $doc.Paragraphs.Add()
+    }
+
+    switch ($kind) {
+        'paragraph' {
+            $para = & $next
+            Set-ParagraphText $para ([string]$block.text)
+            $para.Range.Style = $WD_STYLE_NORMAL
+            return
+        }
+        'heading' {
+            $para = & $next
+            Set-ParagraphText $para ([string]$block.text)
+            # Numeric constant, via the same helper the edit path uses. Naming
+            # the style is the bug here, in either direction: 'Heading 1' throws
+            # and so does the style id Word actually writes into the file.
+            Set-ParagraphHeadingLevel $para ([int]$block.level)
+            return
+        }
+        'list' {
+            $style = if ($block.ordered) { $WD_STYLE_LIST_NUMBER } else { $WD_STYLE_LIST_BULLET }
+            foreach ($item in $block.items) {
+                $para = & $next
+                Set-ParagraphText $para ([string]$item)
+                $para.Range.Style = $style
+            }
+            return
+        }
+        'table' {
+            $rows = @($block.rows)
+            $rowCount = $rows.Count
+            $colCount = @($rows[0]).Count
+
+            # The anchor paragraph is consumed as the table's insertion point and
+            # survives after it -- Word requires a paragraph following a table, so
+            # this is the paragraph it would have created anyway. This is the exact
+            # shape measured in probe-authoring-save.ps1: an appended paragraph,
+            # then Tables.Add against its Range.
+            $anchor = & $next
+            $table = $doc.Tables.Add($anchor.Range, $rowCount, $colCount)
+
+            for ($r = 0; $r -lt $rowCount; $r++) {
+                $row = @($rows[$r])
+                for ($c = 0; $c -lt $colCount; $c++) {
+                    # Cell text goes through the same position-span trim as every
+                    # other paragraph. A cell paragraph's Range.Text ends "`r"
+                    # plus chr(7) -- two characters in the string but one position
+                    # -- so a length-derived trim eats a real character here.
+                    Set-ParagraphText $table.Cell($r + 1, $c + 1).Range.Paragraphs.Item(1) ([string]$row[$c])
+                }
+            }
+
+            if ($block.headerRow) {
+                # Direct formatting, not a named style: repeating the first row
+                # across page breaks is what "header row" means structurally, and
+                # bold is what makes it read as one. Neither names anything
+                # localizable.
+                try { $table.Rows.Item(1).HeadingFormat = $true } catch { }
+                try { $table.Rows.Item(1).Range.Bold = $true } catch { }
+            }
+            return
+        }
+        default { throw "Unsupported block kind '$kind'." }
+    }
+}
+
+# Authors a new document from a spec and saves it.
+#
+# Shaped like Cmd-Edit and for the same reasons: the document is never registered
+# in $script:Docs, so no later command can resolve it and reacquire a lock; and
+# failures come back as a `status` on the success channel, because the dispatch
+# loop collapses every throw to one `word_error` and the caller would otherwise
+# be string-matching German exception text to tell one cause from another.
+#
+# It differs from Cmd-Edit in one respect that matters: it refuses to write over
+# an existing file, and there is no flag to make it do so. `create_document`
+# creating a document is the whole contract, and an overwrite is a data-loss path
+# that `edit_document` already covers properly -- with a revision token, a
+# snapshot and a revert.
+#
+# That refusal also removes a question this repo has revised three times. An
+# existing file might be held by Word, and the currently measured model
+# (PR #24, spikes/isolation/probes/probe-fileshare-algebra.ps1) is that Word
+# holds *write* access, so any request for write access against it fails
+# regardless of the share mode offered. Never opening one for write means that
+# model is not load-bearing here.
+function Cmd-Create($a) {
+    $path = [string]$a.path
+    $started = [Diagnostics.Stopwatch]::StartNew()
+
+    if ([string]::IsNullOrWhiteSpace($path)) { return @{ status = 'invalid_path'; path = $path } }
+    if (Test-Path -LiteralPath $path -PathType Container) { return @{ status = 'path_is_directory'; path = $path } }
+    if (Test-Path -LiteralPath $path -PathType Leaf) { return @{ status = 'file_exists'; path = $path } }
+
+    $parent = Split-Path -LiteralPath $path -Parent
+    if (-not [string]::IsNullOrWhiteSpace($parent) -and -not (Test-Path -LiteralPath $parent -PathType Container)) {
+        return @{ status = 'directory_not_found'; path = $path; directory = $parent }
+    }
+
+    Initialize-Word
+
+    $doc = $null
+    $result = $null
+    try {
+        $buildStarted = [Diagnostics.Stopwatch]::StartNew()
+        $doc = $script:App.Documents.Add()
+        $state = @{ fresh = $true }
+        foreach ($block in @($a.blocks)) { Add-SpecBlock $doc $block $state }
+        $buildMs = [int]$buildStarted.ElapsedMilliseconds
+
+        $saveStarted = [Diagnostics.Stopwatch]::StartNew()
+        $doc.SaveAs2($path, $WD_FORMAT_XML_DOCUMENT)
+        $saveMs = [int]$saveStarted.ElapsedMilliseconds
+
+        $result = @{
+            status         = 'created'
+            paragraphCount = [int]$doc.Paragraphs.Count
+            tableCount     = [int]$doc.Tables.Count
+            autoCorrect    = $script:AutoCorrect
+            buildMs        = $buildMs
+            saveMs         = $saveMs
+        }
+    } catch {
+        # A half-authored document must not be left on disk looking like a
+        # finished one. SaveAs2 either wrote the file or it did not; if we got
+        # here after it wrote, the caller asked for a document we could not
+        # finish describing, so the file goes.
+        try { if ($null -ne $doc) { $doc.Close($WD_DO_NOT_SAVE_CHANGES) } } catch { }
+        $doc = $null
+        try { if (Test-Path -LiteralPath $path -PathType Leaf) { Remove-Item -LiteralPath $path -Force } } catch { }
+        # The exception *type*, not its message: messages are German here, and a
+        # caller that discriminates on one is a caller that breaks on a machine
+        # with a different display language.
+        return @{
+            status    = 'create_failed'
+            path      = $path
+            exception = $_.Exception.GetType().FullName
+            detail    = $_.Exception.Message
+        }
+    } finally {
+        if ($null -ne $doc) {
+            try { $doc.Close($WD_DO_NOT_SAVE_CHANGES) } catch { }
+            try { [Runtime.InteropServices.Marshal]::ReleaseComObject($doc) | Out-Null } catch { }
+        }
+    }
+
+    # Close() returning is not proof the file is released. The next thing the
+    # caller does is read this file back to confirm what was written, and a
+    # re-open into a file Word still holds is the indefinite hang this whole
+    # design avoids -- so measure the release rather than sleeping past it.
+    $releaseStarted = [Diagnostics.Stopwatch]::StartNew()
+    $released = $false
+    while ($releaseStarted.ElapsedMilliseconds -lt 5000) {
+        if (Test-FileWritable $path) { $released = $true; break }
+        Start-Sleep -Milliseconds 20
+    }
+    $result.releaseMs = [int]$releaseStarted.ElapsedMilliseconds
+    $result.released = $released
+    $result.totalMs = [int]$started.ElapsedMilliseconds
+
+    return $result
+}
+
 function Cmd-Close($a) {
     $docId = [string]$a.docId
     $script:DocArgs.Remove($docId) | Out-Null
@@ -1454,6 +1700,7 @@ try {
                 'open' { Send-Ok $id (Cmd-Open $cmdArgs) }
                 'structure' { Send-Ok $id (Cmd-Structure $cmdArgs) }
                 'edit' { Send-Ok $id (Cmd-Edit $cmdArgs) }
+                'create' { Send-Ok $id (Cmd-Create $cmdArgs) }
                 'export' { Send-Ok $id (Cmd-Export $cmdArgs) }
                 'outline' { Send-Ok $id (Cmd-Outline $cmdArgs) }
                 'search' { Send-Ok $id (Cmd-Search $cmdArgs) }

@@ -1,0 +1,277 @@
+// create_document, end to end.
+//
+// Shape of a create, and why it is this shape:
+//
+//   validate spec -> refuse an existing file -> one Word operation
+//                                                 -> confirm on disk -> read back
+//
+// **It will not overwrite.** There is no flag for it and adding one would be a
+// mistake. `create_document` creating a document is the whole contract; replacing
+// the contents of a file that already exists is what `edit_document` is for, and
+// that path has a revision token, an on-disk snapshot and a revert behind it.
+// Routing an overwrite through here would be the same destruction with none of
+// those. So an existing path is refused, and the caller is told which tool to
+// reach for.
+//
+// The refusal buys a second thing. An existing file may be open in Word, and this
+// repo has now revised its model of what that means three times (kickoff, PR #22,
+// PR #24). The currently measured position is that Word holds *write* access, so
+// any request for write access against it fails on Windows' first rule --
+// requested access against the holder's share mode -- whatever share mode the
+// requester offers. Never opening an existing file for writing means none of that
+// is load-bearing here: the only file this module ever writes is one that did not
+// exist a moment ago.
+//
+// Autocorrect
+// -----------
+// Autocorrect is a correctness problem rather than a cosmetic one, because it
+// rewrites inserted text and reports nothing. The suppression itself lives in the
+// host, on the Word instance (`Suppress-AutoCorrect`); what lives here is that
+// its outcome is *reported* rather than assumed, so a caller — including a test —
+// can assert it through the tool boundary instead of trusting a comment.
+
+import { stat } from "node:fs/promises";
+import path from "node:path";
+
+import { fileRevisionToken } from "../revision-token.mjs";
+import { describeSpec, paragraphsIn, validateSpec } from "./create-intent.mjs";
+
+export class CreateError extends Error {
+    constructor(code, message, details = {}) {
+        super(message);
+        this.name = "CreateError";
+        this.code = code;
+        Object.assign(this, details);
+    }
+}
+
+/**
+ * Wall-clock ceiling on one `create_document`, covering the authoring and the
+ * read-back that confirms it.
+ *
+ * Same reasoning and same figure as `EDIT_BUDGET_MS`: measured authoring is
+ * 120–420 ms warm (spikes/isolation/probes/probe-authoring-save.ps1) and a cold
+ * Word start is ~4.5 s, so five minutes is not a performance limit. It exists so
+ * that a wedged Word surfaces as an error the caller can act on rather than as
+ * silence. Those measurements are typical-case on a quiet machine and are
+ * explicitly not bounds, which is the reason the budget is not derived from them.
+ */
+const CREATE_BUDGET_MS = 300_000;
+
+/**
+ * The extensions this module will author into.
+ *
+ * Narrower than the set the reader opens, and deliberately so: `SaveAs2` is
+ * called with wdFormatXMLDocument, so `.docx` is the only extension whose name
+ * would match its contents. Writing that payload to a `.doc` or a `.dotx` would
+ * produce a file whose extension lies about it.
+ */
+export const CREATABLE = new Set([".docx"]);
+
+/** The creatable extensions as prose, for tool descriptions and messages. */
+export const creatableList = () => [...CREATABLE].join(", ");
+
+/**
+ * Maps the host's structured status onto typed errors.
+ *
+ * The host reports failure as a `status` on a successful response rather than by
+ * throwing, for the reason `document-editor.mjs` documents: the dispatch loop
+ * collapses every exception into one `word_error` whose only distinguishing
+ * feature is a message that is localized German on this machine.
+ */
+function failFromStatus(result, docPath) {
+    const name = path.basename(docPath);
+    switch (result.status) {
+        case "invalid_path":
+            throw new CreateError("invalid_path", "A document path is required.");
+        case "path_is_directory":
+            throw new CreateError("invalid_path", `${docPath} is a directory, not a file.`);
+        case "file_exists":
+            throw new CreateError(
+                "file_exists",
+                `${name} already exists. create_document will not overwrite a document; use edit_document to change ` +
+                    `one, or choose a path that does not exist yet.`,
+            );
+        case "directory_not_found":
+            throw new CreateError(
+                "directory_not_found",
+                `The folder ${result.directory ?? path.dirname(docPath)} does not exist. create_document writes into ` +
+                    `an existing folder; it does not create one.`,
+            );
+        case "create_failed":
+            // What was observed, and nothing about why.
+            //
+            // The only thing established here is that a COM call raised. The
+            // exception *type* is carried in `data` for a caller that wants to
+            // discriminate, because the message is German on this machine and
+            // matching on it is how a contract rots. The prose names no cause,
+            // because none was distinguished.
+            throw new CreateError(
+                "create_failed",
+                `Word raised an error while authoring ${name}, and no document was written.`,
+                { data: { exception: result.exception ?? null, detail: result.detail ?? null } },
+            );
+        default:
+            throw new CreateError("create_failed", `Word reported '${result.status}' while creating ${name}.`);
+    }
+}
+
+export class DocumentAuthor {
+    #reader;
+    #host;
+    #log;
+
+    constructor({ reader, host, log = () => {} }) {
+        this.#reader = reader;
+        this.#host = host;
+        this.#log = log;
+    }
+
+    /** Normalizes and rejects anything this module will not author into. */
+    static requireCreatable(docPath) {
+        const ext = path.extname(docPath).toLowerCase();
+        if (!CREATABLE.has(ext)) {
+            throw new CreateError(
+                "unsupported_type",
+                `${ext || "That path"} cannot be created. create_document writes ${creatableList()}.`,
+            );
+        }
+        return docPath;
+    }
+
+    /**
+     * Authors a document from a spec and returns it as it now stands on disk.
+     *
+     * No per-document lock, unlike the edit path. That lock exists because two
+     * concurrent edits can both pass their preconditions against the same bytes
+     * and both apply. Here the precondition is "this file does not exist", and
+     * the host re-checks it immediately before `SaveAs2` — so the losing call of
+     * a racing pair sees the winner's file and is refused. The window is not
+     * fully closed by that check, but what fits inside it is a `SaveAs2` that
+     * overwrites a file created microseconds earlier by a call the agent issued
+     * itself, against a path it chose twice.
+     */
+    async create(docPath, rawSpec) {
+        const spec = validateSpec(rawSpec);
+        DocumentAuthor.requireCreatable(docPath);
+
+        // One wall clock for the whole operation, not one per layer. Spent, not
+        // restarted: a step that would begin with nothing left fails with the
+        // reason rather than blocking on a Word that is not coming back.
+        const deadline = Date.now() + CREATE_BUDGET_MS;
+        const remaining = (label) => {
+            const left = deadline - Date.now();
+            if (left <= 0) {
+                throw new CreateError(
+                    "word_timeout",
+                    `Creating ${path.basename(docPath)} exceeded its ${Math.round(CREATE_BUDGET_MS / 1000)}s budget ` +
+                        `before ${label} could start.`,
+                );
+            }
+            return left;
+        };
+
+        // Cheapest possible refusal, before Word is involved at all. The host
+        // checks this again; that is not redundancy but the same non-atomicity
+        // the edit path has, and the authoritative check is the later one.
+        if (await exists(docPath)) failFromStatus({ status: "file_exists" }, docPath);
+
+        const result = await this.#host.create({
+            path: docPath,
+            blocks: spec.blocks,
+            timeoutMs: remaining("the authoring itself"),
+        });
+
+        if (result.status !== "created") failFromStatus(result, docPath);
+
+        // Word said it saved. Confirm against the filesystem before saying so to
+        // the caller: `SaveAs2` returning is not evidence a file exists, and
+        // "created" with nothing on disk is the failure an agent cannot detect.
+        const revisionToken = await fileRevisionToken(docPath).catch(() => null);
+        if (!revisionToken) {
+            throw new CreateError(
+                "create_not_persisted",
+                `Word reported ${path.basename(docPath)} as created but there is no file at that path.`,
+            );
+        }
+
+        // Complete, never paged, for the reason the edit path re-reads
+        // completely: the caller holds no addresses at all yet, and handing back
+        // the first page of a long document would leave it unable to address the
+        // rest without another round trip.
+        //
+        // By this line the document exists on disk. So a failure here is a
+        // failure to *describe* it, not to create it, and must not be reported as
+        // though nothing had happened — an agent told "create failed" would retry
+        // against a path that now exists and get `file_exists` for its trouble.
+        let document;
+        try {
+            document = await this.#reader.read(docPath, { limit: 0, deadline });
+        } catch (err) {
+            throw new CreateError(
+                "document_unreadable",
+                `${path.basename(docPath)} was created and saved, but reading it back afterwards failed ` +
+                    `(${err.message}). Do not repeat the call — the file exists. Read it with read_document to get ` +
+                    `its addresses.`,
+                { data: { created: true, cause: err.code ?? null } },
+            );
+        }
+
+        // The host polls for the file to be released rather than trusting
+        // `Document.Close()`, and reports the answer. `released: false` means
+        // something genuinely unusual, and the next write to this document will
+        // fail its pre-flight — worth saying so, or that failure looks like a
+        // fresh and unexplained lock rather than a consequence of this call.
+        const lockReleased = result.released !== false;
+        if (!lockReleased) {
+            this.#log(
+                `create_document: ${path.basename(docPath)} was still held ${result.releaseMs}ms after it was closed. ` +
+                    `The document is saved; a follow-up edit may be refused until the handle goes.`,
+            );
+        }
+
+        // What the spec said should be there, against what Word actually
+        // produced. Reported rather than enforced: Word's paragraph count is its
+        // own business — a table contributes a paragraph per cell, one per
+        // row-end mark and one after the table — and a mismatch is a fact worth
+        // surfacing, not grounds for deleting a document the caller asked for.
+        const expectedParagraphs = paragraphsIn(spec);
+
+        this.#log(
+            `create_document: ${describeSpec(spec)} at ${path.basename(docPath)} ` +
+                `(build ${result.buildMs}ms, save ${result.saveMs}ms, release ${result.releaseMs}ms, ` +
+                `total ${result.totalMs}ms)`,
+        );
+
+        return {
+            created: { path: docPath, description: describeSpec(spec), blocks: spec.blocks.length },
+            // Whether autocorrect was switched off on the instance that authored
+            // this, and if not, why not. Surfaced so a caller can assert it
+            // rather than take it on trust.
+            autoCorrect: {
+                suppressed: Boolean(result.autoCorrect?.suppressed),
+                reason: result.autoCorrect?.reason ?? null,
+            },
+            expectedParagraphs,
+            tableCount: result.tableCount ?? 0,
+            lockReleased,
+            revisionToken,
+            timings: {
+                buildMs: result.buildMs ?? null,
+                saveMs: result.saveMs ?? null,
+                releaseMs: result.releaseMs ?? null,
+                totalMs: result.totalMs ?? null,
+            },
+            document,
+        };
+    }
+}
+
+async function exists(docPath) {
+    try {
+        await stat(docPath);
+        return true;
+    } catch {
+        return false;
+    }
+}
