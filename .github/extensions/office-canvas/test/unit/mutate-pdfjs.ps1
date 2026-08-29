@@ -34,7 +34,15 @@ $repo = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $root))
 # has to come before any mutant runs: a mangled anchor still produces a green
 # `KILLED` line for every mutant whose anchor happens to be ASCII, and a partial
 # run is the thing hardest to notice.
-if ("$([char]0x2014)".Length -ne 1 -or 'X—X'.Length -ne 3) {
+#
+# The test subject must be a *literal* em dash read from this file. An earlier
+# version also tested `"$([char]0x2014)".Length -ne 1`, which reads like the
+# primary check and is in fact dead: the character is built from a number, so it
+# is one character however the file was decoded. Measured, both arms: 1. Only the
+# literal moves -- 3 decoded as UTF-8, 5 as ANSI, since the em dash arrives as its
+# three UTF-8 bytes. Two conditions, one of them inert, is worse than one that
+# works, because the inert one is what a later reader would keep.
+if ('X—X'.Length -ne 3) {
     Write-Host "This script was decoded as ANSI, not UTF-8 -- its BOM is missing." -ForegroundColor Red
     Write-Host "Every non-ASCII anchor would silently fail to match. Restore the BOM." -ForegroundColor Red
     exit 1
