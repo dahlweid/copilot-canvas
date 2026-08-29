@@ -1060,12 +1060,15 @@ git merge-base --is-ancestor <reviewed-head> <current-head>
 
 Exit **0** means the new head *contains* the reviewed one — an addition, so the
 completed review still holds for everything it covered, and only the delta needs
-attention. Exit **1** means a rebase, and the verdict describes a tree that no
-longer exists. On #46 it was 0 and one commit of comments; on #26 the same check
-against `771a776` returned 1, so a set of gate numbers had to be re-requested
-rather than re-quoted. **Run this check before deciding a stale review or a
-stale gate result still counts**, and re-scope any round still running instead
-of letting it finish against the old range.
+attention. Exit **1** means a rebase, so ancestry can no longer vouch for the
+content and the verdict is **undecided rather than void** — see *What survives a
+rebase is decided by what the artefact measures* below, which is the check to
+run next. On #46 it was 0 and one commit of comments; on #26 the same check
+against `771a776` returned 1, and there the artefact was a set of gate numbers
+over code that #33 had rewritten, so they had to be re-requested rather than
+re-quoted. **Run this check before deciding a stale review or a stale gate
+result still counts**, and re-scope any round still running instead of letting
+it finish against the old range.
 
 **A reviewer is thorough within the frame it is given and does not interrogate
 the frame.** First evidence on replacing the forge's reviewer with a local one:
@@ -1129,15 +1132,21 @@ owned versus unattributed, as its own docstring says: *"Both still fail."* The
 text even names "another session's" as a possible cause of a red.
 
 What actually does the work is `timeoutMs = 90000` at `word-pids.mjs:110-119`:
-it polls and fails only if a pid is **still alive at the deadline**. Foreign
-Words on this machine live ~45–75 s, so the poll **outlasts** the churn rather
-than excluding it. The distinction is load-bearing: the assertion is not immune
-to other sessions, so a residual false red is possible — that is #37 — and
-anyone shortening that deadline or widening the capture window on the strength
-of "background churn cannot enter it" would be acting on a mechanism that does
-not exist. The property that matters holds either way, and it is the one the
-census lacked: **it can go red for a real leak**, because a Word we minted and
-dropped is still alive at 90 s.
+it polls and fails only if a pid is **still alive at the deadline**, so a
+foreign Word that exits during the poll cannot fail it, whereas a single-sample
+census counts it. That is the mechanism, and it is worth stating what it is
+*not*: the deadline does not outlast foreign churn in general. The file's own
+comment at `:95-102` says exit latency **is not bounded** by the idle
+measurements, that Word's shutdown contends on per-user state, and that one run
+had a Word survive a **30 s** poll and exit on its own. 90 s is generous — free
+on green runs, so there is no reason to shave it — not proven sufficient. The
+distinction is load-bearing: the assertion is not immune to other sessions, so
+a residual false red is possible — that is #37 — and anyone shortening that
+deadline or widening the capture window on the strength of "background churn
+cannot enter it" would be acting on a mechanism that does not exist. The
+property that matters holds either way, and it is the one the census lacked:
+**it can go red for a real leak**, because a Word we minted and dropped is
+still alive at 90 s.
 
 **An API that answers "was your instruction accepted" is not answering "is the
 world now in that state".** Third instance in this repo, each in different
@@ -1181,9 +1190,13 @@ instance, read -- the value is there. All five, every time.
 
 **The original probe could not have found this, and it looked like a clean
 result.** It switched the settings off on instance A and read them from a second
-process B *while A was still alive*. The value is flushed at or after the
-writer's exit, so a concurrent reader sees the stale one -- and **per-process
-isolation and persistence-with-a-lag are the same observation.** The instrument
+process B *while A was still alive*. Two observations, and only two: a
+concurrent reader sees the old value, and a reader started **after the writer
+quits** sees the new one. Neither locates the flush in time — B may have cached
+its own copy at startup, so "persisted late" and "persisted early but read from
+a cache" are not distinguished, and nothing here needs them to be. What the pair
+does establish is the thing that matters: **per-process isolation and
+persistence are the same observation to a concurrent reader.** The instrument
 could not distinguish the two states it was cited as distinguishing. That is the
 `FileShare` share-column defect again: a probe blind to the property its own
 construction puts on the near side, every arm agreeing. The discriminator is one
@@ -1191,11 +1204,14 @@ line -- quit the writer before reading -- and it was missing because holding A
 open is the natural way to write that test.
 
 The consequence was not theoretical. A fresh Word on this machine read all five
-settings off, and Word's factory state for them is on; `Suppress-AutoCorrect`
-ran on every authoring run and is a sufficient cause. **Our tool had been
-turning the user's autocorrect off and leaving it off.** Verified independently
-from the coordinator with a read-only check -- no assignments in it, so it could
-not perturb what it measured.
+settings **off**, and `Suppress-AutoCorrect` ran on every authoring run, which
+is a sufficient cause. Stated at the width of the evidence: this is the value on
+**this profile**, before and after, measured from a fresh instance. Word's
+shipped default for these was not measured — that would need a reset profile —
+so "we turned them off" rests on the run history plus the observed state, not on
+a platform-wide default. Verified independently from the coordinator with a
+read-only check -- no assignments in it, so it could not perturb what it
+measured.
 
 Three rules come out of it.
 
@@ -1222,14 +1238,25 @@ the suppression, since the restore is what now carries the user-safety claim.
 
 ### What survives a rebase is decided by what the artefact measures
 
-`merge-base --is-ancestor` answers whether the tree changed. It does not answer
-whether a given artefact is still valid, and treating it as though it does
-retires evidence that is still good. The sharper form: **a review of content
-survives a rebase when the rebase does not touch the hunks it read; a gate does
-not survive when the code it exercises was rewritten.** Same pending rebase,
-opposite conclusions for a content review and a Word-teardown gate, and the
-discriminator is whether the thing under test changed -- not whether the
-ancestry did.
+The ancestry check above is a **sufficient condition, not a necessary one**, and
+reading it as necessary retires evidence that is still good. `merge-base
+--is-ancestor` answers whether the reviewed commits are *contained* in the new
+head — nothing about trees. Exit **0** settles it cheaply: the reviewed content
+is present verbatim, so the verdict holds for what it covered. Exit **1** does
+not settle anything; it means the question is open and has to be answered by
+looking at the artefact.
+
+The sharper rule for that case: **a review of content survives when the rebase
+does not touch the hunks it read; a gate does not survive when the code it
+exercises was rewritten.** Same pending rebase, opposite conclusions for a
+content review and a Word-teardown gate, and the discriminator is whether the
+thing under test changed — not whether the ancestry did.
+
+With one caveat that keeps this honest: unchanged hunks are not sufficient on
+their own. A review of code whose callers, invariants or dependencies moved
+underneath it is stale even though its own lines are byte-identical, which is
+why "did the subject change" is a judgement about the artefact's *reach* rather
+than a `git diff` on its line ranges.
 
 ### A test double that cannot produce the state under test
 
@@ -1251,3 +1278,35 @@ in prose as `30` when it was 29, minutes after being measured; and a PR body
 overwritten by composing destructive input inline. **Prepare the artefact, then
 submit it** -- write the payload to a file and pass it, never compose it in the
 call that destroys the old value.
+
+### When a claim names a mechanism, read the source that would have to be true
+
+The cheapest check in this file, and the one that caught the most in a single
+afternoon. Not skepticism, not a re-run -- **one lookup.** A claim that names a
+mechanism is making a checkable statement about code or about the platform, and
+that statement is usually one file away.
+
+Four instances in one afternoon, across four sessions:
+
+| claim | the lookup | what it said |
+| --- | --- | --- |
+| "the mojibake is CP437 arithmetic" | run `chcp` | 850 |
+| "suppression is verified" | read the function | five assignments, no read-back |
+| "the leak assertion attributes by owner" | `word-pids.mjs:59-61` | pure set difference |
+| "the settings are per-process" | quit the writer, then read | they persist |
+
+**In every one the conclusion was already right, which is exactly why nothing
+ever failed and why only reading the mechanism could have caught it.** A wrong
+mechanism under a right conclusion is invisible to every test by construction --
+the observable is identical, so no assertion discriminates. The defect surfaces
+only when someone acts on the mechanism rather than the conclusion: hardening a
+share mode, shaving a deadline, or trusting a flag to mean what it says.
+
+The corollary is that **a correction inherits the burden of a claim.** Each of
+the four above was found while correcting something else, and two of the
+corrections were themselves overstated on their first attempt -- a proposed
+review-record row that was wrong in a different way than the one it fixed, and a
+replacement account of the leak deadline claiming it "outlasts foreign churn"
+when the cited file says the tail is unbounded and load-dependent. Correcting a
+claim puts you in exactly the state that produced it: confident, and one lookup
+short.
