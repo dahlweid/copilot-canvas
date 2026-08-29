@@ -368,19 +368,28 @@ greps for the property, finds it, and stops. One non-ASCII round-trip assertion
 goes red on its first run.
 
 The same shape holds across surfaces, not just directions. A declared
-`minimum`/`maximum` is **not enforced for tools** — `count: 0` and `count: 99999`
-both reach the handler unchanged against a schema declaring `1`–`10`, as does a
-string where an integer is declared — and **is enforced for canvas actions**,
-where `get_outline`'s `limit`, declared `1`–`2000`, refuses both with the field,
-the value and the violated bound named, before the handler runs. The two
-boundaries are opposite, and each was measured first-hand because neither
-predicts the other. The consequence is not symmetric either: for tools the
-runtime **must** validate its own arguments, so `normalizeReadArgs` rejecting
-`limit < 1` is load-bearing rather than belt-and-braces; for canvas actions a
-handler-side check of a declared bound is dead code. Taking one surface's result
-to the other has already turned a real finding into a wrong one here — two host
-handlers were reported as carrying the unenforced-bound defect, and they do not.
-Measure each direction and each surface separately, or say you have not.
+`minimum`/`maximum` is **not enforced for tools** and **is enforced for canvas
+actions**. Both were measured first-hand, because neither predicts the other.
+
+The tool half was measured with a purpose-built probe tool that **does not ship
+here**: it declared an integer bound, and every violation reached its handler
+unchanged, including a string where an integer was declared. That is provenance,
+not something to look up — no tool schema in this repo declares the bound it was
+measured against, so do not go hunting for one. The canvas half is checkable in
+place: `get_outline` declares `limit` as `1`–`2000` in `extension.mjs`, and both
+`0` and `99999` are refused before the handler runs, naming the field, the value
+and the violated bound.
+
+The consequence is asymmetric, and that is the part that changes code. For
+**tools** the runtime must validate its own arguments, so `normalizeReadArgs`
+rejecting `limit` below `1` or above `MAX_READ_LIMIT` is load-bearing rather
+than belt-and-braces. For **canvas actions** a handler-side check of a declared
+bound is dead code. Carrying one surface's result to the other already turned a
+real finding into a wrong one here: the two `word-host.ps1` handlers that clamp
+`limit` without an upper comparison were reported as further sites of the
+declared-but-unenforced-bound defect, and they are not — the bound is enforced
+above them. Measure each direction and each surface separately, or say you have
+not.
 
 **Name the discriminating case before you trust the probe.** `spikes/isolation/PLAN.md`
 §19 states the rule and the failure that produced it: a probe on which every case
