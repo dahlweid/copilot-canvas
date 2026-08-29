@@ -399,35 +399,6 @@ exception. What caught it was a layer session **applying the discriminator to it
 own PR instead of accepting the claim**, which is the only reason any of this
 gets caught at all.
 
-**A verified observation has a shelf life, and verifying it does not extend
-one.** A layer session reported that #22 was still open — `state=OPEN`,
-`mergedAt=null`, `origin/main` still at the previous merge — noted it was the
-third time the merge had been relayed to it, and correctly refused to act,
-since rebasing would only have manufactured the conflict it had been told to
-avoid. It did everything this file asks: checked rather than trusted, showed
-the fields, declined to change anything. The message carried a state refresh
-stamped `23:37:42Z`. **#22 merged at `23:45:48Z`, eight minutes later**, and
-the message reached its reader some twelve hours after that. So the relayers
-were right, the session's check was right when it ran, and by the time the
-correction was read it was itself the stale claim. No one was careless at any
-point.
-
-The transportable half is that **a check's conclusion travels and its timestamp
-does not**. *"#22 is still open"* reads as a property of #22; it was an
-observation with an expiry, and the expiry is the part that gets dropped —
-scope-discarding again, with time as the discarded dimension rather than
-applicability. This is why the SHA discipline here works and no equivalent
-exists for state: **a claim about the tree can be pinned by a commit, and a
-claim about a pull request's state cannot be pinned by anything the message is
-able to carry.** So the two are not interchangeable evidence, however similar
-they look side by side in the same report.
-
-This is not an argument for re-verifying everything. It is narrower: a claim
-about *mutable remote state* either carries when it was observed or it is not a
-claim. What caught this one was not judgement — the harness printed the
-warning, and re-reading it cost one API call that contradicted the message in
-its first line. Cheaper than deciding whether to believe it.
-
 The failure mode this outage produces is the one worth remembering: a job that
 never started is, from outside, indistinguishable from a job still running.
 Waiting is the natural response and it never terminates, with every dependent
@@ -628,14 +599,36 @@ recoverable from a green run, so record it in the fixture where the next reader
 will find it.
 
 **A claim about state is a measurement, and it carries the instant it was
-taken.** Cross-session messages queue and have arrived here **~11 hours** late,
+taken.** Cross-session messages queue and have arrived here **~12 hours** late,
 and the PR-state notification attached to one is frozen at send time along with
-it. A correction arrived asserting that #22 was open with `main` at #21; #22 had
-merged ten hours earlier. It was accurate when written. The claim it corrected
-had been premature when made and had become true by the time it was read — both
+it. A correction arrived asserting that #22 was open with `main` at #21, noting
+it was the third time the merge had been relayed, and correctly declining to
+rebase on that basis.
+
+The timestamps are worth stating exactly, because the obvious reading of this
+is wrong. The message's state refresh is stamped `23:37:42Z`; **#22 merged at
+`23:45:48Z`, eight minutes later**, and it was read some twelve hours after
+that. So the correction was not a stale claim written carelessly — it was
+**accurate when written and went stale in the queue**, while the claim it
+corrected had been premature when made and became true shortly after. Both
 parties right about different instants, which no amount of care about *facts*
-prevents. Re-read state immediately before acting on it, and never carry a
-status out of a message and into a mutation.
+prevents, and which re-checking at the writing end would not have caught
+either.
+
+The transportable half: **a check's conclusion travels and its timestamp does
+not.** *"#22 is still open"* reads as a property of #22; it was an observation
+with an expiry, and the expiry is what gets dropped — the same scope-discarding
+this file keeps finding, with time as the discarded dimension rather than
+applicability. Which is also why the SHA discipline here works and nothing
+equivalent has ever worked for status: **a claim about the tree can be pinned by
+a commit, and a claim about a pull request's state cannot be pinned by anything
+a message is able to carry.** The two are not interchangeable evidence, however
+alike they look side by side in one report.
+
+So: re-read state immediately before acting on it, and never carry a status out
+of a message and into a mutation. Not an argument for re-verifying everything —
+narrower than that. A claim about *mutable remote state* either carries when it
+was observed or it is not a claim.
 
 The same applies to git. "Is my work merged?" cannot be answered by
 `git log main..branch`, which cannot distinguish squashed-and-merged from new,
