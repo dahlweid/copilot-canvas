@@ -266,9 +266,10 @@ inline findings when it had two. Select comments by `created_at` against the
 review's `submitted_at` instead, and cross-check the body's *comments generated*
 count against the number retrieved.
 
-**One request produces two review records, and the first is empty.** Requesting
-a review creates a stub within seconds; the substantive review arrives minutes
-later against the same commit. Measured twice on #42:
+**A review record can be an empty stub, and an empty stub is indistinguishable
+from a clean round.** Requesting a review sometimes creates a stub within
+seconds, with the substantive review arriving minutes later against the same
+commit. Measured twice on #42:
 
 | record | submitted | commit | body |
 | --- | --- | --- | --- |
@@ -277,16 +278,24 @@ later against the same commit. Measured twice on #42:
 | `5057371102` | 08:21:27Z | `bac53f3` | **empty** |
 | `5057375339` | 08:24:08Z | `bac53f3` | the finding |
 
-Stub within ~30 s of the request, content 2m41s–3m09s later. Inside that window
-both obvious questions return a wrong answer: reading the *latest* review yields
-a record with no findings — indistinguishable from a clean round — and
-`requested_reviewers` has **already emptied**, so "is a review pending?" reads as
-*no*. Counting records to find the round number also double-counts, which walks
-a PR into the six-round cap at round three.
+**"Sometimes" is doing real work in that sentence, and it is a correction to the
+first version of this rule**, which said a request *produces* two records. The
+very next request — round 1 of the PR that added this paragraph — produced **one**
+record, substantive, 82 s after the request, with no stub at all. Two of two on
+one PR and zero of one on the next: what makes the difference is unknown, so the
+timing is not predictable and must not be planned around.
 
-Discriminate on the body, not on recency or on the reviewer list: every review
-actually performed here opens with a state headline (🟢/🟡) and closes with a
-*comments generated* count. An empty body means the review has not happened yet.
+What survives is the part that does not depend on the stub appearing. Inside that
+window both obvious questions return a wrong answer: reading the *latest* review
+yields a record with no findings, and `requested_reviewers` has **already
+emptied**, so "is a review pending?" reads as *no*. Counting records to derive
+the round number also double-counts whenever a stub does appear, which walks a PR
+into the six-round cap early.
+
+Discriminate on the body, not on recency, not on the reviewer list, and not on
+the record count: every review actually performed here opens with a state
+headline (🟢/🟡) and closes with a *comments generated* count. An empty body
+means the review has not happened yet.
 
 **Six rounds, then merge.** This is a hard cap, not a target. At round six the
 PR merges with any remaining comments declined explicitly in a reply. The one
@@ -462,9 +471,11 @@ are provenance, not paths a reader of `main` can open.
   snippet can match zero times after a refactor, or more than once, and a run that
   patched nothing — or patched a different line — still produces a verdict for the
   line you named. Two outcomes cannot express this, so use four: `KILLED`,
-  `SURVIVED`, `MISSING` when the anchor did not match exactly once, and
-  `AMBIGUOUS` when it matched more than once. Abort on any match count you did not
-  predict in advance, rather than on a count of zero.
+  `SURVIVED`, `MISSING` when the anchor matched **zero** times, and `AMBIGUOUS`
+  when it matched **more than once**. Abort on any match count you did not predict
+  in advance, not only on a count of zero — a mutant landing on the second of two
+  matching sites can fail an unrelated test and be recorded as `KILLED`, which is
+  the one direction of this defect that reports good news.
 - **The runner never started.** `mutate-create.ps1` (#26) resolves paths relative
   to the extension root and exits 1 when invoked from the repo root. It fails
   *loudly* and is still dangerous, because "gate ran, gate red" and "gate never
