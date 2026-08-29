@@ -245,6 +245,23 @@ while carrying the only finding that gates its merge. Reply to those with a
 top-level PR comment. Three of the best findings on #12 arrived this way,
 including the one that turned out to have three sites rather than one.
 
+**Do not filter review content by author login.** The reviewer renders as a
+different string on each endpoint that reports it:
+
+| endpoint | login |
+| --- | --- |
+| REST `/pulls/{n}/reviews` | `copilot-pull-request-reviewer[bot]` |
+| REST `/pulls/{n}/comments` | **`Copilot`** |
+| GraphQL `reviewThreads.nodes.comments.nodes.author.login` | `copilot-pull-request-reviewer` |
+
+A filter correct for two of the three returns **empty** on the third, and an
+empty result is indistinguishable from a clean round — so the mistake reports
+*good news*. It has already produced two wrong conclusions here: a review round
+believed missing on #16, and later that same PR's round four believed to have no
+inline findings when it had two. Select comments by `created_at` against the
+review's `submitted_at` instead, and cross-check the body's *comments generated*
+count against the number retrieved.
+
 **Six rounds, then merge.** This is a hard cap, not a target. At round six the
 PR merges with any remaining comments declined explicitly in a reply. The one
 thing that may go past six is a **correctness or data-loss defect**, and it buys
