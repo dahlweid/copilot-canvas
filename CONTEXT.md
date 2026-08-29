@@ -1279,6 +1279,22 @@ overwritten by composing destructive input inline. **Prepare the artefact, then
 submit it** -- write the payload to a file and pass it, never compose it in the
 call that destroys the old value.
 
+Two more from the coordinator, in one hour, both **ad-hoc verification steps
+that returned a plausible wrong number rather than failing**:
+
+| check | reported | actual | why |
+| --- | --- | --- | --- |
+| `git show HEAD:f \| Out-String`, counting `` `r `` | CR=1357 | **CR=0** | the PowerShell text pipeline re-inserts CRLF on the way out, so the number was the *line count* wearing the label of a defect |
+| `Select-String -Pattern 'A\|B\|C' -Context 3,3` | the block appears twice | **once** | `-Context` prints one window per match, and an alternation matching several alternatives inside the same region re-prints that region once each |
+
+The second is the more dangerous, because a duplicated block is exactly what a
+genuinely duplicated code site looks like. **A `-Context` window under an
+alternation pattern reports properties of the query, not of the file** -- count
+with a plain loop, or match one alternative at a time. Both errors were caught
+only because the number was load-bearing enough to re-measure with a second
+instrument, which is the whole rule: **a verification step is evidence code, so
+it needs the stricter discrimination, not the looser.**
+
 ### When a claim names a mechanism, read the source that would have to be true
 
 The cheapest check in this file, and the one that caught the most in a single
@@ -1320,7 +1336,7 @@ pointing, and what it points at is a caller nobody has written -- so there is no
 behaviour anywhere that can contradict it.
 
 Measured instance, both versions read from the tree rather than from a report.
-`structure-map.mjs` shipped in L1 (`4abf952`) carrying, at two sites:
+`structure-map.mjs` shipped in L1 (`4abf952`) carrying, at line 266:
 
 ```
 // The localized id, kept because an edit that wants to reapply this
@@ -1335,15 +1351,22 @@ measured instead -- assigning a style *by* this id throws, the English
 `wd*` constants or another paragraph's Style object -- and the field is now
 labelled "reported for identification, not for reapplication."
 
-**No test could have caught this, and not for want of coverage.** The comment's
-only subject was code that had not been written, so there was nothing whose
-behaviour could go red.
+**The half that could rot was the half nothing could test.** The comment makes
+two statements, and they are not alike. *"The localized id is kept"* describes
+the field the line sits on, and L1's own tests assert exactly that -- `styleId`
+carried verbatim rather than constructed. *"An edit that wants to reapply this
+style must use it"* addresses a caller that did not exist, and no assertion in
+the repo could go red for it, then or later. One comment, one covered clause and
+one uncoverable one -- and the uncoverable one is the one that was wrong.
 
-What caught it was proximity, not process. The correction arrived in `4da84c2`,
-the *same commit* that built the write path: L2 had to touch that line to add
-its own measurement. Nobody routed the comment for review, and nothing would
-have. Had the write path been built two files away, the instruction would still
-be sitting there, still wrong, still aimed.
+What history shows next is co-location, and only that: the correction landed in
+`4da84c2`, the same commit that built the write path, on the line L2 had to
+touch to record its own measurement. It does not show *why*, and no repository
+artefact can -- there is no record of the comment being routed for review, but
+an absent record is not evidence of absence. The narrow reading is the useful
+one anyway: **the comment was fixed by someone working on that line, not by
+anyone checking comments.** Nothing here routes a comment to the layer it
+addresses, so co-location is the only mechanism that has ever corrected one.
 
 So: **a comment addressed to a future layer should say what was measured and
 when, never what to do.** The honest form of the original is *"the English name
