@@ -348,3 +348,74 @@ the boundary that function's output has to cross.** That blind spot is
 structural, not a matter of effort level, so it is not something a better review
 fixes. Test at the surface a caller consumes.
 
+**Neither side of a boundary can be inferred from the other, and a fix on one
+side makes the other look covered.** The Word host set `[Console]::OutputEncoding`
+to UTF-8 and never set `InputEncoding`. Reads were therefore perfect — a German
+document came back with every umlaut intact — while every non-ASCII character
+the agent *wrote* was decoded as the OEM codepage and saved to disk as mojibake:
+`Grüße` became `Gr├╝├ƒe` in `word/document.xml`, with `U+00FC` absent. The
+existing line was not an oversight; it was **evidence that someone had
+recognised the boundary needed an encoding**, and that is precisely what stopped
+anyone looking at its other half.
+
+Nothing went red, and the reason is worth stating exactly, because the obvious
+explanation is wrong. It is *not* that the write direction is untested — edits
+are written and read back end to end. It is that **every fixture in the
+repository is ASCII**, including the line labelled `Umlaut check:`, which
+contains `Grosse Aepfel, Strasse, Muenchen` and not one umlaut. A test named for
+the property it does not exercise is worse than no test, because the next person
+greps for the property, finds it, and stops. One non-ASCII round-trip assertion
+goes red on its first run.
+
+The same shape holds across surfaces, not just directions. A declared
+`minimum`/`maximum` is **not enforced for tools** — `count: 0` and `count: 99999`
+both reach the handler unchanged against a schema declaring `1`–`10`, as does a
+string where an integer is declared — and **is enforced for canvas actions**,
+where `get_outline`'s `limit`, declared `1`–`2000`, refuses both with the field,
+the value and the violated bound named, before the handler runs. The two
+boundaries are opposite, and each was measured first-hand because neither
+predicts the other. The consequence is not symmetric either: for tools the
+runtime **must** validate its own arguments, so `normalizeReadArgs` rejecting
+`limit < 1` is load-bearing rather than belt-and-braces; for canvas actions a
+handler-side check of a declared bound is dead code. Taking one surface's result
+to the other has already turned a real finding into a wrong one here — two host
+handlers were reported as carrying the unenforced-bound defect, and they do not.
+Measure each direction and each surface separately, or say you have not.
+
+**Name the discriminating case before you trust the probe.** `spikes/isolation/PLAN.md`
+§19 states the rule and the failure that produced it: a probe on which every case
+agrees has measured nothing, and the fix is not more care reading the output but
+identifying up front the one case whose result differs between the candidate
+mechanisms. Four readers of a Word-held file all requested `ReadWrite`, so all
+four succeeded under either candidate holder, and the lock model was revised
+twice with nothing ever going red.
+
+This generalises past probes to ordinary fixtures. The layout-mark normalizer
+covers four marks and only **two of them discriminate**: `w:tab` passes by luck
+because both sides happen to emit `\t`, and `w:softHyphen` passes because both
+sides drop it — both would pass against a completely broken mapping. `w:br` and
+`w:noBreakHyphen` carry the entire measurement. Which cases discriminate is not
+recoverable from a green run, so record it in the fixture where the next reader
+will find it.
+
+**A claim about state is a measurement, and it carries the instant it was
+taken.** Cross-session messages queue and have arrived here **~11 hours** late,
+and the PR-state notification attached to one is frozen at send time along with
+it. A correction arrived asserting that #22 was open with `main` at #21; #22 had
+merged ten hours earlier. It was accurate when written. The claim it corrected
+had been premature when made and had become true by the time it was read — both
+parties right about different instants, which no amount of care about *facts*
+prevents. Re-read state immediately before acting on it, and never carry a
+status out of a message and into a mutation.
+
+The same applies to git. "Is my work merged?" cannot be answered by
+`git log main..branch`, which cannot distinguish squashed-and-merged from new,
+**nor** by `git diff main branch` once the branch is behind, because `main`'s
+newer commits then read as changes the branch removed. Both misled here in the
+same direction, within one session: two commits looked like stranded work worth
+rescuing, and a reset would have looked like destroying it. Rebasing produced a
+conflict whose resolution showed `main` already held the same rule in better
+wording — the commits were redundant, not stranded. Only searching `main` for
+the content itself distinguished the two, and the two look identical from every
+count and every diff.
+
