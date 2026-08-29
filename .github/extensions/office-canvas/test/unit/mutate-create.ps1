@@ -128,6 +128,40 @@ export function paragraphsIn(spec) { return spec.blocks.length; }
        file = 'src/word/document-author.mjs'
        from  = '                    (leftBehind'
        to    = '                    (false' }
+
+    # --- the schema/runtime divergence found in review round 1 ---------------
+    #
+    # All five are one defect class: the tool schema is a second copy of a
+    # contract create-intent.mjs already defines. The shipped version declared no
+    # floors at all while the validator refused every empty collection, so a
+    # caller could construct a request that was schema-valid and rejected every
+    # time. A model cannot learn a rule the schema does not state.
+
+    @{ name = 'schema floor dropped, so an empty list is schema-valid and always refused'
+       file = 'extension.mjs'
+       from  = '            minItems: MIN_LIST_ITEMS,
+'
+       to    = '' }
+
+    @{ name = 'schema floor hardcoded rather than derived'
+       file = 'extension.mjs'
+       from  = '                minItems: MIN_BLOCKS,'
+       to    = '                minItems: 1,' }
+
+    @{ name = 'per-kind clause written by hand beside BLOCKS instead of derived'
+       file = 'extension.mjs'
+       from  = 'description: `${fieldUsage("ordered")} True numbers the items'
+       to    = 'description: `list only: true numbers the items' }
+
+    @{ name = 'fieldUsage answers for a field no kind takes'
+       file = 'src/word/create-intent.mjs'
+       from  = '        throw new Error(`no block kind takes'
+       to    = '        return ""; throw new Error(`no block kind takes' }
+
+    @{ name = 'description claims autocorrect is unconditionally off'
+       file = 'extension.mjs'
+       from  = '        "Text is written verbatim. Autocorrect is switched off first on a Word this tool started, so",'
+       to    = '        "Text is written verbatim ' + $dash + ' Word' + "'" + 's autocorrect is switched off on the instance that authors it, so",' }
 )
 
 $survived = @()

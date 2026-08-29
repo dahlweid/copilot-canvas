@@ -17,6 +17,7 @@ import {
     BLOCK_HELP,
     BLOCK_KINDS,
     BLOCKS,
+    fieldUsage,
     MAX_BLOCKS,
     MAX_HEADING_LEVEL,
     MAX_LIST_ITEMS,
@@ -242,12 +243,80 @@ test("the create_document schema declares no bound as a literal", () => {
     // Scoped to this tool's source rather than the whole file: other schemas
     // have their own bounds and their own tests, and a file-wide rule would
     // claim a surface this module does not own.
+    //
+    // This used to exempt 0 and 1, on the reasoning that a floor of one is the
+    // definition of non-empty rather than a tunable bound. A review found the
+    // cost of that: `items`, `rows` and each row carried no `minItems` at all
+    // while the validator refused every empty one, and the exemption is why no
+    // assertion here could notice. The floors are constants now
+    // (MIN_LIST_ITEMS and friends) and the exemption is gone, so the schema and
+    // the validator read one symbol per bound in both directions.
     const literals = [...createToolSource().matchAll(/\b(?:minimum|maximum|maxItems|minItems):\s*(-?\d+)/g)];
-    const offending = literals.map((m) => m[0]).filter((s) => !/:\s*[01]$/.test(s));
+    const offending = literals.map((m) => m[0]);
     assert.deepEqual(
         offending,
         [],
         `bounds must be interpolated from src/word/create-intent.mjs, not written down: ${offending.join(", ")}`,
+    );
+});
+
+test("every floor the validator enforces is also declared by the schema", () => {
+    // The defect this pins, in the shape it shipped in: schema-valid and always
+    // rejected at runtime. A model cannot learn a rule the schema does not
+    // state; it only ever meets it as a failure. So each floor is checked on
+    // both sides -- enforced at exactly the exported value, and declared.
+    rejects({ blocks: [] }, "invalid_spec");
+    rejects({ blocks: [{ kind: "list", items: [] }] }, "invalid_block");
+    rejects({ blocks: [{ kind: "table", rows: [] }] }, "invalid_block");
+    rejects({ blocks: [{ kind: "table", rows: [[]] }] }, "invalid_block");
+
+    const source = createToolSource();
+    for (const name of ["MIN_BLOCKS", "MIN_LIST_ITEMS", "MIN_TABLE_ROWS", "MIN_TABLE_COLUMNS"]) {
+        assert.match(source, new RegExp(`minItems:\\s*${name}\\b`), `the schema does not declare ${name}`);
+    }
+});
+
+test("the schema's per-kind clauses are derived from BLOCKS, not written alongside them", () => {
+    // `required` in the schema holds only `kind`, because JSON Schema cannot
+    // make it conditional on `kind` here. That pushes the per-kind rule into
+    // each field's description -- which was hand-written ("heading only:",
+    // "list only:") and so was a second copy of BLOCKS in the one place no test
+    // looked and the model did.
+    const source = createToolSource();
+    for (const field of ["level", "text", "ordered", "items", "rows", "headerRow"]) {
+        assert.match(source, new RegExp(`\\$\\{fieldUsage\\("${field}"\\)\\}`), `${field}'s description does not derive its kinds`);
+    }
+    assert.doesNotMatch(source, /\b(?:heading|paragraph|list|table) only:/, "a per-kind clause is spelled out rather than derived");
+
+    // ...and the derivation actually says the right thing, since the two
+    // assertions above are equally true of a fieldUsage that returned "".
+    assert.match(fieldUsage("level"), /required by heading\./);
+    assert.match(fieldUsage("text"), /required by heading and paragraph\./);
+    assert.match(fieldUsage("ordered"), /optional on list\./);
+    assert.match(fieldUsage("headerRow"), /optional on table\./);
+});
+
+test("fieldUsage refuses a field no kind takes", () => {
+    // The teeth on the derivation. Renaming a field in BLOCKS without renaming
+    // it in the schema now fails at extension load, rather than shipping a
+    // schema that advertises a field the validator refuses as unsupported.
+    assert.throws(() => fieldUsage("caption"), /no block kind takes/);
+});
+
+test("the create_document description does not claim autocorrect is always off", () => {
+    // Suppression is conditional and deliberately so: on a Word this tool
+    // started it is switched off, but on one the host attached to it is left
+    // alone, because those are the user's settings and AutoCorrect is
+    // per-application (measured -- toggled on a hidden instance and read back
+    // as unchanged from a second process). The description asserted the
+    // unconditional version, which is a promise the code does not keep on the
+    // attached path. It must point at the reported outcome instead.
+    const source = createToolSource();
+    assert.match(source, /autoCorrect/, "the description does not name the field reporting what happened");
+    assert.doesNotMatch(
+        source,
+        /autocorrect is switched off on the instance/i,
+        "the description asserts suppression unconditionally",
     );
 });
 

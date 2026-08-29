@@ -59,6 +59,24 @@ export const MAX_TABLE_ROWS = 200;
 export const MAX_TABLE_COLUMNS = 40;
 
 /**
+ * Floors.
+ *
+ * Constants for the same reason the ceilings are, and named because the schema
+ * did not declare them: a review found `items`, `rows` and each row declared
+ * with no `minItems` while the validator refused every empty one. Schema-valid
+ * and always rejected at runtime is the worst shape a contract can have — the
+ * model cannot learn the rule from the schema and only meets it as a failure.
+ *
+ * They are all 1 and unlikely to move, which is not the point. The point is
+ * that the declared floor and the enforced floor are one value, so they cannot
+ * disagree again the way they just did.
+ */
+export const MIN_LIST_ITEMS = 1;
+export const MIN_TABLE_ROWS = 1;
+export const MIN_TABLE_COLUMNS = 1;
+export const MIN_BLOCKS = 1;
+
+/**
  * The block kinds and the fields each one takes.
  *
  * A single table rather than a switch, so a kind cannot accept a field it then
@@ -80,6 +98,40 @@ export const BLOCK_HELP = [
     "list — `items`, bulleted, or numbered when `ordered` is true.",
     "table — `rows`, a rectangular array of cell strings, with an optional `headerRow`.",
 ].join(" ");
+
+function andList(names) {
+    if (names.length <= 1) return names.join("");
+    return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
+/**
+ * Which kinds take a field, and whether they require it — read off `BLOCKS`.
+ *
+ * The tool schema cannot express "required, but only when `kind` is heading",
+ * so `required` there holds only `kind` and the per-kind rule has to live in
+ * each field's description. `edit_document` reached the same place and solved it
+ * the same way, over seven review rounds.
+ *
+ * The part worth keeping is that this is *derived*. Those clauses were written
+ * by hand first — "heading only:", "list only:" — which is a second copy of
+ * `BLOCKS` in prose, in the one place no test looks and the model does. Moving
+ * a field between kinds would have left the description describing the old
+ * shape, and the review that caught the missing floors caught this too.
+ *
+ * Throws for a field no kind takes, which makes a rename fail at extension load
+ * rather than ship a schema advertising a field the validator refuses.
+ */
+export function fieldUsage(field) {
+    const required = BLOCK_KINDS.filter((kind) => BLOCKS[kind].required.includes(field));
+    const optional = BLOCK_KINDS.filter((kind) => BLOCKS[kind].optional.includes(field));
+    const parts = [];
+    if (required.length > 0) parts.push(`required by ${andList(required)}`);
+    if (optional.length > 0) parts.push(`optional on ${andList(optional)}`);
+    if (parts.length === 0) {
+        throw new Error(`no block kind takes \`${field}\`; BLOCKS and the tool schema have diverged.`);
+    }
+    return `${parts.join("; ")}.`;
+}
 
 function fail(code, message) {
     throw new EditIntentError(code, message);
@@ -153,7 +205,9 @@ function normalizeBlock(block, index) {
 
         case "list": {
             if (!Array.isArray(block.items)) fail("invalid_block", `${label}: \`items\` must be an array of strings.`);
-            if (block.items.length === 0) fail("invalid_block", `${label}: \`items\` may not be empty.`);
+            if (block.items.length < MIN_LIST_ITEMS) {
+                fail("invalid_block", `${label}: \`items\` needs at least ${MIN_LIST_ITEMS}, got ${block.items.length}.`);
+            }
             if (block.items.length > MAX_LIST_ITEMS) {
                 fail("invalid_block", `${label}: ${block.items.length} items; the limit is ${MAX_LIST_ITEMS}.`);
             }
@@ -169,7 +223,9 @@ function normalizeBlock(block, index) {
 
         case "table": {
             if (!Array.isArray(block.rows)) fail("invalid_block", `${label}: \`rows\` must be an array of arrays.`);
-            if (block.rows.length === 0) fail("invalid_block", `${label}: \`rows\` may not be empty.`);
+            if (block.rows.length < MIN_TABLE_ROWS) {
+                fail("invalid_block", `${label}: \`rows\` needs at least ${MIN_TABLE_ROWS}, got ${block.rows.length}.`);
+            }
             if (block.rows.length > MAX_TABLE_ROWS) {
                 fail("invalid_block", `${label}: ${block.rows.length} rows; the limit is ${MAX_TABLE_ROWS}.`);
             }
@@ -178,7 +234,9 @@ function normalizeBlock(block, index) {
             }
 
             const width = Array.isArray(block.rows[0]) ? block.rows[0].length : -1;
-            if (width < 1) fail("invalid_block", `${label}: each row must be a non-empty array of cell strings.`);
+            if (width < MIN_TABLE_COLUMNS) {
+                fail("invalid_block", `${label}: each row must be an array of at least ${MIN_TABLE_COLUMNS} cell string(s).`);
+            }
             if (width > MAX_TABLE_COLUMNS) {
                 fail("invalid_block", `${label}: ${width} columns; the limit is ${MAX_TABLE_COLUMNS}.`);
             }
@@ -228,7 +286,9 @@ export function validateSpec(input) {
     }
 
     if (!Array.isArray(blocks)) fail("invalid_spec", "`blocks` must be an array.");
-    if (blocks.length === 0) fail("invalid_spec", "`blocks` may not be empty; there would be nothing to author.");
+    if (blocks.length < MIN_BLOCKS) {
+        fail("invalid_spec", "`blocks` may not be empty; there would be nothing to author.");
+    }
     if (blocks.length > MAX_BLOCKS) {
         fail("invalid_spec", `${blocks.length} blocks; the limit for one document is ${MAX_BLOCKS}.`);
     }

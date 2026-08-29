@@ -30,11 +30,16 @@ import { asToolError } from "./src/tool-error.mjs";
 import {
     BLOCK_HELP,
     BLOCK_KINDS,
+    fieldUsage,
     MAX_BLOCKS,
     MAX_LIST_ITEMS,
     MAX_TABLE_COLUMNS,
     MAX_TABLE_ROWS,
     MIN_BLOCK_HEADING_LEVEL,
+    MIN_BLOCKS,
+    MIN_LIST_ITEMS,
+    MIN_TABLE_COLUMNS,
+    MIN_TABLE_ROWS,
 } from "./src/word/create-intent.mjs";
 import { creatableList } from "./src/word/document-author.mjs";
 
@@ -445,35 +450,39 @@ const createBlockSchema = {
             type: "integer",
             minimum: MIN_BLOCK_HEADING_LEVEL,
             maximum: MAX_HEADING_LEVEL,
-            description: `heading only: the heading depth, ${MIN_BLOCK_HEADING_LEVEL} being the top level.`,
+            description: `${fieldUsage("level")} The heading depth, ${MIN_BLOCK_HEADING_LEVEL} being the top level.`,
         },
         text: {
             type: "string",
-            description:
-                "heading and paragraph: the text. One paragraph — line breaks are refused, because a second paragraph is a second block.",
+            description: `${fieldUsage("text")} The text. One paragraph — line breaks are refused, because a second paragraph is a second block.`,
         },
         ordered: {
             type: "boolean",
-            description: "list only: true numbers the items; omitted or false bullets them.",
+            description: `${fieldUsage("ordered")} True numbers the items; omitted or false bullets them.`,
         },
         items: {
             type: "array",
             items: { type: "string" },
+            minItems: MIN_LIST_ITEMS,
             maxItems: MAX_LIST_ITEMS,
-            description: `list only: the items, one paragraph each. At most ${MAX_LIST_ITEMS}.`,
+            description: `${fieldUsage("items")} The items, one paragraph each. From ${MIN_LIST_ITEMS} to ${MAX_LIST_ITEMS}.`,
         },
         rows: {
             type: "array",
-            items: { type: "array", items: { type: "string" }, maxItems: MAX_TABLE_COLUMNS },
+            items: { type: "array", items: { type: "string" }, minItems: MIN_TABLE_COLUMNS, maxItems: MAX_TABLE_COLUMNS },
+            minItems: MIN_TABLE_ROWS,
             maxItems: MAX_TABLE_ROWS,
-            description: `table only: the cells, row by row. The table must be rectangular — every row the same length — and at most ${MAX_TABLE_ROWS} rows by ${MAX_TABLE_COLUMNS} columns.`,
+            description: `${fieldUsage("rows")} The cells, row by row. The table must be rectangular — every row the same length — and from ${MIN_TABLE_ROWS}×${MIN_TABLE_COLUMNS} to ${MAX_TABLE_ROWS}×${MAX_TABLE_COLUMNS}.`,
         },
         headerRow: {
             type: "boolean",
-            description:
-                "table only: true makes the first row a bold heading row that repeats if the table crosses a page break.",
+            description: `${fieldUsage("headerRow")} True makes the first row a bold heading row that repeats if the table crosses a page break.`,
         },
     },
+    // Only `kind` is unconditionally required; what each kind additionally
+    // requires is derived into the field descriptions above by `fieldUsage`,
+    // because JSON Schema `required` cannot be made conditional on `kind` here.
+    // `edit_document` carries the same limitation the same way.
     required: ["kind"],
     additionalProperties: false,
 };
@@ -486,8 +495,10 @@ const createDocumentTool = {
         "read_document would give, so it can be edited straight away without reading it first.",
         "It will not overwrite: a path that already exists is refused, because replacing a document is",
         "what edit_document is for and that path has a revision token, a snapshot and a revert behind it.",
-        "Text is written verbatim — Word's autocorrect is switched off on the instance that authors it,",
-        "so straight quotes stay straight and nothing is capitalised or substituted on the way in.",
+        "Text is written verbatim. Autocorrect is switched off first on a Word this tool started, so",
+        "straight quotes stay straight and nothing is capitalised or substituted on the way in; if it",
+        "attached to a Word you already had running, that instance's settings are left alone instead,",
+        "because they are yours. The result's `autoCorrect` field reports which of the two happened.",
     ].join(" "),
     parameters: {
         type: "object",
@@ -498,10 +509,10 @@ const createDocumentTool = {
             },
             blocks: {
                 type: "array",
-                minItems: 1,
+                minItems: MIN_BLOCKS,
                 maxItems: MAX_BLOCKS,
                 items: createBlockSchema,
-                description: `The document's content, in order. At most ${MAX_BLOCKS} blocks. ${BLOCK_HELP}`,
+                description: `The document's content, in order. From ${MIN_BLOCKS} to ${MAX_BLOCKS} blocks. ${BLOCK_HELP}`,
             },
         },
         required: ["path", "blocks"],
