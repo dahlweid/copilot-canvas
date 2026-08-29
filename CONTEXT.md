@@ -1072,3 +1072,60 @@ at line 60 and precedes first use; it never asked whether that assignment can
 exactly how this host is spawned. Same line, same diff, question round 1 was
 never pointed at.
 
+**Do not ask for a WINWORD census delta. It is below this machine's noise
+floor.** The gate was specified here and was wrong. Asked for it on #26, L3 got
+`14 -> 15` on one run and `14 -> 14 with identical pid sets` on an earlier run
+of the same suites on the same tree — two answers, one tree, which is the tell.
+So they sampled the process table every 15 s for 75 s **while running no Word
+code at all**:
+
+| Z | count | appeared | disappeared |
+| --- | --- | --- | --- |
+| 12:38:57 | 14 | — | baseline |
+| 12:39:12 | 15 | 50496 | |
+| 12:39:27 | 16 | 27928 | |
+| 12:39:42 | 16 | 44828 | 27928 |
+| 12:39:57 | 14 | | 44828, 50496 |
+| 12:40:12 | 14 | | |
+
+Four WINWORDs born and three died in 75 idle seconds, amplitude **±2** around a
+baseline of 14. A ±1 delta across a multi-minute run therefore resolves nothing,
+and — the half that matters — **it would equally fail to show a real leak.** A
+census that does not move is one draw from a distribution whose amplitude
+exceeds the signal, and it had been read as a positive result when it is a
+non-event. **Ask for the per-suite PID-differencing assertion in
+`word-pids.mjs` by name and pass count**: it diffs over seconds, and attributes
+by the pid the host itself started, so other sessions' churn cannot enter it.
+
+**An API that answers "was your instruction accepted" is not answering "is the
+world now in that state".** Third instance in this repo, each in different
+clothes: `Quit()` returns ~3.1–3.7 s before `WINWORD` exits;
+`ReleaseComObject` returns `0` while the release is what leaks the process; and
+`Suppress-AutoCorrect` in #26 returned `suppressed = $true` meaning **five
+property assignments did not throw**, never reading one value back. Treat any
+success flag derived from "the call did not throw" as unmeasured until something
+reads the state back.
+
+**A claim discharged onto a neighbouring test is an unchecked citation.**
+`create-smoke.mjs:98` told the reader that a green bait proves nothing and that
+*"the evidence for that is the separate settings read-back check"*, naming a
+line — and that line asserted the flag, not the state, so it never carried the
+claim. `check-citations` guards `probe-*.{ps1,mjs}` paths only; **prose pointing
+at another test is unguarded and cannot be mutation-tested.** What made it
+invisible is worth the whole entry: the bait arms rewrite 0 of 6 with every
+setting ON, so they are inert here by construction, and the read-back stays
+green because a flag reads back what was written. **Two green checks, neither
+able to go red for that defect, each looking like the other's backstop.**
+
+**A merge gate measures what it measures, and "the headline claim is unproven"
+is not in it.** #26 reached the point of merge with gates green at the exact
+head, four review rounds, past the cap, `MERGEABLE` confirmed from both `gh` and
+`git ls-remote`. Every reading was true. The squash was issued **twice** and
+refused both times — GraphQL and REST alike — solely because the PR is position
+1 of a stack and stacked PRs require `POST /pulls/{n}/merge-async`. The owning
+session found the defect independently, minutes later. **What prevented a PR
+titled "autocorrect suppressed" from landing with nothing able to prove
+suppression was an unrelated API constraint about stacks**, not any gate in this
+file. Before merging, ask what assertion would go red if the PR's *title* were
+false; a full green board does not answer that question and will not raise it.
+
