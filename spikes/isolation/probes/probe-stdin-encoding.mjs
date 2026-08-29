@@ -35,6 +35,25 @@
  *                        It is that expectedText is corrupted a second time on
  *                        the way in and can never equal what is stored.
  *
+ *   4. WHICH ARM DISCRIMINATES. A write-then-read-back assertion is the obvious
+ *                        regression test and it exercises exactly ONE crossing,
+ *                        so it can pass while the document is permanently
+ *                        uneditable. The discriminating case is read the value
+ *                        back and feed it in as `expectedText`, because the
+ *                        defect lives in the second crossing. Asserted here
+ *                        against an ASCII paragraph in the same document, on
+ *                        the same read: one edits, one cannot be addressed.
+ *                        Without that control the failure would equally well be
+ *                        a broken edit path.
+ *
+ * FOR WHOEVER MERGES SECOND. These expectations describe the CURRENT, BROKEN
+ * behaviour, deliberately, so that the defect is pinned rather than described.
+ * That makes this probe a landmine at merge time: when the InputEncoding fix
+ * lands it flips red by design. Invert the expectations in the SAME commit as
+ * the fix -- at which point they become the specification of correct -- and
+ * treat any expectation that stays red afterwards as a SECOND defect to report,
+ * not as this probe needing to be loosened.
+ *
  * Needs a real, licensed Word. Starts and stops its own instance.
  *
  * Run: node spikes/isolation/probes/probe-stdin-encoding.mjs
@@ -155,6 +174,44 @@ try {
     const echoBack = await reader.read(echo, { limit: 5 });
     const echo0 = echoBack.paragraphs?.[0]?.text ?? "";
     check("sending the mojibake back in is not idempotent", echo0 === EXPECT_ON_DISK, false);
+
+    // ---- 4. the arm that discriminates: read back, then edit -------------
+    // A single-crossing round trip cannot see this. Feeding the value straight
+    // back as `expectedText` can, because that is the second crossing. The
+    // ASCII paragraph is the control: without it, a failure here would be
+    // equally consistent with the edit path simply being broken.
+    const forEdit = await reader.read(doc, { limit: 10 });
+    const moji = forEdit.paragraphs.find((p) => p.text === EXPECT_ON_DISK);
+    const ascii = forEdit.paragraphs.find((p) => p.text === ASCII_CONTROL);
+    check("both paragraphs located for the edit arm", Boolean(moji && ascii), true);
+
+    if (moji && ascii) {
+        // The failing edit first: it changes nothing, so the addresses from this
+        // one read stay valid for the control below.
+        const mojiEdit = await host.edit({
+            path: doc,
+            wordIndex: moji.wordIndex,
+            expectedText: moji.text,
+            op: "replace_text",
+            text: "replaced",
+            headingLevel: null,
+        });
+        check(
+            "text read back cannot address the paragraph it came from",
+            mojiEdit.status,
+            "address_not_resolvable",
+        );
+
+        const asciiEdit = await host.edit({
+            path: doc,
+            wordIndex: ascii.wordIndex,
+            expectedText: ascii.text,
+            op: "replace_text",
+            text: "replaced",
+            headingLevel: null,
+        });
+        check("control: an ASCII paragraph in the same document edits", asciiEdit.status, "edited");
+    }
 } finally {
     await host.request("quit", {}).catch(() => {});
     await host.dispose?.().catch?.(() => {});
