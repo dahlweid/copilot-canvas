@@ -1001,3 +1001,31 @@ This is the `FileShare` lesson one level down, and it was walked into by the
 same person hours after writing the probe that exposed it. **State what the
 control ranges over, in the same breath as the control.**
 
+**A fork point is a property of history, not of a branch, so record it as a
+literal SHA and never re-derive it.** The rule it replaces was mine and sounded
+stronger: *confirm the fork point with `merge-base` rather than trusting a
+number I gave you*. `merge-base` answers "most recent common ancestor of these
+two branches". A rebase target answers "where was this branch forked". Those
+coincided for six consecutive checks on #43 and decoupled the moment the lower
+branch rebased — silently, with a plausible SHA and exit 0. Measured across the
+three endpoints anyone would reach for:
+
+| `git rebase --onto <target> <endpoint>` | commits replayed |
+| --- | --- |
+| literal `cee2da6` — the recorded fork point | **9**, correct |
+| `4da84c2` — what `merge-base` returns *now* | 14 |
+| `dahlweid-create-document-tool` — the branch name | 14 |
+
+The five extras are the lower branch's own pre-rebase commits, which is the
+exact pile `--onto` exists to prevent; it returns through a different door the
+moment the endpoint is named indirectly. **Re-deriving is not a stronger check
+than remembering — it is a different question that agrees until someone
+rewrites history.** What caught it was the cheap guard: *count the commits you
+expect*. 14 against 9, no error and no warning anywhere.
+
+**And never rebase onto a branch that is about to be squash-merged.** Squash
+replaces N commits with one new commit that is none of them, so a branch rebased
+onto the pre-squash head carries ancestry that `main` will never have, and its
+next rebase must replay commits already present as content. Rebase onto `main`
+after the squash lands, or let the forge's cascading merge retarget the PR.
+
