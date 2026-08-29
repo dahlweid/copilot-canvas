@@ -286,6 +286,34 @@ it cannot answer "has this round come back?" either.
 Select on author *and* body: a review is authored by the reviewer, opens with a
 state headline (🟢/🟡) and closes with a *comments generated* count.
 
+**And that closing count is load-bearing, because a review that never ran is
+also recorded as a review.** Measured on #36 and #47 simultaneously: both carried
+a third record authored by `copilot-pull-request-reviewer[bot]`, `state:
+COMMENTED`, at the correct head commit, with zero inline comments and this body
+in full:
+
+> The job was not started because recent GitHub Actions payments have failed or
+> your spending limit needs to be increased.
+
+Every discriminator above passes it. Right author, non-empty body, right commit,
+arrived promptly after the request. It is not a reply-record and it is not a
+stale round. **It is a billing failure wearing the shape of a clean review**, and
+counting it would consume one of the six rounds and could merge a PR on the
+strength of a review that never executed.
+
+What separates it is the one thing the reviewer produces and our query cannot:
+the `Review details` block — *files reviewed*, *comments generated*, *review
+effort level*. A genuine review always closes with it; this record has no such
+block at all. So the rule is sharper than "cross-check the count": **the
+count's absence is the tell, not its value.** A round with no `comments
+generated` figure did not happen, whatever else the record says.
+
+This is the general rule of this section arriving at its own subject matter. A
+query that reports good news must be verified against a number the query did not
+produce — and the reason that works is precisely that the failure modes cannot
+forge it. Zero findings is what a healthy PR, a reply-record, and an unbilled
+job all look like.
+
 Note this pulls the opposite way from the rule above it, and both are true. Do
 not use login as a **filter** you trust to be complete, because the reviewer
 renders as three different strings; do read login as a **discriminator**, because
