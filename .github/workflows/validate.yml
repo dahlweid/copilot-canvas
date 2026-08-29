@@ -37,7 +37,28 @@ jobs:
       - name: Check every probe citation resolves
         run: node tools/check-citations.mjs
 
-      # `node --test <dir>` fails to resolve modules on some Node versions;
-      # the quoted glob is the form that works.
+      # `node --test <dir>` fails to resolve modules on some Node versions, so the
+      # file set is expanded by the shell and handed to Node as discrete
+      # arguments. That is deliberate: passing a *pattern* means two different
+      # globbers decide what runs, and **a pattern Node matches nothing with runs
+      # nothing and exits 0**. Measured here: `node --test "**/test/unit/*.test.mjs"`
+      # reports `tests 0` and exits 0, because `**` does not descend into the
+      # dot-directory `.github`. A green run that tested nothing is the one CI
+      # result nobody looks twice at.
+      #
+      # So there is one globber and one check: if the shell finds no files, fail
+      # before Node runs. Note that a count check on Node's summary would *not*
+      # add anything -- measured, a file containing no `test()` calls is still
+      # reported as `tests 1`, so "collected zero tests" is not a state reachable
+      # once the file list is known to be non-empty.
       - name: Run Office-free unit tests
-        run: node --test ".github/extensions/office-canvas/test/unit/*.test.mjs"
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(.github/extensions/office-canvas/test/unit/*.test.mjs)
+          echo "unit test files: ${#files[@]}"
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::no unit test files found; the path moved and nothing would have run"
+            exit 1
+          fi
+          node --test "${files[@]}"

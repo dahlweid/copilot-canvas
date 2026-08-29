@@ -227,3 +227,47 @@ would produce numbers needing a caveat longer than the finding.
 
 Re-open both if the font directories are ever shipped, which is the condition
 under which the answer would start to matter.
+
+## The unit-test step could have gone green having run nothing
+
+`node --test <pattern>` expands the pattern **itself**, and a pattern it matches
+nothing with runs nothing and **exits 0**. Measured from this repo root:
+
+| invocation | files | result |
+| --- | --- | --- |
+| `node --test "**/test/unit/*.test.mjs"` | — | `tests 0`, **exit 0** |
+| `node --test ".github/extensions/office-canvas/test/unit/*.test.mjs"` | 28 | `tests 379`, exit 0 |
+
+The first fails because `**` does not descend into a dot-directory and the
+extension lives under `.github/`. CI used the second, correct form, so nothing
+was broken — but nothing *checked* that it stayed correct either, and the failure
+is silent: a moved path would leave the step green having tested not one line.
+
+Fixed by removing the second globber rather than guarding it. The shell expands
+the file set, the set is checked non-empty, and Node is handed discrete paths:
+
+```bash
+files=(.github/extensions/office-canvas/test/unit/*.test.mjs)
+[ "${#files[@]}" -eq 0 ] && exit 1
+node --test "${files[@]}"
+```
+
+One parser instead of two, which is the same reasoning the repo already applies
+to paths crossing `cmd.exe` and PowerShell.
+
+**A count check was written first and then removed, because it could not fail.**
+The intuition — "assert Node reports at least one test" — does not survive
+measurement: a file containing no `test()` calls is still reported as `tests 1`,
+so once the file list is known non-empty, "collected zero tests" is not a
+reachable state. It would have been a guard with no producible failure, sitting
+in CI looking like protection.
+
+Verified with both arms against the real tree: 28 files and 379 tests, exit 0;
+and from a directory without the path, `exit 1` with the error. The first arm is
+the control — without it the check passes trivially by never being exercised.
+
+**The probe that found this measured nothing on its first two attempts,** and
+both were path-translation errors rather than anything interesting: Windows paths
+handed to Git Bash matched no files, so every arm agreed and "failed" for the
+same wrong reason; then bash-native `/tmp` paths were unresolvable by the Windows
+`node`, so the positive control failed too. Every arm agreeing is the signature.

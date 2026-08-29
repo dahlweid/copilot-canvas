@@ -30,10 +30,21 @@ jobs:
       - name: Check extension packaging invariants (C1-C4)
         run: node tools/validate-extensions.mjs
 
-      # `node --test <dir>` fails to resolve modules on some Node versions;
-      # the quoted glob is the form that works.
+      # Same as validate.yml: the shell expands the file set and Node is handed
+      # discrete paths, so only one globber decides what runs and an empty set
+      # fails loudly instead of exiting 0. It matters more here -- this workflow
+      # cuts a release, so a green run that tested nothing would ship.
       - name: Run Office-free unit tests
-        run: node --test ".github/extensions/office-canvas/test/unit/*.test.mjs"
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(.github/extensions/office-canvas/test/unit/*.test.mjs)
+          echo "unit test files: ${#files[@]}"
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::no unit test files found; the path moved and nothing would have run"
+            exit 1
+          fi
+          node --test "${files[@]}"
 
       # `version` in copilot-extension.json is the *manifest format* version and
       # must be the integer 1 — install_extension parses it as a u32. The product
