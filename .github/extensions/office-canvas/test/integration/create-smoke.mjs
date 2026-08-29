@@ -86,6 +86,31 @@ async function check(name, fn) {
  * \u2013 and \u201D are retained below and are explicitly NOT measured here:
  * they are what other locales produce, kept so the assertion does not silently
  * narrow to this machine. Every other codepoint in this list was observed.
+ *
+ * WHAT A GREEN HERE DOES AND DOES NOT MEAN. This is a forward guard, not a live
+ * regression detector, and the difference matters because the test's name reads
+ * like the latter.
+ *
+ *   - The mechanism is live: forbidding a character that IS present turns this
+ *     red with "smart quotes appeared in: ...", so the assertion can fail.
+ *     Verified by mutating the list rather than by assuming.
+ *   - What cannot currently happen is the substitution itself. Arms A, B, E, F
+ *     and G of probe-autocorrect.ps1 insert this bait through Range.Text and
+ *     through Selection.TypeText, whole and character by character, with every
+ *     autocorrect setting ON, and rewrite 0 of 6. The only arm that rewrites
+ *     anything is an explicit Content.AutoFormat(), which this host never calls.
+ *
+ * So on this Word these three assertions cannot go red for the reason their name
+ * gives, and a green here is not evidence that suppression works. The evidence
+ * for that is the separate settings read-back check. What this guards is a
+ * *future* insertion path that does trigger autocorrect -- which is worth having,
+ * and is why the suppression is belt and braces rather than the mechanism.
+ *
+ * Do not try to mutation-check these by putting a curly quote in the bait text.
+ * That was tried: it turns the suite red, but with "the bait paragraph is
+ * missing", because the character is corrupted crossing stdin (issue #40) and
+ * the paragraph is never found. The mutant scores as killed and the kill is
+ * attributed to an assertion that never ran.
  */
 const VERBATIM_BAITS = [
     {
