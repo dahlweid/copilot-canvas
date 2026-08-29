@@ -51,8 +51,34 @@
 # narrower and enough: teardown crosses 3 s here, so the branch commented as
 # never firing does fire. THE VARIANCE IS THE RESULT. A budget whose
 # exceedance rate moves that far between two runs on one machine is not a
-# budget anyone measured, and that argues for a deadline far outside the
-# distribution rather than for a slightly larger one near it.
+# budget anyone measured.
+#
+# WHAT THIS PROBE THEN RECOMMENDED, AND WHY THAT WAS WRONG.
+# An earlier revision of this header concluded "...and that argues for a
+# deadline far outside the distribution rather than for a slightly larger one
+# near it." The measurement is unaffected; the recommendation is withdrawn.
+#
+# PR #36 measured the half this probe cannot see. dispose() sends `quit` with a
+# 20 s *client* timeout, and expiry kills the host outright: a 10 s bound
+# returns cleanly at 10279 ms, a 30 s bound times out at 20007 ms with the host
+# killed mid-wait. So the repo's 30 s is not generous, it is UNREACHABLE -- the
+# client kills first. Combined with the spread below and a Word observed
+# surviving a 30 s poll, NO REACHABLE BOUND LIES OUTSIDE THE DISTRIBUTION.
+# There is no number that turns this into a guarantee, which is what the
+# withdrawn sentence assumed there was.
+#
+# The corrected shape is not a bigger number but a different kind of number: a
+# budget whose EXPIRY IS SAFE, falling through to an identity-proving kill,
+# rather than one asserted to be large enough that expiry cannot happen.
+#
+# The instructive part is why this probe could not have caught its own bad
+# advice. It measures how long WINWORD takes to leave -- correctly, twice, with
+# its conditions recorded. The recommendation ranged over the client-side
+# timeout, a variable this instrument never observed and had no way to observe.
+# Measuring soundly does not license recommending past the edge of what was
+# measured, and nothing about a correct measurement flags when its prose has
+# stepped over that edge. Two of the three corrections against this file are
+# now of that shape rather than of the numbers.
 #
 # Run: powershell.exe -File spikes\isolation\probes\probe-quit-exit-latency.ps1
 
