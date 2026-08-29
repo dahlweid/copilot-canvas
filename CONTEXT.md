@@ -385,11 +385,12 @@ The consequence is asymmetric, and that is the part that changes code. For
 rejecting `limit` below `1` or above `MAX_READ_LIMIT` is load-bearing rather
 than belt-and-braces. For **canvas actions** a handler-side check of a declared
 bound is dead code. Carrying one surface's result to the other already turned a
-real finding into a wrong one here: the two `word-host.ps1` handlers that clamp
-`limit` without an upper comparison were reported as further sites of the
-declared-but-unenforced-bound defect, and they are not — the bound is enforced
-above them. Measure each direction and each surface separately, or say you have
-not.
+real finding into a wrong one here: the two `word-host.ps1` handlers that take
+`limit` — `Cmd-Outline` and `Cmd-Search` — apply a default and then coerce with
+`[int]`, performing no bounds check whatever, and were reported as further sites
+of the declared-but-unenforced-bound defect. They are not. The bound is enforced
+above them, so the absent check is correct rather than missing. Measure each
+direction and each surface separately, or say you have not.
 
 **Name the discriminating case before you trust the probe.** `spikes/isolation/PLAN.md`
 §19 states the rule and the failure that produced it: a probe on which every case
