@@ -494,20 +494,40 @@ moment without warning — so its content at merge time is a race, not a decisio
 
 Measured, on #26, by the session that lost the race: the squash landed at
 `16:53:05Z` and their correction to the body was submitted at `16:53:31Z`, **26
-seconds late**. Both timestamps are independently checkable and were checked —
-`merged_at` against the squash commit's own date, `updated_at` against it. What
-the replaced body *said* is their report and cannot be re-measured, because an
-edited body overwrites its predecessor: it still headlined *"Per-process. Not
-per-user, not persisted"* — the exact claim retracted everywhere else on that
-branch — together with the concurrent-read table presented as evidence and three
-stale counts. Had the merge taken the body, the most durable copy of a retracted
-claim in this repo would have been the one commit message nobody ever revisits,
-while every other site carried the correction.
+seconds late**. The replaced body still headlined *"Per-process. Not per-user,
+not persisted"* — the exact claim retracted everywhere else on that branch —
+together with the concurrent-read table presented as evidence and three stale
+counts. Had the merge taken the body, the most durable copy of a retracted claim
+in this repo would have been the one commit message nobody ever revisits, while
+every other site carried the correction.
+
+**An earlier draft of this section said the replaced body "cannot be re-measured,
+because an edited body overwrites its predecessor." That is false, and a review
+caught it here rather than after it landed.** GitHub retains every prior version
+and exposes them, timestamped, through GraphQL — measured on this very PR, which
+returns `totalCount: 5` with the pre-edit text recoverable in the `16:53:31Z`
+node:
+
+```
+gh api graphql -f query='{ repository(owner:"…",name:"…"){ pullRequest(number:26){
+  userContentEdits(first:20){ totalCount nodes{ editedAt editor{login} diff } } } } }'
+```
+
+**So the asymmetry is about what a reader is *presented*, not about what is
+retrievable.** A PR page shows the body as it is now; recovering what it said
+before takes a deliberate query against a surface almost nobody visits. A commit
+message is what `git log` shows by default. That is a weaker claim than the one
+first written and it is the true one — and worth knowing in its own right, since
+it means a body edited to hide a claim is still on the record.
 
 The margin is not the point and the rule does not depend on it being small. What
-makes a commit message the right home is one structural property: it is
-**immutable and timestamped at the merge**. That is true of every commit message
-regardless of who wrote it, and it is the whole of what the mechanism gives you.
+makes a commit message the right home is one structural property: it is **written
+once, at the merge, and carries that timestamp**. Verified here — the squash
+commit's own date matches `merged_at` to the second. Not *immutable*: history
+gets rewritten in this repo routinely, by amend, rebase and force-push, and the
+guidance a few sections down is about exactly that. The narrower true claim is
+that a commit message is not editable **in place** the way a body is, so changing
+one moves the commit and leaves a trace.
 
 **It is not a warrant that anyone verified anything.** A maintainer merging
 someone else's PR with a message assembled from a review they did not run
