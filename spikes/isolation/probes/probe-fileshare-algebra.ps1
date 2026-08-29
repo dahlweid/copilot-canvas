@@ -143,7 +143,10 @@ for ($i = 0; $i -lt $wRead.Count; $i++) {
 }
 if ($differences.Count -eq 0) {
     Write-Output ("ACCESS-MODE IDENTITY HOLDS: WRITE and READWRITE holders granting Read are identical across all {0} readers plus Copy-Item." -f $readers.Count)
-    Write-Output '  => a holder access mode is not observable from outside; only the share mode is measured.'
+    # The apostrophe is doubled because this is a single-quoted PowerShell
+    # literal. Kept single-quoted rather than switched to double quotes so the
+    # string stays free of interpolation by construction.
+    Write-Output '  => a holder''s access mode is not observable from outside; only the share mode is measured.'
 } else {
     # Recorded rather than thrown, so PART B still runs and reports against real
     # Word -- but the run must not exit 0, or an assertion nobody reads is worth
