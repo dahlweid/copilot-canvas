@@ -144,19 +144,37 @@ test("autocorrect suppression is reported, not assumed", async () => {
     // Autocorrect rewrites inserted text and raises nothing, so "we switch it
     // off" is only a claim until the result says so. This is the property a
     // smoke test can assert without reading a comment.
+    //
+    // Asserted as a WHOLE-SHAPE deep-equal on purpose. These fields are what the
+    // agent sees, and the defect this pins is a field being added host-side and
+    // silently dropped on the way out: `restored` was written into the host
+    // report and lost at three object literals in document-author.mjs, which is
+    // the same class as asToolError forwarding only code/message/data. A
+    // property-by-property assertion cannot see an omission; this can.
     await withTemp(async (dir) => {
         const doc = path.join(dir, "report.docx");
 
         const on = new DocumentAuthor({ reader: stubReader(doc), host: goodHost() });
-        assert.deepEqual((await on.create(doc, spec)).autoCorrect, { suppressed: true, reason: null });
+        assert.deepEqual((await on.create(doc, spec)).autoCorrect, {
+            suppressed: true,
+            reason: null,
+            restored: false,
+            restoreReason: null,
+            settings: null,
+            restoreSettings: null,
+            prior: null,
+        });
 
         await rm(doc, { force: true });
 
-        // An instance we attached to rather than started is the user's own Word,
-        // and its settings are per-process — measured, probe-autocorrect.ps1
-        // arm C — so changing them changes what the user is looking at. The host
-        // declines, and says so rather than reporting a suppression it did not
-        // perform.
+        // An instance we attached to rather than started is the user's own Word.
+        // The original reason given here was that the settings are per-process,
+        // citing probe-autocorrect.ps1 arm C. That is RETRACTED: arm C read a
+        // second instance while the first was still alive, and these values are
+        // not flushed until the writer exits, so a concurrent read cannot tell
+        // isolation from persistence-with-lag. Measured sequentially they
+        // persist for the user, which makes declining on an attached instance
+        // MORE important rather than less -- the change would outlive us.
         const off = new DocumentAuthor({
             reader: stubReader(doc),
             host: goodHost({ autoCorrect: { suppressed: false, reason: "attached_instance" } }),
@@ -164,6 +182,11 @@ test("autocorrect suppression is reported, not assumed", async () => {
         assert.deepEqual((await off.create(doc, spec)).autoCorrect, {
             suppressed: false,
             reason: "attached_instance",
+            restored: false,
+            restoreReason: null,
+            settings: null,
+            restoreSettings: null,
+            prior: null,
         });
     });
 });
@@ -394,8 +417,18 @@ test("a file that cannot be read back is not reported as one that was never writ
         assert.match(err.message, /Do not create it again/);
         assert.doesNotMatch(err.message, /there is no file at that path/);
         // Asserted through the boundary, because this is a path where a document
-        // may exist and the description tells callers to check the field.
-        assert.deepEqual(err.data?.autoCorrect, { suppressed: false, reason: "attached_instance" });
+        // may exist and the description tells callers to check the field. Whole
+        // shape again: an error path is where a field is most likely to be
+        // dropped, since the success path is the one people look at.
+        assert.deepEqual(err.data?.autoCorrect, {
+            suppressed: false,
+            reason: "attached_instance",
+            restored: false,
+            restoreReason: null,
+            settings: null,
+            restoreSettings: null,
+            prior: null,
+        });
     });
 });
 

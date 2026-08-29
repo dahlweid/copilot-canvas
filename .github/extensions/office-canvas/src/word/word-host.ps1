@@ -614,6 +614,15 @@ function Disable-AutoCorrect {
 # Every COM access here is guarded: this runs in a `finally`, so it may run with
 # Word already dead, and an exception raised here would replace the real error
 # with a confusing one. A restore we could not perform is reported, never thrown.
+#
+# It reaches Word only through $script:App and never constructs one. That is a
+# checked property rather than an obvious one: a second `New-Object -ComObject
+# Word.Application` in the same process does NOT fail -- measured in
+# spikes/isolation/probes/probe-newobject-attach.ps1, which got two distinct
+# WINWORDs from one process -- so a reconstruction on this path would raise
+# nothing, return a working object, and strand a process that only the leak
+# census at the end of a run would ever notice. The single construction site is
+# in Initialize-Word, behind Test-AppAlive, and this function does not call it.
 function Restore-AutoCorrect($state) {
     if ($null -eq $state -or $null -eq $state.prior -or $state.prior.Count -eq 0) {
         return @{ restored = $false; reason = 'nothing_captured' }
