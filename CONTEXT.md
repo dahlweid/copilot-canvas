@@ -339,6 +339,31 @@ everywhere else here, since a set of runs that all agree has measured nothing.
 test failure are both `conclusion: failure`.** The field everyone reads cannot
 separate them.
 
+**Then I transported that finding across six pull requests without checking it
+on any of them.** Having established the phantom record on #36 and #47, I
+broadcast *"round N is not consumed"* to every session in the stack. It is true
+only where a review was requested **after** the outage began, which was those two
+PRs and no others. Reconciled by counting genuine reviews per PR:
+
+| PR | genuine rounds | phantom | of six |
+| --- | --- | --- | --- |
+| #26 | **4** | none | 2 left |
+| #34 | 2 | none | 4 left |
+| #36 | 2 | 1 | 4 left |
+| #43 | **1, genuine and worked** | none | 5 left |
+| #46 | **0 — never reviewed at all** | none | 6 left |
+| #47 | 2 | 1 | 4 left |
+
+Two of those were live errors, not pedantry: #26 was two rounds further into the
+six-round cap than anyone believed, and #43's round 1 was real and had already
+been answered while I was telling its session the round had not run. **A
+per-artefact observation is not a property of the system**, and the correction
+arrived within the hour of writing that a summary is what discards a scope — the
+recommendation being itself a summary, which is the shape rather than the
+exception. What caught it was a layer session **applying the discriminator to its
+own PR instead of accepting the claim**, which is the only reason any of this
+gets caught at all.
+
 The failure mode this outage produces is the one worth remembering: a job that
 never started is, from outside, indistinguishable from a job still running.
 Waiting is the natural response and it never terminates, with every dependent
