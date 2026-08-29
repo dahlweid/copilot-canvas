@@ -12,9 +12,22 @@
 #   * Numeric wd*/mso* constants only. Localized Word UIs do not have
 #     "Heading 1" and string style names throw.
 #   * Macros are force-disabled before any document is opened.
-#   * Only an unblocked temp copy is ever opened, never the user's original.
+#   * Reads only ever open an unblocked temp copy, never the user's original.
+#     Edits are the deliberate exception: they must touch the original, so they
+#     open it directly, one operation at a time, and close it before returning
+#     (ADR 0005). This line used to say the original is *never* opened, which
+#     `edit_document` made false -- a safety rule stating something the file's
+#     own code does not do is worse than no rule, because it is the one a
+#     reader trusts without checking.
 #   * A Word instance we did not create is never quit and never hidden.
-#   * Global Application.Options are never modified; they persist for the user.
+#   * Global Application.Options are never modified. The reason is *not* that
+#     they persist for the user: measured, they are per-process -- toggled off
+#     in one instance, a fresh second process still read the original values,
+#     and the HKCU Word\Options key stayed absent throughout, including after
+#     both instances quit. So our hidden Word cannot reach the user's settings
+#     by construction, and this rule is belt-and-braces rather than the thing
+#     standing between them and a changed Word. Keep the rule; it costs nothing
+#     and the isolation is a measured property of Word, not a guarantee we own.
 
 param(
     # Directory used to record which WINWORD process this host owns, so an
@@ -172,6 +185,42 @@ function Get-PageOf($range) {
     try { return [int]$range.Information($WD_INFO_ACTIVE_END_PAGE_NUMBER) } catch { return 0 }
 }
 
+# The Word-side twin of `normalizeText` in structure-map.mjs, so a paragraph's
+# text read over COM can be compared with the same paragraph's text parsed out
+# of the markup.
+#
+# The extra step here is stripping control characters: Range.Text carries
+# Word's own in-band marks -- \r for the paragraph mark, \a (7) for an
+# end-of-cell mark, \v (11) for a line break -- which have no counterpart in
+# the XML the map was built from. Whitespace collapsing then matches, because
+# Word splits runs invisibly and the map already normalizes for that.
+function Get-NormalizedText([string]$value) {
+    if ([string]::IsNullOrEmpty($value)) { return '' }
+
+    # This must mirror paragraphText() in structure-map.mjs character for
+    # character. Word renders layout marks as control characters in Range.Text;
+    # the map renders the same marks from the markup. Any disagreement makes the
+    # affected paragraph *permanently uneditable*: the pre-mutation text check
+    # fails, and the failure is reported as "the file changed between the read
+    # and the edit", which is false and sends the caller into an infinite
+    # re-read loop, because re-reading mints the identical address.
+    #
+    # Measured end to end on a fixture carrying each mark. Before this mapping,
+    # w:br and w:noBreakHyphen paragraphs failed every edit; w:tab and
+    # w:softHyphen passed, the first by luck and the second because both sides
+    # happen to drop it.
+    #
+    #   mark                     markup            JS gives   Word gives
+    #   line/page/column break   w:br              "\n"->" "  \u000B \u000C \u000E
+    #   non-breaking hyphen      w:noBreakHyphen   "-"        \u001E
+    #   optional (soft) hyphen   w:softHyphen      dropped    \u001F
+    #   tab                      w:tab             "\t"->" "  \u0009
+    $clean = [regex]::Replace($value, '[\u000B\u000C\u000E]', ' ')
+    $clean = [regex]::Replace($clean, '\u001E', '-')
+    $clean = [regex]::Replace($clean, '[\u0000-\u0008\u000F-\u001F]', '')
+    return ([regex]::Replace($clean, '\s+', ' ')).Trim()
+}
+
 # Whether the file could be opened for writing right now -- 4 ms when another
 # process holds it, 9 ms when free, correct in both directions.
 #
@@ -181,13 +230,14 @@ function Get-PageOf($range) {
 # True when a *write* handle can be taken. Note what that does and does not
 # mean, because the answer is reported to callers: it is false for a sharing
 # violation, but equally for an ACL that denies write and for the read-only
-# attribute. Measured: the read-only attribute and Word's own lock -- a *write*
-# handle granting FileShare::ReadWrite -- both still allow *reading* and copying,
-# so `writable = $false` must never be reported as "another process has it open"
-# -- that is one of three causes. Note also that this function grants
-# FileShare::None, so it conflicts with *any* existing handle whatever that
-# handle shares: a document open in Word reports writable = $false, correctly,
-# while still being perfectly readable.
+# attribute. Measured: the read-only attribute and Word's own lock -- a handle
+# with *write access* granting FileShare::Read -- both still allow *reading*
+# and copying, so `writable = $false` must never be reported as "another
+# process has it open" -- that is one of three causes. Note also that this
+# function grants FileShare::None *and* requests write access, so it conflicts
+# with any existing handle on both of Windows' checks -- whatever that handle
+# shares, and whatever access it holds: a document open in Word reports
+# writable = $false, correctly, while still being perfectly readable.
 function Test-FileWritable([string]$path) {
     try {
         $stream = [IO.File]::Open($path, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
@@ -399,15 +449,17 @@ function Open-DocInternal([string]$docId, [string]$path, [string]$workDir, [bool
         #
         #   FileShare::None (exclusive)      -> System.IO.IOException
         #   ACL denying read                 -> System.UnauthorizedAccessException
-        #   Word's own lock (write handle,   -> copy succeeds
-        #     granting FileShare::ReadWrite)
+        #   Word's own lock (write access,   -> copy succeeds
+        #     granting FileShare::Read)
         #   read-only attribute              -> copy succeeds
         #
         # The last two are why a read works against a document the user has
-        # open, and why "read-only" is not a failure at all. Copy-Item grants
-        # ReadWrite, which is what makes it compatible with Word's write handle;
-        # a reader granting only FileShare::Read would fail here on a file that
-        # copies fine.
+        # open, and why "read-only" is not a failure at all. Copy-Item requests
+        # read and grants ReadWrite, so it passes both of Windows' checks
+        # against Word's handle: Word's Read share admits a reader, and
+        # Copy-Item's ReadWrite share admits Word's writer. A reader granting
+        # only FileShare::Read fails the second check and would error here on a
+        # file that copies fine.
         $ex = $_.Exception
         $name = [IO.Path]::GetFileName($path)
         if ($ex -is [System.UnauthorizedAccessException]) {
@@ -756,6 +808,366 @@ function Cmd-Info($a) {
     }
 }
 
+# --- editing the original ----------------------------------------------------
+#
+# Everything above this line serves reads, and a read never touches the user's
+# file: Open-DocInternal works on an unblocked temp copy. An edit cannot. It
+# must open the original, which drags in two failure modes that a read never
+# meets, and *both of them hang rather than fail*:
+#
+#   1. Another process holds the file. Measured: Documents.Open never returns,
+#      with DisplayAlerts already off; both processes needed external kills.
+#   2. The file carries the mark of the web. Measured on this machine with a
+#      Zone.Identifier of ZoneId=3: Documents.Open also never returns. Word
+#      wants to route the file into Protected View, and the automation call
+#      simply blocks. It does not raise "this document is in Protected View".
+#
+# So neither can be discovered by trying. Both are checked before the open, and
+# the open itself stays inside the caller's timeout regardless (ADR 0007).
+
+$WD_STYLE_NORMAL = -1
+$WD_CHARACTER = 1
+$WD_COLLAPSE_START = 1
+
+# Reads the Zone.Identifier alternate data stream. Sub-millisecond, and it
+# cannot hang, which is the entire point: the obvious test -- ask Word to open
+# it and see what happens -- is the call that wedges.
+function Test-MarkOfTheWeb([string]$path) {
+    try {
+        $zone = Get-Content -LiteralPath $path -Stream 'Zone.Identifier' -Raw -ErrorAction Stop
+    } catch {
+        return $false
+    }
+    if ($zone -match 'ZoneId\s*=\s*(\d+)') { return ([int]$Matches[1] -ge 3) }
+    return $false
+}
+
+# Opens the user's own document for writing, and returns the Document.
+#
+# For a marked file this takes the Protected View route, which is the
+# automation equivalent of a human clicking "Enable Editing":
+# ProtectedViewWindows.Open() loads the file in the sandbox and .Edit() promotes
+# it to an ordinary editable Document. Measured: the edit lands on disk and the
+# file's Zone.Identifier is still there afterwards.
+#
+# The alternative, Unblock-File, was rejected. It deletes a security marker from
+# a file the user owns, silently and permanently, to work around a limitation of
+# ours. The Protected View path leaves the marker alone; its cost is a per-file
+# trust record under HKCU -- exactly the record clicking Enable Editing creates,
+# per-file, and clearable from the Trust Center. ADR 0007 records the trade.
+function Open-OriginalForEdit([string]$path) {
+    Initialize-Word
+
+    if (Test-MarkOfTheWeb $path) {
+        # FileName, Password, AddToRecentFiles, Repair
+        $window = $script:App.ProtectedViewWindows.Open($path, $FAIL_FAST_PASSWORD, $false, $false)
+        try {
+            $doc = $window.Edit()
+        } catch {
+            # Edit() failing leaves the Protected View window open, and that
+            # window holds the user's file. Our own hidden Word would then be
+            # the "other program" every later edit tells the user to close --
+            # recreated on every retry, until idle shutdown. Close it here.
+            #
+            # Closed but deliberately not released -- see the note below the
+            # try/catch. Releasing this RCW leaks WINWORD processes across
+            # later operations, measured.
+            try { $window.Close() } catch { }
+            throw
+        }
+        # Edit() transitions the window into a normal document, so closing it is
+        # a no-op or throws; either way the Protected View window is done.
+        try { $window.Close() } catch { }
+        # DO NOT add ReleaseComObject($window) here. It is the obvious tidy-up,
+        # every other COM object in this file gets one, and a review asked for it
+        # on exactly that reasoning -- consistency, plus a stated risk of
+        # "leaking COM references and prolonging file/Word resource retention".
+        # Adding it *causes* that leak instead of preventing it. Measured on the
+        # full edit suite, one variable, twice from opposite directions:
+        #
+        #   with ReleaseComObject($window)     19/20, 7 WINWORD alive 90 s after
+        #                                      teardown, +7 on the machine
+        #   without it (everything else same)  20/20, zero left, count unchanged
+        #
+        # The single-operation probe that ought to have caught it says the
+        # opposite -- file free in 16 ms and Word exiting in ~2.8 s either way,
+        # against a control that shows the probe can see retention. Both are
+        # true. The release costs nothing *within* an operation and breaks Word's
+        # lifecycle *across* them, so a probe that runs one operation and quits
+        # Word itself measures the wrong axis, however careful its controls are.
+        # Protected View also spawns a second WINWORD we never hold a handle to
+        # (measured: one per open), which is the likely route, but the mechanism
+        # is not pinned and this note deliberately does not invent one.
+        #
+        # The concern behind the review is real, so it is now asserted rather
+        # than argued: the Protected View case in edit-smoke.mjs checks
+        # `lockReleased`, which the host sets by polling for a write handle.
+        return @{ doc = $doc; protectedView = $true }
+    }
+
+    # FileName, ConfirmConversions, ReadOnly, AddToRecentFiles,
+    # PasswordDocument, PasswordTemplate, Revert
+    $doc = $script:App.Documents.Open($path, $false, $false, $false, $FAIL_FAST_PASSWORD, $FAIL_FAST_PASSWORD, $false)
+    return @{ doc = $doc; protectedView = $false }
+}
+
+# A paragraph's Range ends with its paragraph mark, and inside a table cell with
+# an end-of-cell mark as well. Assigning to a Range that includes those marks
+# deletes them, welding the paragraph onto the next one. Trimming them off is
+# what makes "replace the text of this paragraph" mean only that.
+function Get-TextRange($para) {
+    # Word's string and its character *model* disagree inside a table. A cell
+    # paragraph's Range.Text ends "`r" + chr(7) -- two characters in the string --
+    # but End-Start counts the end-of-cell mark as one position. Measured: a
+    # blind MoveEnd(-2) ate a real character, rewriting "cell 11" as
+    # "cell rewritten1". So derive the trim from the position span rather than
+    # from the string length, which is correct in both models.
+    $raw = [string]$para.Range.Text
+    $visible = $raw.TrimEnd("`r", [char]7, "`n")
+    $range = $para.Range
+    $drop = ($range.End - $range.Start) - $visible.Length
+    if ($drop -gt 0) { $range.MoveEnd($WD_CHARACTER, -$drop) | Out-Null }
+    return $range
+}
+
+function Set-ParagraphText($para, [string]$text) {
+    (Get-TextRange $para).Text = $text
+}
+
+# Style assignment, and the only two mechanisms that work here.
+#
+# Measured on this German Word: Range.Style = 'berschrift1' (the style id Word
+# actually writes into the file) throws, and so does Range.Style = 'Heading 1'.
+# Assigning the numeric wd* constant works, and so does assigning another
+# paragraph's Style *object*. The write side therefore never names a style.
+function Set-ParagraphHeadingLevel($para, [int]$level) {
+    if ($level -le 0) { $para.Range.Style = $WD_STYLE_NORMAL }
+    else { $para.Range.Style = (Get-HeadingStyleId $level) }
+}
+
+# What a new paragraph should look like when the caller did not say.
+#
+# Word's own behaviour when you press Enter at the end of a heading is to start
+# the next paragraph in that style's follow-on style -- body text, not another
+# heading. NextParagraphStyle is that rule, as an object, so it carries across
+# localizations without naming anything.
+function Set-InheritedStyle($target, $reference) {
+    try {
+        $next = $reference.Style.NextParagraphStyle
+        if ($null -ne $next) { $target.Range.Style = $next; return }
+    } catch { }
+    try { $target.Range.Style = $reference.Style } catch { }
+}
+
+# Applies one intent to an already-open document. Split out so the open/close
+# lock window in Cmd-Edit reads as a single unbroken sequence.
+function Invoke-EditOperation($doc, [int]$wordIndex, $a) {
+    $op = [string]$a.op
+    $para = $doc.Paragraphs.Item($wordIndex)
+
+    switch ($op) {
+        'replace_text' {
+            Set-ParagraphText $para ([string]$a.text)
+            return $wordIndex
+        }
+        'delete_paragraph' {
+            # Constraint 6's bug class at a second site. A cell paragraph's
+            # Range runs to the end-of-cell mark, and deleting that mark either
+            # throws or quietly damages the table -- a cell must keep at least
+            # one paragraph. Trim the mark off the range, derived from the
+            # position span rather than the string length for the reason
+            # Get-TextRange documents, and delete what is left.
+            $range = $para.Range
+            $raw = [string]$range.Text
+            if ($raw.Contains([char]7)) {
+                $visible = $raw.TrimEnd("`r", [char]7, "`n")
+                $drop = ($range.End - $range.Start) - $visible.Length
+                if ($drop -gt 0) { $range.MoveEnd($WD_CHARACTER, -$drop) | Out-Null }
+            }
+            $range.Delete() | Out-Null
+            return 0
+        }
+        'set_heading_level' {
+            Set-ParagraphHeadingLevel $para ([int]$a.headingLevel)
+            return $wordIndex
+        }
+        'insert_paragraph_after' {
+            $para.Range.InsertParagraphAfter()
+            $new = $doc.Paragraphs.Item($wordIndex + 1)
+            Set-ParagraphText $new ([string]$a.text)
+            if ($null -ne $a.headingLevel) { Set-ParagraphHeadingLevel $new ([int]$a.headingLevel) }
+            else { Set-InheritedStyle $new $para }
+            return ($wordIndex + 1)
+        }
+        'insert_paragraph_before' {
+            $range = $para.Range
+            $range.Collapse($WD_COLLAPSE_START)
+            $range.InsertParagraphBefore()
+            $new = $doc.Paragraphs.Item($wordIndex)
+            Set-ParagraphText $new ([string]$a.text)
+            if ($null -ne $a.headingLevel) { Set-ParagraphHeadingLevel $new ([int]$a.headingLevel) }
+            else { Set-InheritedStyle $new $doc.Paragraphs.Item($wordIndex + 1) }
+            return $wordIndex
+        }
+        default { throw "Unsupported edit operation '$op'." }
+    }
+}
+
+# One edit: open the original, change one paragraph, save, close. The lock is
+# held for that sequence and no longer (ADR 0005), and the document is never
+# registered in $script:Docs, so no later command can resolve it and silently
+# reacquire the lock.
+#
+# Failures come back as a `status` on the success channel rather than as
+# exceptions. The dispatch loop collapses every throw to a single `word_error`,
+# which would leave the caller string-matching localized German exception text
+# to tell "the file is locked" from "that paragraph is not where you think".
+function Cmd-Edit($a) {
+    $path = [string]$a.path
+    $started = [Diagnostics.Stopwatch]::StartNew()
+
+    if ([string]::IsNullOrWhiteSpace($path)) { return @{ status = 'file_not_found'; path = $path } }
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return @{ status = 'file_not_found'; path = $path } }
+
+    # Pre-flight, in this order: the lock check is 4 ms and the MOTW check is
+    # sub-millisecond, and either one hanging Word is a two-process kill.
+    if (-not (Test-FileWritable $path)) { return @{ status = 'document_locked'; path = $path } }
+    $marked = Test-MarkOfTheWeb $path
+
+    $openMs = 0
+    $lockHeldMs = 0
+    $opened = $null
+
+    # The lock window starts where the file is actually acquired, not where the
+    # command was entered. The pre-flight above touches the file but never holds
+    # it, and timing both from one stopwatch is what made the reported figure
+    # overstate the window it is named for -- in a design whose entire claim is
+    # that the window is short, so the error ran in the flattering direction.
+    $lockStarted = [Diagnostics.Stopwatch]::StartNew()
+    try {
+        $opened = Open-OriginalForEdit $path
+        $openMs = [int]$lockStarted.ElapsedMilliseconds
+    } catch {
+        return @{ status = 'open_failed'; path = $path; protectedView = $marked; detail = $_.Exception.Message }
+    }
+
+    $doc = $opened.doc
+    $result = $null
+    try {
+        $count = [int]$doc.Paragraphs.Count
+        $wordIndex = [int]$a.wordIndex
+
+        if ($wordIndex -lt 1 -or $wordIndex -gt $count) {
+            return @{ status = 'address_not_resolvable'; reason = 'out_of_range'; wordIndex = $wordIndex; paragraphCount = $count }
+        }
+
+        # The map said this paragraph is at this position with this text. One
+        # property read confirms it before anything is mutated. Without this an
+        # address that has drifted -- a document edited outside the session
+        # between the read and the edit -- silently rewrites the wrong paragraph.
+        $expected = Get-NormalizedText ([string]$a.expectedText)
+        $actual = Get-NormalizedText ([string]$doc.Paragraphs.Item($wordIndex).Range.Text)
+        if ($expected -ne $actual) {
+            return @{
+                status         = 'address_not_resolvable'
+                reason         = 'text_mismatch'
+                wordIndex      = $wordIndex
+                paragraphCount = $count
+                expectedText   = $expected
+                actualText     = $actual
+            }
+        }
+
+        $editStarted = [Diagnostics.Stopwatch]::StartNew()
+        $touched = Invoke-EditOperation $doc $wordIndex $a
+        $editMs = [int]$editStarted.ElapsedMilliseconds
+
+        # A delete is the one operation whose success cannot be confirmed by
+        # looking at the paragraph it names, because that paragraph is meant to
+        # be gone. So confirm it by the count, before saving rather than after:
+        # inside a table a cell must keep one paragraph, so a delete there can
+        # quietly do nothing instead of throwing, and an unverified 'edited'
+        # would then be a lie the caller has no way to detect.
+        if ([string]$a.op -eq 'delete_paragraph') {
+            $afterCount = [int]$doc.Paragraphs.Count
+            if ($afterCount -ne ($count - 1)) {
+                return @{
+                    status         = 'edit_had_no_effect'
+                    reason         = 'paragraph_count_unchanged'
+                    wordIndex      = $wordIndex
+                    paragraphCount = $afterCount
+                    expectedCount  = $count - 1
+                }
+            }
+        }
+
+        $saveStarted = [Diagnostics.Stopwatch]::StartNew()
+        $doc.Save()
+        $saveMs = [int]$saveStarted.ElapsedMilliseconds
+
+        # Everything past this point is reporting, not mutation: the file on
+        # disk is already changed. A COM throw here must not surface as a failed
+        # edit, because the caller treats a throw as "outcome unknown" and the
+        # truth is "the edit succeeded and we failed to describe it".
+        $page = 0
+        $paragraphCount = 0
+        try {
+            if ($touched -gt 0 -and $touched -le [int]$doc.Paragraphs.Count) {
+                $page = Get-PageOf $doc.Paragraphs.Item($touched).Range
+            }
+            $paragraphCount = [int]$doc.Paragraphs.Count
+        } catch {
+            $page = 0
+        }
+
+        $result = @{
+            status         = 'edited'
+            protectedView  = [bool]$opened.protectedView
+            markOfTheWeb   = $marked
+            wordIndex      = $touched
+            paragraphCount = $paragraphCount
+            page           = $page
+            openMs         = $openMs
+            editMs         = $editMs
+            saveMs         = $saveMs
+        }
+    } finally {
+        # The lock window ends here whatever happened above, including a throw
+        # in the middle of a mutation. wdDoNotSaveChanges: anything worth
+        # keeping was saved explicitly, and a half-applied edit must not be.
+        try { $doc.Close($WD_DO_NOT_SAVE_CHANGES) } catch { }
+        # Stopped here, immediately after the close that releases the file, so
+        # the figure covers acquire -> release and nothing else. Measured at
+        # 0-1 ms, `Close()` is what ends the window; the release poll below only
+        # confirms it and must not be counted inside it.
+        $lockHeldMs = [int]$lockStarted.ElapsedMilliseconds
+        try { [Runtime.InteropServices.Marshal]::ReleaseComObject($doc) | Out-Null } catch { }
+    }
+
+    if ($null -ne $result) {
+        # Close() returning is not proof the file is released -- Quit() is known
+        # to return ~120 ms before its process actually exits. Measure it rather
+        # than assume, because the next thing the caller does is read the file
+        # to confirm the edit, and a re-open into a still-held file is the hang
+        # this whole command is built to avoid.
+        $releaseStarted = [Diagnostics.Stopwatch]::StartNew()
+        $released = $false
+        while ($releaseStarted.ElapsedMilliseconds -lt 5000) {
+            if (Test-FileWritable $path) { $released = $true; break }
+            Start-Sleep -Milliseconds 20
+        }
+        $result.releaseMs = [int]$releaseStarted.ElapsedMilliseconds
+        $result.released = $released
+        $result.lockHeldMs = $lockHeldMs
+        # The whole command, pre-flight and release poll included. Reported
+        # beside `lockHeldMs` rather than as it, because they answer different
+        # questions and conflating them is what this pair exists to prevent.
+        $result.totalMs = [int]$started.ElapsedMilliseconds
+    }
+
+    return $result
+}
+
 function Cmd-Close($a) {
     $docId = [string]$a.docId
     $script:DocArgs.Remove($docId) | Out-Null
@@ -784,6 +1196,7 @@ try {
                 'ping' { Send-Ok $id (Cmd-Ping $cmdArgs) }
                 'open' { Send-Ok $id (Cmd-Open $cmdArgs) }
                 'structure' { Send-Ok $id (Cmd-Structure $cmdArgs) }
+                'edit' { Send-Ok $id (Cmd-Edit $cmdArgs) }
                 'export' { Send-Ok $id (Cmd-Export $cmdArgs) }
                 'outline' { Send-Ok $id (Cmd-Outline $cmdArgs) }
                 'search' { Send-Ok $id (Cmd-Search $cmdArgs) }

@@ -270,12 +270,26 @@ export class ViewerInstance {
 
     openInWord() {
         if (!this.doc) throw new DocumentError("not_open", "No document is open in this canvas.");
-        // Launches the user's own visible Word. Safe because our hidden instance
-        // only ever holds a temp copy, never the original file.
+        // Launches the user's own visible Word on the original.
+        //
+        // This used to be justified with "safe because our hidden instance only
+        // ever holds a temp copy, never the original file". That justification
+        // died with edit_document, which opens the original by design (ADR 0005).
+        // The invariant that replaces it is narrower but still holds: the hidden
+        // instance holds the original only for the length of one operation, and
+        // every edit is gated on a write-handle probe first. So the two can
+        // collide, and when they do the edit is refused with `file_locked`
+        // rather than either side corrupting the file. (`document_locked` is
+        // the host's internal status for it; the code a caller sees is
+        // `file_locked`.)
+        //
+        // The collision is asymmetric and only bites in this direction: a
+        // document held by the user's Word still *reads* fine, because the read
+        // works on a copy. Only the edit needs the original.
         //
         // Deliberately NOT `cmd.exe /c start`. Node quotes an argv element only
         // when it holds a space, tab or quote, and `cmd.exe` then applies its own
-        // parse on top of that — so a filename with no space and a `&`, `^` or a
+        // parse on top of that -- so a filename with no space and a `&`, `^` or a
         // `%VAR%` pair reaches cmd unquoted and is mangled. Measured in
         // spikes/isolation/probes/probe-open-in-word-quoting.mjs: 3 of 9 ordinary
         // filenames corrupted, including `%PATH%.docx` expanding the environment

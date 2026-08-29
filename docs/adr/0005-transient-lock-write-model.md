@@ -3,8 +3,12 @@
 The agent edits the document the user named — not a persistent working copy —
 so there is never a question about which file is real. But it holds the file
 open only for the length of a single operation: open, edit, save, close,
-measured at **228 ms** against a warm hidden instance. Between operations the
-file is entirely free.
+measured at **roughly 250-500 ms** against a warm hidden instance. Between
+operations the file is entirely free.
+
+> This figure has been corrected twice, in both directions, and the second
+> correction is the instructive one: the number reported as the lock window was
+> not measuring the lock window. See the amendment at the end of this file.
 
 The obvious alternative was to keep the document open for the session and let
 Word arbitrate access. We measured that and it does not work. Word does not
@@ -63,3 +67,297 @@ The process tail is also why a test asserting no Word was leaked must **poll**
 rather than sleep a fixed interval: the tail is load-dependent and unbounded by
 the idle measurements, so any flat settle is either a coin toss or a tax on
 every green run.
+
+## Why the read path's trick is not available here
+
+Reading never opens the original at all: it copies the file and opens the copy,
+so nothing is held. It is worth being precise about why that works, because it
+looks like the edit path is simply a lazier version of it — and because the
+intuitive explanation is wrong.
+
+Measured, with a document open in a hidden Word (`ok` = the open succeeded):
+
+| what the caller asks for | while Word holds it | file free |
+| --- | --- | --- |
+| `Copy-Item` | **ok** | ok |
+| read, `FileShare::ReadWrite` | **ok** | ok |
+| read, `FileShare::Read` | sharing violation | ok |
+| read, `FileShare::None` | sharing violation | ok |
+| write, any share mode | sharing violation | ok |
+
+The last row is the one this layer depends on. `Test-FileWritable` asks for
+`FileAccess::ReadWrite` with **`FileShare::None`**, and `None` conflicts with
+*any* existing handle whatever that handle grants. So the edit path's pre-flight
+refusal against a document open in Word is **guaranteed rather than incidental**:
+it does not depend on Word's share mode being any particular value, which is
+exactly the assumption that turned out to be wrong everywhere else on this page.
+
+So Word holds a handle with **write access** that grants **`FileShare::Read`**.
+The tempting one-line summary — "Word locks the file with `FileShare::Read`" —
+is right about the share mode and wrong about the access, which is why it
+survived so long and why replacing it wholesale was also wrong.
+
+**This paragraph said `ReadWrite` until the table above was read properly, and
+the table is what disproves it.** Look at the last row: a *write* request fails
+against a Word-held document under any share mode it offers. If Word granted
+`ReadWrite`, a writer that itself granted `ReadWrite` would be admitted. It is
+not. The contradiction sat two lines apart on this page, in a document whose
+whole subject is a claim about locking, and neither I nor the review noticed —
+because the row was there to support a different argument and nobody asked what
+else it ruled out.
+
+The measurement that settles both halves, and why nothing here had settled
+either. Windows checks two things on every open: the **access** you request
+against the **share** mode of each existing handle, and the **access** of each
+existing handle against the **share** mode you offer. So a reader only probes
+whichever of the holder's two properties its own request puts on the other side
+of that comparison:
+
+| the reader | what it actually measures about the holder |
+| --- | --- |
+| access `Read`, grants `Read` | its **access** — fails iff the holder can write |
+| access `Write`, grants `ReadWrite` | its **share** — fails iff the holder forbids writers |
+
+Against three synthetic holders differing in exactly one property each:
+
+| holder | reader `read`/`Read` | reader `write`/`ReadWrite` |
+| --- | --- | --- |
+| access `Read`, grants `Read` | ok | violation |
+| access `Read`, grants `ReadWrite` | ok | ok |
+| access `ReadWrite`, grants `ReadWrite` | violation | ok |
+| **real Word** | **violation** | **violation** |
+
+Word matches none of the three: it is the missing fourth row, **write access
+granting `Read`**. Every reader this repo has ever probed with asks for *read*
+access, so all of them measure the access half and none measure the share half —
+which is why the share half was free to be asserted in either direction. The
+control table is the reproduction (`spikes/isolation/probes/probe-share-vs-access.ps1`),
+and the free-file column rules out the file simply being unwritable.
+
+Nothing operational changes. A reader of a possibly-open document must still
+grant `ReadWrite`, and the reason is unchanged — a reader granting only `Read`
+refuses to admit writers, which conflicts with the write access Word holds. The
+pre-flight refusal is, if anything, more firmly guaranteed: `Test-FileWritable`
+now fails *both* checks rather than one.
+
+The rule is subtler and worth stating exactly, because it is a share-mode
+negotiation and not a permission check. A caller's `FileShare` value is what it
+grants to *others*, so a reader that asks for `FileShare::Read` is refusing to
+let anyone else write — which conflicts with the write handle Word already
+holds, and fails, even though the caller only wanted to read. **A reader must
+itself permit `ReadWrite` to read a document that is open in Word.** `Copy-Item`
+does, which is the whole reason the copy-based read works; Node's file APIs do
+too, since libuv opens with all three share flags.
+
+Two consequences:
+
+- The copy-based read is not merely *tolerable* while the file is open in Word —
+  it is **unaffected**, which is why the viewer keeps working while the user has
+  the document open. But any helper that opens the original with a stricter
+  share mode will fail against a Word-held file while a plain copy of the same
+  file succeeds, and the errno gives no hint why.
+- Every write open fails, in every share mode, which is what makes the
+  write-handle pre-flight a sound detector.
+
+The corollary is the whole reason this ADR exists: **the copy survives the lock
+precisely because it is not the original, and an edit has to be.** Read and edit
+have genuinely different lock stories, not different amounts of care.
+
+## Amendment (2026-08-28): what the 228 ms measured, and what it did not
+
+Implementing `edit_document` produced a finer breakdown, and it splits the
+original figure in two. Measured warm, on an unmarked document, on an otherwise
+quiet machine:
+
+| | |
+| --- | --- |
+| Word work — open 80 ms, edit 15 ms, save 63 ms | **158 ms** |
+| Whole host command, end to end | **281 ms** |
+| Difference | 123 ms |
+
+The budget in this ADR is the **158 ms**, because that is the interval during
+which the lock is actually held, and holding the lock is what this decision is
+about.
+
+The 123 ms difference is the mark-of-the-web ADS check, the write-handle
+pre-flight, and the post-close release poll. **This overshoot is deliberate and
+is not slack to be recovered.** Each of those three steps buys a hang that we
+would otherwise take: the ADS check avoids the Protected View hang (ADR 0007),
+the pre-flight avoids the file-lock hang described above, and the release poll
+is what proves the lock actually went away. Optimising them out would trade
+123 ms for an unbounded wait.
+
+> **Both claims in this section were later measured and are wrong.** The 158 ms
+> is *not* the interval during which the lock is held, and the 123 ms difference
+> is *not* mostly the ADS check, the pre-flight and the release poll — those
+> three together are about 5 ms. The gap is post-save COM reporting that happens
+> while the document is still open. The paragraph above is left standing because
+> it is a good example of a plausible mechanism assembled from the components we
+> happened to have named, rather than measured; see the 2026-08-29 amendment at
+> the end of this file for the figures that replace it.
+
+One case is much more expensive and should not come as a surprise: a document
+carrying mark-of-the-web costs **2737 ms** end to end, almost all of it the
+Protected View open. That is paid once per file, and ADR 0007 explains what it
+buys.
+
+All of these are typical-case figures taken on a quiet machine, not bounds. Word
+contends on per-user state, so a second session driving Word inflates them by
+amounts that the idle measurements do not predict — the same effect that made a
+30 s leak deadline insufficient. Nothing should assert an upper bound on Word's
+behaviour on the strength of numbers in this table.
+
+## Amendment (2026-08-28, second): what a snapshot restore may and may not assume
+
+Two beliefs recorded elsewhere in this repo turned out to be wrong when probed
+during the review of `edit_document`. Both concerned how a file's bytes and its
+alternate data streams behave when a snapshot is restored over the original.
+
+### `copyFile` does not preserve the destination's mark of the web
+
+An earlier comment in `snapshots.mjs` justified restoring with a plain
+`copyFile` on the grounds that it overwrites the destination in place, leaving
+alternate data streams — notably `Zone.Identifier` — untouched. **That reasoning
+is false.** Measured on this machine:
+
+| operation | source stream | destination stream before | destination stream after |
+| --- | --- | --- | --- |
+| `copyFile` | none | `ZoneId=3` | **gone** |
+| `copyFile` | `ZoneId=3` | `ZoneId=3` | `ZoneId=3` |
+| `copyFile` | `ZoneId=3` | none | `ZoneId=3` (added) |
+| `rename` | `ZoneId=3` | `ZoneId=3` | `ZoneId=3` |
+
+The stream travels with the **source**, not with the destination. The mark
+survives a revert only because `takeSnapshot` copies the original, so the
+snapshot carries the mark and hands it back. Had the snapshot been written any
+other way, the restore would have silently stripped a security marker — the
+exact outcome ADR 0007 refuses.
+
+This also removes the objection to making the restore atomic. A restore now
+copies to a sibling temp and renames over the original: `copyFile` truncates its
+destination and then fills it, so a failure part-way through leaves the user's
+document as a prefix of the snapshot, whereas a rename within a volume is
+atomic. Because the temp is copied from the snapshot, it carries the mark, and
+the rename preserves it. Both halves verified.
+
+### `Document.Close()` releases the file immediately
+
+The host polls until the file is writable again rather than trusting `Close()`,
+because `Application.Quit()` is known to return well before its process exits
+and the same could have been true here. Measured: **0–1 ms, `released: true` on
+every run.**
+
+This is a positive result and it is load-bearing. It means the transient-lock
+model needs **no settling delay between operations** — a question anyone reading
+this ADR will eventually ask, and one that would otherwise be answered by
+guessing at a sleep. The poll stays anyway, because it costs nothing when the
+answer is immediate and it is the only thing that would catch the day it is not.
+
+## Amendment (2026-08-28, third): the write path's error vocabulary
+
+ADR 0006 fixes a typed-error table and says not to mint new codes. The write path
+reuses it verbatim where a failure is genuinely the same event — `file_locked`,
+`permission_denied`, `file_not_found`, `word_unavailable`, `word_timeout`,
+`invalid_request` all mean on a write exactly what they mean on a read, and the
+edit path raises them unchanged.
+
+Eleven codes are new. They are not synonyms for anything in ADR 0006; each names
+a failure that **cannot occur on a read**, because it is about an edit's
+precondition or its outcome.
+
+Five are **pre-flight rejections** from `validateIntent`. They are grouped
+separately because they share a guarantee the others cannot make: they are
+raised before Word is started and before a snapshot is taken, so the document is
+untouched *by construction* rather than by inspection.
+
+| code | the request was malformed because… |
+| --- | --- |
+| `unknown_operation` | `op` is not one of the operations in `OPERATIONS` |
+| `invalid_address` | `address` is not a well-formed `p:` address |
+| `invalid_text` | `text` is absent, not a string, too long, or contains a break |
+| `invalid_heading_level` | `headingLevel` is not an integer within `MIN_HEADING_LEVEL`…`MAX_HEADING_LEVEL` |
+| `invalid_intent` | the shape is wrong — a non-object, or a field the op does not take |
+
+The remaining six are about an edit that was actually attempted:
+
+| code | means | agent's next move |
+| --- | --- | --- |
+| `stale_revision_token` | the file changed since the read that minted the address | re-read, re-address, retry |
+| `address_not_found` | **detected in-process:** the address is not in the document's current structure map at all | re-read; the paragraph is gone or its text changed |
+| `address_not_resolvable` | **detected at COM time:** the address mapped to a paragraph index, but that paragraph's text no longer matches what the address was minted from, or the index is now past the end | re-read; same cause, caught one layer later |
+| `edit_not_persisted` | Word reported success but the file is byte-for-byte unchanged | safe to retry; the original is provably untouched |
+| `edit_failed` | the host reported a failure and the outcome may be unknown | **read `data` before retrying** (see below) |
+| `no_snapshot` | `revert_document` found no recovery point for this document | nothing to revert; not an error state for the document itself |
+
+The distinction that matters most is `edit_not_persisted` versus `edit_failed`.
+The first is a *clean* refusal — the post-edit hash equals the pre-edit hash, so
+the file on disk is byte-identical to before and a retry is free. The second may
+have half-written the document, so the error carries recovery facts on `data`
+(`snapshot`, `rolledBack`, `documentUnchanged`) and the agent must consult them
+rather than blindly retrying.
+
+That two of these codes (`address_not_found` and `address_not_resolvable`) name
+the same underlying event caught at different layers is deliberate, not an
+oversight to be collapsed. They carry different evidence: the in-process one
+knows the document's paragraph count, the COM-time one knows the text it
+actually found. Merging them would discard whichever half the caller needed.
+
+Those facts live on `data` and in the message specifically because the tool
+boundary forwards only `code`, `message` and `data` — anything set as a
+top-level property of the error is silently dropped before the agent sees it.
+That is not a detail of this ADR's design; it is the reason the recovery
+contract is expressible at all, and a test that asserts on the editor's error
+object instead of the tool's response cannot see the difference.
+
+
+## Amendment (2026-08-29): the number reported as the lock window was not the lock window
+
+A review asked whether `lockHeldMs` measured what its name claims. It did not,
+and chasing that turned up a larger error in the opposite direction. Both are
+recorded here because the correction that matters is not the one that was found.
+
+`lockHeldMs` was the whole-command stopwatch. It started before the pre-flight
+write probe and stopped after the post-close release poll, so it included work
+done while nothing was held. That is the direction a reviewer would predict, and
+it is **worth about 5 ms** — the pre-flight is ~4 ms and the release poll
+measures 0 ms. Real, but nearly negligible.
+
+The larger error was underneath it. The figures previously quoted as the cost of
+an operation — 228 ms, then 158 ms — were the sum of `open + edit + save`. That
+sum is **not** the lock window either, and it is short of it by far more than
+the stopwatch was long:
+
+| measured, warm, per operation | ms |
+| --- | --- |
+| open | 73-185 |
+| edit | 12-182 |
+| save | 52-119 |
+| *sum of the three, the figure previously quoted* | *~200-230* |
+| **lock actually held (acquire → release)** | **252-500** |
+| release poll after `Close()` | 0 |
+
+The gap is roughly 170 ms and it is not measurement noise: after `$doc.Save()`
+the host still calls `Get-PageOf` and reads `Paragraphs.Count` to describe what
+it did. Those are cross-process COM property touches — the same class of call
+this ADR elsewhere measures at 3,724 ms for 219 paragraphs — and they happen
+while the document is still open. **Reporting is inside the lock window.**
+
+So the honest statement of this ADR's central claim is that a warm operation
+holds the file for **roughly 250-500 ms**, of which about a quarter to a half is
+spent describing the edit rather than making it. The design still holds: that is
+a short window, it is bounded, and the file is completely free between
+operations. But it is roughly double what this document claimed, and the claim
+was not wrong by accident — the three-part breakdown *looked* like a complete
+account of the operation, so no one asked what was between `save` and `close`.
+
+Two things follow, and the second is the general one:
+
+- `lockHeldMs` is now measured from immediately before `Documents.Open` to
+  immediately after the `Close()` that releases the file, and `totalMs` is
+  reported beside it as the whole command. They answer different questions.
+- **A metric named for a quantity should be tested against that quantity, not
+  just reported.** The smoke test now asserts the relationships that define the
+  field — that it is strictly less than `totalMs`, and at least the edit plus
+  the save it contains — rather than a threshold, which would only measure the
+  machine. Every previous run had printed these numbers side by side, and the
+  discrepancy was visible in all of them.

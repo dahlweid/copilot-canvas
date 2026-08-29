@@ -48,13 +48,18 @@ const NON_TEXT = new Set([
     "instrText", // field instructions, not the field result
     "delText", // text a tracked change deleted
     "delInstrText",
-    // A text box hangs off the paragraph that anchors it, but its paragraphs are
-    // a separate story: `collectParagraphs` does not emit them, so they get no
-    // address of their own. Folding their text into the anchor would make the
-    // anchor's address move when unrelated text-box content changed, and would
-    // report `text` that matches no single editable range -- an edit replacing
-    // it would destroy the text box. Text-box content is therefore out of scope
-    // for addressing rather than half in it.
+    // A text box is anchored *inside* a body paragraph's run, but Word keeps it
+    // in a separate story: `Document.Paragraphs` never returns its paragraphs,
+    // and the anchor paragraph's `Range.Text` does not contain its text. They
+    // therefore get no address of their own, and folding their text into the
+    // anchor would be worse than omitting it -- the anchor's address would move
+    // whenever unrelated text-box content changed, and its reported `text` would
+    // match no single editable range, so an edit replacing it would destroy the
+    // text box. Measured on a fixture with a text box in a table cell: without
+    // this the map reported "TEXTBOX PARAGRAPH ONEcell 11" where Word reports
+    // "cell 11". Text-box content is out of scope for addressing rather than
+    // half in it. Covers `w:txbxContent` under both the DrawingML and the
+    // legacy VML spelling.
     "txbxContent",
 ]);
 
@@ -151,17 +156,34 @@ function alternateContentBranch(node) {
 /**
  * Every paragraph in the body, in document order, including those inside
  * tables. Paragraphs never nest, so a `w:p` is never descended into.
+ *
+ * Each entry also carries `wordIndex`: the position this paragraph occupies in
+ * Word's own `Document.Paragraphs` collection. That is what lets an address
+ * minted here be turned back into a COM range without a per-paragraph walk.
+ *
+ * The two collections are *not* the same sequence, which is the whole reason
+ * this is computed rather than assumed. Measured on a fixture with one 2x2
+ * table and one text box: the markup has 8 paragraphs, `Document.Paragraphs`
+ * has 10. The difference is exactly the **end-of-row marks** — Word counts the
+ * mark that terminates each `w:tr` as a paragraph of its own, and there is no
+ * `w:p` for it in the markup. A simpler fixture with no tables agreed 42 to 42,
+ * which is precisely why agreement on a simple document proves nothing.
  */
 function collectParagraphs(body) {
     const found = [];
+    let wordIndex = 0;
     const visit = (node, inTable) => {
         for (const child of node.children) {
             if (typeof child === "string") continue;
             if (child.local === "p") {
-                found.push({ node: child, inTable });
+                wordIndex += 1;
+                found.push({ node: child, inTable, wordIndex });
             } else if (child.local === "AlternateContent") {
                 const branch = alternateContentBranch(child);
                 if (branch) visit(branch, inTable);
+            } else if (child.local === "tr") {
+                visit(child, true);
+                wordIndex += 1; // the end-of-row mark
             } else {
                 visit(child, inTable || child.local === "tbl");
             }
@@ -228,7 +250,7 @@ export function buildStructureMap(xml, { limit = 0, offset = 0 } = {}) {
     const occurrences = new Map();
     const paragraphs = [];
 
-    collectParagraphs(body).forEach(({ node, inTable }, position) => {
+    collectParagraphs(body).forEach(({ node, inTable, wordIndex }, position) => {
         const properties = childNamed(node, "pPr");
         const styleId = attr(childNamed(properties, "pStyle"), "val");
         const style = styleId ? (styles.get(styleId) ?? null) : null;
@@ -262,9 +284,22 @@ export function buildStructureMap(xml, { limit = 0, offset = 0 } = {}) {
         paragraphs.push({
             address: mintAddress({ headingPath, text, occurrence }),
             index: position + 1,
+            // Where this paragraph sits in Word's own `Document.Paragraphs`.
+            // Not the same as `index` once a table is involved; an edit
+            // addresses Word through this, never through `index`.
+            wordIndex,
             text,
-            // The localized id, kept because an edit that wants to reapply this
-            // style must use it -- the English name would throw.
+            // Word's own id for the style, verbatim: `berschrift1` on this
+            // German Word, because Word mints the id from the localized name
+            // and drops the non-ASCII characters.
+            //
+            // Reported for identification, not for reapplication. Assigning a
+            // style *by* this id throws -- measured, and recorded next to
+            // `Set-ParagraphHeadingLevel` in `word-host.ps1`, where the English
+            // `Heading 1` throws too. The write side therefore names no style
+            // at all: it assigns numeric `wd*` constants or another paragraph's
+            // Style *object*, and `edit-intent.mjs` rejects `styleId` as an
+            // input outright.
             styleId: styleId ?? null,
             styleName: style?.name ?? styleId ?? null,
             headingLevel,

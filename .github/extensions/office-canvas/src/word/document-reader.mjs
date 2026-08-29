@@ -138,23 +138,28 @@ export class DocumentReader {
      *
      *   | FileShare::None (exclusive lock)  | EBUSY     |
      *   | ACL denying read                  | EPERM     |
-     *   | Word's own lock (write handle,    | succeeds  |
-     *   |   granting FileShare::ReadWrite)  |           |
+     *   | Word's own lock (write access,    | succeeds  |
+     *   |   granting FileShare::Read)       |           |
      *   | read-only attribute               | succeeds  |
      *
-     * Those last two rows are load-bearing. Word holds a **write** handle and
-     * grants `FileShare::ReadWrite`, and Node's read stream also grants
-     * `ReadWrite`, so a document **open in Word can still be read and copied**
-     * -- which is the only reason a copy-based read works against a document
-     * the user is looking at. And the read-only attribute does not block
-     * reading at all, so it never reaches here.
+     * Those last two rows are load-bearing. Word holds a handle with **write
+     * access** that grants `FileShare::Read`, and Node's read stream requests
+     * read and grants `ReadWrite`, so a document **open in Word can still be
+     * read and copied** -- which is the only reason a copy-based read works
+     * against a document the user is looking at. And the read-only attribute
+     * does not block reading at all, so it never reaches here.
      *
-     * The mechanism is worth stating exactly, because the intuitive version of
-     * it ("Word takes FileShare::Read") predicts that *any* reader succeeds.
-     * It does not: a reader granting only `FileShare::Read` refuses to let
-     * anyone else write, conflicts with Word's write handle, and gets a
-     * sharing violation on a file `Copy-Item` copies fine. Any reader added
-     * here must grant `ReadWrite`.
+     * The mechanism is worth stating exactly, because both intuitive versions
+     * of it are half wrong. Windows checks *two* things on every open: the
+     * access you request against each existing handle's share mode, and each
+     * existing handle's access against the share mode you offer. Our read
+     * passes both: Word's `Read` share admits a reader, and our `ReadWrite`
+     * share admits Word's writer.
+     *
+     * A reader granting only `FileShare::Read` fails the second check -- it
+     * refuses to admit writers, and Word is one -- so it takes a sharing
+     * violation on a file `Copy-Item` copies fine. Any reader added here must
+     * grant `ReadWrite`.
      *
      * The two codes therefore mean genuinely different things and deserve
      * different remediation: `file_locked` may clear on its own and is worth
@@ -195,9 +200,14 @@ export class DocumentReader {
      * means the file changed while we were reading, which would hand back a map
      * that addresses a document that no longer exists — so the read is retried
      * once and then refused.
+     *
+     * `deadline` lets a caller that performs several Word operations in one
+     * logical call impose a single wall clock over all of them, instead of each
+     * layer starting a fresh budget and the worst cases multiplying. Omitted, a
+     * read budgets itself as before.
      */
-    async read(docPath, { limit = 0, offset = 0 } = {}) {
-        const deadline = Date.now() + READ_BUDGET_MS;
+    async read(docPath, { limit = 0, offset = 0, deadline: externalDeadline = null } = {}) {
+        const deadline = externalDeadline ?? Date.now() + READ_BUDGET_MS;
         let info;
         try {
             info = await stat(docPath);

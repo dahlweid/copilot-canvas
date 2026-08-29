@@ -306,6 +306,28 @@ export class WordHost {
         return this.request("structure", { docId, path: docPath, workDir, out }, { timeoutMs });
     }
 
+    /**
+     * Applies one intent to the user's own document, in place.
+     *
+     * Deliberately *not* routed through `#openArgs`: the reopen-on-failure
+     * replay in `request()` exists so a read can survive Word dying, and it is
+     * exactly the wrong behaviour here. Replaying an edit would reacquire the
+     * lock on the original and could apply the same change twice. So this uses
+     * `#send` directly — one attempt, and a failure is reported.
+     *
+     * The timeout is not a nicety. Two separate measured conditions make
+     * `Documents.Open` hang forever rather than fail: another process holding
+     * the file, and a mark-of-the-web on it. The host checks for both first,
+     * but detection and open are not atomic, so the bound has to be here too.
+     *
+     * It is a parameter rather than a constant because `edit_document` spends
+     * one budget across two reads and this call, and needs to hand down what is
+     * left rather than restart the clock here.
+     */
+    edit({ path: docPath, wordIndex, expectedText, op, text, headingLevel, timeoutMs = STARTUP_TIMEOUT_MS }) {
+        return this.#send("edit", { path: docPath, wordIndex, expectedText, op, text, headingLevel }, timeoutMs);
+    }
+
     outline({ docId, limit }) {
         return this.request("outline", { docId, limit });
     }

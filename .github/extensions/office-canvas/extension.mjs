@@ -8,8 +8,15 @@
 // the document to PDF, which the canvas serves over loopback to the panel's
 // native PDF viewer, and it hands back WordprocessingML for structural reads.
 //
-// Read-only by design: the user's file is never opened by Word directly, only
-// an unblocked temp copy of it.
+// Reads are read-only by design: the user's file is never opened by Word for a
+// read, only an unblocked temp copy of it. Edits are not, and cannot be -- an
+// edit must touch the original, so it opens it directly for one operation and
+// closes it again (ADR 0005), with an on-disk snapshot taken first.
+//
+// This header said the file is *never* opened directly, full stop. That was
+// true until `edit_document` shipped in this same file, and it is the kind of
+// line a reader trusts precisely because it sits at the top and reads like a
+// guarantee.
 
 import path from "node:path";
 import { createCanvas, CanvasError, joinSession } from "@github/copilot-sdk/extension";
@@ -18,6 +25,8 @@ import { ViewerInstance } from "./src/server.mjs";
 import { artifactsRoot } from "./src/store.mjs";
 import { createIdleShutdown } from "./src/word-lifecycle.mjs";
 import { normalizeReadArgs, DEFAULT_READ_LIMIT, MAX_READ_LIMIT } from "./src/word/read-args.mjs";
+import { MAX_HEADING_LEVEL, MIN_HEADING_LEVEL, OPERATION_HELP, OPERATION_NAMES } from "./src/word/edit-intent.mjs";
+import { asToolError } from "./src/tool-error.mjs";
 
 /** instanceId -> ViewerInstance */
 const instances = new Map();
@@ -116,18 +125,11 @@ async function run(fn) {
  * Tools are not canvas actions, so `CanvasError` means nothing to a tool caller.
  * The code is folded into the message instead, because that is what the agent
  * actually reads when deciding what to do next.
+ *
+ * Lives in `./src/tool-error.mjs` so it can be tested directly: this module is
+ * not importable from a test, and the defects this boundary causes are exactly
+ * the ones invisible from one layer beneath it.
  */
-function asToolError(err) {
-    const code = err?.code ?? "word_error";
-    const message = err?.message ?? "Unknown error";
-    const wrapped = new Error(`${code}: ${message}`);
-    wrapped.code = code;
-    // Facts the host attached to the failure, such as `writable: false` on a
-    // locked original. Dropping them here would leave the agent with a code and
-    // no way to tell why.
-    if (err?.data) wrapped.data = err.data;
-    return wrapped;
-}
 
 // --- canvas ----------------------------------------------------------------
 
@@ -415,6 +417,136 @@ const readDocumentTool = {
     },
 };
 
+const editDocumentTool = {
+    name: "edit_document",
+    description: [
+        "Applies one change to a Word document, in place, and returns the document as it stands",
+        "afterwards. Requires the address of the paragraph to change and the revision token from",
+        "read_document; the edit is refused if the file changed since that read. A snapshot is taken",
+        "first, so revert_document can undo it.",
+        "One edit per call, and the addresses you hold are invalidated by it: deleting one of several",
+        "identically-worded paragraphs renumbers the others, and renaming a heading moves every address",
+        "beneath it. The result carries a fresh map and token — use those for the next edit.",
+    ].join(" "),
+    parameters: {
+        type: "object",
+        properties: {
+            path: {
+                type: "string",
+                description: `Absolute or workspace-relative path to a Word document (${supportedList()}).`,
+            },
+            revisionToken: {
+                type: "string",
+                description:
+                    "The revisionToken from the read_document call that produced the address. The edit is refused if the file has changed since.",
+            },
+            op: {
+                type: "string",
+                enum: OPERATION_NAMES,
+                description: `What to do to the paragraph. ${OPERATION_HELP}`,
+            },
+            address: {
+                type: "string",
+                description: "Address of the paragraph to change, from read_document (looks like 'p:0123456789ab').",
+            },
+            text: {
+                type: "string",
+                description:
+                    "The new text, for replace_text and the insert operations. One paragraph: line breaks are refused, because a second paragraph would move the addresses after it.",
+            },
+            headingLevel: {
+                type: "integer",
+                minimum: MIN_HEADING_LEVEL,
+                maximum: MAX_HEADING_LEVEL,
+                description: `Heading level: ${MIN_HEADING_LEVEL + 1}–${MAX_HEADING_LEVEL} for a heading, ${MIN_HEADING_LEVEL} for body text. Required by set_heading_level; optional on an insert, which otherwise follows the style Word would use itself.`,
+            },
+        },
+        required: ["path", "revisionToken", "op", "address"],
+        additionalProperties: false,
+    },
+    handler: async (args) =>
+        withWordWork(async () => {
+            try {
+                const intent = { op: args?.op, address: args?.address };
+                if (args?.text !== undefined) intent.text = args.text;
+                if (args?.headingLevel !== undefined) intent.headingLevel = args.headingLevel;
+
+                const result = await getCache().editDocument(resolveInputPath(args?.path), intent, {
+                    revisionToken: args?.revisionToken,
+                });
+                await refreshCanvasesFor(result.document.path);
+                return result;
+            } catch (err) {
+                throw asToolError(err);
+            }
+        }),
+};
+
+const revertDocumentTool = {
+    name: "revert_document",
+    description: [
+        "Undoes the most recent edit_document change to a Word document by restoring the snapshot taken",
+        "before it, and returns the document as it stands afterwards. Repeated calls step further back",
+        "through the edit history; each restored snapshot is consumed, so this only moves backwards.",
+        "Word's own undo cannot be used — the document is closed at the end of every edit and the undo",
+        "history goes with it.",
+        "Requires the revisionToken you last saw for the document, so a revert cannot silently discard",
+        "changes made by someone else since.",
+    ].join(" "),
+    parameters: {
+        type: "object",
+        properties: {
+            path: {
+                type: "string",
+                description: "Absolute or workspace-relative path to the Word document to revert.",
+            },
+            revisionToken: {
+                type: "string",
+                description:
+                    "Required. The revisionToken from the read_document or edit_document call whose result you are " +
+                    "reverting. The revert is refused unless the file still matches it. This is not optional: a revert " +
+                    "overwrites the document with older bytes and keeps no copy of what it replaced, so running it " +
+                    "against a document someone has changed since you looked destroys that work permanently.",
+            },
+        },
+        required: ["path", "revisionToken"],
+        additionalProperties: false,
+    },
+    handler: async (args) =>
+        withWordWork(async () => {
+            try {
+                const result = await getCache().revertDocument(resolveInputPath(args?.path), {
+                    revisionToken: args?.revisionToken,
+                });
+                await refreshCanvasesFor(result.document.path);
+                return result;
+            } catch (err) {
+                throw asToolError(err);
+            }
+        }),
+};
+
+/**
+ * Re-renders any open canvas showing a document we have just changed.
+ *
+ * Best-effort by design: the edit has already been made and verified by a
+ * re-read, so a canvas that fails to refresh is a stale picture, not a failed
+ * edit, and must not turn a successful edit into an error.
+ */
+async function refreshCanvasesFor(docPath) {
+    const target = identityFor(docPath);
+    for (const instance of instances.values()) {
+        if (!instance.doc || identityFor(instance.doc.path) !== target) continue;
+        try {
+            await instance.refresh({ force: true });
+        } catch (err) {
+            log(`could not refresh the canvas after an edit: ${err?.message ?? err}`, "warning");
+        }
+    }
+}
+
+const identityFor = (p) => (process.platform === "win32" ? String(p).toLowerCase() : String(p));
+
 // --- lifecycle -------------------------------------------------------------
 
 let shuttingDown = false;
@@ -455,7 +587,7 @@ process.on("unhandledRejection", (reason) => {
 
 session = await joinSession({
     canvases: [wordCanvas],
-    tools: [readDocumentTool],
+    tools: [readDocumentTool, editDocumentTool, revertDocumentTool],
     hooks: {
         onSessionEnd: async () => {
             await shutdown(null);

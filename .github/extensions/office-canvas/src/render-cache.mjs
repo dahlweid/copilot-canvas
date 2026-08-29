@@ -14,6 +14,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { WordHost } from "./word/word-host.mjs";
 import { DocumentReader } from "./word/document-reader.mjs";
+import { DocumentEditor } from "./word/document-editor.mjs";
 
 export class DocumentError extends Error {
     constructor(code, message) {
@@ -69,9 +70,14 @@ export class RenderCache {
     /** identity -> { docPath, docId, workDir, pdfDir, key, meta, pdfFile, pending } */
     #docs = new Map();
     #reader = null;
+    #editor = null;
 
-    constructor({ cacheRoot, log = () => {} }) {
+    constructor({ cacheRoot, snapshotRoot = null, log = () => {} }) {
         this.cacheRoot = cacheRoot;
+        // Defaults inside the cache root, but separable: snapshots are the only
+        // copy of a document's previous state, so a deployment that wants them
+        // somewhere more durable than a cache directory can say so.
+        this.snapshotRoot = snapshotRoot ?? cacheRoot;
         this.log = log;
         this.host = new WordHost({ log, pidDir: path.join(cacheRoot, "pids") });
     }
@@ -161,6 +167,10 @@ export class RenderCache {
      */
     readStructure(rawPath, options = {}) {
         const docPath = requireSupported(rawPath);
+        return this.#readerFor().read(docPath, options);
+    }
+
+    #readerFor() {
         if (!this.#reader) {
             this.#reader = new DocumentReader({
                 host: this.host,
@@ -168,7 +178,65 @@ export class RenderCache {
                 log: this.log,
             });
         }
-        return this.#reader.read(docPath, options);
+        return this.#reader;
+    }
+
+    #editorFor() {
+        if (!this.#editor) {
+            this.#editor = new DocumentEditor({
+                reader: this.#readerFor(),
+                host: this.host,
+                // Snapshots outlive the render cache on purpose: a PDF can be
+                // rebuilt from the document, and the pre-edit bytes cannot be
+                // rebuilt from anything. Clearing the cache must not throw away
+                // the only copy of what the document said before an edit.
+                snapshotRoot: this.snapshotRoot,
+                log: this.log,
+            });
+        }
+        return this.#editor;
+    }
+
+    /**
+     * Applies one edit to the user's own document, in place (ADR 0005), and
+     * returns the document as it stands afterwards.
+     */
+    async editDocument(rawPath, intent, options = {}) {
+        const docPath = requireSupported(rawPath);
+        const result = await this.#editorFor().edit(docPath, intent, options);
+        await this.#invalidate(docPath);
+        return result;
+    }
+
+    /** Restores the newest snapshot of a document and discards it. */
+    async revertDocument(rawPath, options = {}) {
+        const docPath = requireSupported(rawPath);
+        const result = await this.#editorFor().revert(docPath, options);
+        await this.#invalidate(docPath);
+        return result;
+    }
+
+    editHistory(rawPath) {
+        return this.#editorFor().history(requireSupported(rawPath));
+    }
+
+    /**
+     * Drops the cached render of a document we have just changed.
+     *
+     * The cache key already includes mtime and size, so a stale PDF would not
+     * be served — but the Word-side document handle for an open canvas would
+     * still be the pre-edit one, and the canvas would keep showing it.
+     */
+    async #invalidate(docPath) {
+        const state = this.#docs.get(identityOf(docPath));
+        if (!state) return;
+        state.key = null;
+        state.pdfFile = null;
+        try {
+            await this.host.closeDocument({ docId: state.docId });
+        } catch {
+            /* the document may already be closed; the next open re-creates it */
+        }
     }
 
     #describe(state) {
