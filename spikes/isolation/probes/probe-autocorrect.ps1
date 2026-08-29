@@ -454,11 +454,10 @@ try {
         # starts and still reads them on, therefore our suppression cannot reach
         # the user's Word. The observation reproduces. The conclusion is false.
         #
-        # The defect is one line: B is started **while A is still alive**. These
-        # values are not flushed until the writing instance exits, so a
-        # concurrent reader sees the pre-write value whether they are per-process
-        # or per-user. Isolation and persistence-with-lag are the *same
-        # observation* here, and this arm cannot separate them -- it was cited
+        # The defect is one line: B is started **while A is still alive**. A
+        # concurrent reader sees the pre-write value whether these are
+        # per-process or per-user. Isolation and persistence-with-lag are the
+        # *same observation* here, and this arm cannot separate them -- it was cited
         # for exactly the property its own construction made invisible.
         #
         # Re-measured sequentially (set in A, QUIT A, then read a fresh

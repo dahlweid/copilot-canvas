@@ -7,8 +7,8 @@
 // WHY THIS EXISTS, AND WHY THE SMOKE TEST CANNOT REPLACE IT
 //
 // `probe-autocorrect.ps1` arm C concluded these settings are per-process. That
-// is RETRACTED: it read instance B while A was still alive, and the value is
-// not flushed until the writer exits, so a concurrent read cannot tell
+// is RETRACTED: it read instance B while A was still alive, and a concurrent
+// reader sees the pre-write value, so it cannot tell
 // isolation from persistence-with-lag. They persist for the user. So
 // create_document now captures, disables, and restores around the authoring
 // call, and `suppressed`/`restored` are read-backs rather than "the assignment
@@ -85,10 +85,15 @@ const script = (body) => [
 ];
 
 /**
- * Reads the five from a FRESH Word instance, which is the whole point: a value
- * is not flushed until the writer exits, so reading the instance that wrote it
- * -- or any instance running alongside it -- tells you nothing about what the
- * next Word will see.
+ * Reads the five from a FRESH Word instance, which is the whole point: an
+ * instance running alongside the writer reads the pre-write value, so reading
+ * the instance that wrote it -- or any instance running alongside it -- tells
+ * you nothing about what the next Word will see. Only a reader started after
+ * the writer exited answers that question.
+ *
+ * Why the wording is careful: "the value is not flushed until the writer exits"
+ * is a mechanism, and nothing measured here separates it from the reader having
+ * cached at startup. The probe depends on the observation, not the mechanism.
  */
 async function readFresh() {
     const body = SETTINGS.map(([c, n]) => `"${n}=$($w.${c}.${n})"`).join("\n");

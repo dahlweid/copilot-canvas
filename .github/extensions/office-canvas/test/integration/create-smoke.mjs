@@ -257,8 +257,8 @@ try {
         // A, a second process reads them still on -- and concluded suppression
         // cannot reach the user's Word. The observation reproduces; the
         // conclusion is false. That probe read B **while A was still alive**, and
-        // the value is not flushed until the writer exits, so a concurrent read
-        // cannot tell isolation from persistence-with-lag. Re-measured
+        // a concurrent reader sees the pre-write value, so it cannot tell
+        // isolation from persistence-with-lag. Re-measured
         // sequentially (set, QUIT, read a fresh instance) all five come back
         // changed: they persist for the user.
         //
@@ -307,6 +307,14 @@ try {
     });
 
     await check("text goes in verbatim, with no autocorrect substitution", async () => {
+        // This check CANNOT discriminate, and the name reads as though it can.
+        // Measured (probe-autocorrect.ps1 arms A, B, E, F, G): with every
+        // setting ON, these baits are rewritten 0 of 6 through every insertion
+        // path this host uses. So it is green whether or not suppression
+        // applied, and it is a forward guard against a future insertion path,
+        // never evidence that autocorrect was off. The evidence for that is the
+        // settings read-back check above, which is the acceptance criterion's
+        // real test. Full reasoning in the file header.
         const map = await cache.readStructure(target, { limit: 0 });
         const texts = map.paragraphs.map((p) => p.text);
         for (const bait of VERBATIM_BAITS) {

@@ -104,12 +104,29 @@ $mutants = @(
        from  = '        if (await isExistingFile(docPath)) failFromStatus({ status: "file_exists" }, docPath);'
        to    = '        if (false) failFromStatus({ status: "file_exists" }, docPath);' }
 
+    # Re-anchored. The original anchored on an object literal at a call site;
+    # the three literals were replaced by one `reportedAutoCorrect` helper, so
+    # the anchor stopped matching and the runner reported MISSING -- the mutant
+    # silently stopped being evidence while still being listed. Anchoring in the
+    # helper is also stronger: it mutates all three call sites at once.
     @{ name = 'autocorrect outcome reported as always suppressed'
        file = 'src/word/document-author.mjs'
-       from  = '                suppressed: Boolean(result.autoCorrect?.suppressed),
-                reason: result.autoCorrect?.reason ?? null,'
-       to    = '                suppressed: true,
-                reason: null,' }
+       from  = '        suppressed: Boolean(ac.suppressed),
+        reason: ac.reason ?? null,'
+       to    = '        suppressed: true,
+        reason: null,' }
+
+    # The restore half of the same defect. `suppressed` was pinned in both
+    # directions by two fixtures and `restored` in neither, so this mutant
+    # survived every unit test until an all-fields-populated fixture was added.
+    # Suppression proven and restoration unproven is the same defect one step
+    # later, and that is true of the mutants as well as of the code.
+    @{ name = 'autocorrect restore outcome reported as never restored'
+       file = 'src/word/document-author.mjs'
+       from  = '        restored: Boolean(ac.restored),
+        restoreReason: ac.restoreReason ?? null,'
+       to    = '        restored: false,
+        restoreReason: null,' }
 
     @{ name = 'lock release never flagged'
        file = 'src/word/document-author.mjs'
@@ -192,16 +209,17 @@ export function paragraphsIn(spec) { return spec.blocks.length; }
        to    = '' }
 
     # Anchored on the `cause:` line above the block, not on the block alone.
-    # `create_unverified` carries an identical `autoCorrect` literal, so the
-    # shorter anchor matched twice and the runner reported AMBIGUOUS -- it would
-    # have deleted the field from both failures while claiming to test one.
+    # `create_unverified` carries an identical `autoCorrect` line, so the shorter
+    # anchor matched twice and the runner reported AMBIGUOUS -- it would have
+    # deleted the field from both failures while claiming to test one. That is
+    # now truer than when it was written: the literal became a shared
+    # `reportedAutoCorrect(result)` call appearing at three sites, so the one
+    # distinguishing line is `cause: err.code ?? null` -- `create_unverified`
+    # uses the shorthand `cause,`.
     @{ name = 'autoCorrect dropped from the one failure that still authored a document'
        file = 'src/word/document-author.mjs'
        from  = '                    cause: err.code ?? null,
-                    autoCorrect: {
-                        suppressed: Boolean(result.autoCorrect?.suppressed),
-                        reason: result.autoCorrect?.reason ?? null,
-                    },
+                    autoCorrect: reportedAutoCorrect(result),
 '
        to    = '                    cause: err.code ?? null,
 ' }

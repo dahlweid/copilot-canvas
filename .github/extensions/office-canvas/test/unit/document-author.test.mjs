@@ -170,8 +170,8 @@ test("autocorrect suppression is reported, not assumed", async () => {
         // An instance we attached to rather than started is the user's own Word.
         // The original reason given here was that the settings are per-process,
         // citing probe-autocorrect.ps1 arm C. That is RETRACTED: arm C read a
-        // second instance while the first was still alive, and these values are
-        // not flushed until the writer exits, so a concurrent read cannot tell
+        // second instance while the first was still alive, and a concurrent
+        // reader sees the pre-write value, so it cannot tell
         // isolation from persistence-with-lag. Measured sequentially they
         // persist for the user, which makes declining on an attached instance
         // MORE important rather than less -- the change would outlive us.
@@ -187,6 +187,42 @@ test("autocorrect suppression is reported, not assumed", async () => {
             settings: null,
             restoreSettings: null,
             prior: null,
+        });
+
+        await rm(doc, { force: true });
+
+        // Both arms above leave six of the seven fields at their default -- five
+        // `null` and `restored: false` -- so each is asserted only in the
+        // direction the helper would produce anyway if it hardcoded it. A
+        // `restored: false` or `settings: null` written into reportedAutoCorrect
+        // survives both of them, which is the suppression/restoration asymmetry
+        // one level down: `suppressed` is pinned in both directions by the two
+        // arms above and nothing else was.
+        //
+        // So this arm carries a value in EVERY field, all distinct from the
+        // defaults. Any field the helper stops forwarding changes here.
+        const full = new DocumentAuthor({
+            reader: stubReader(doc),
+            host: goodHost({
+                autoCorrect: {
+                    suppressed: true,
+                    reason: "verified",
+                    restored: true,
+                    restoreReason: "verified",
+                    settings: ["ReplaceText"],
+                    restoreSettings: ["ReplaceText"],
+                    prior: { ReplaceText: true },
+                },
+            }),
+        });
+        assert.deepEqual((await full.create(doc, spec)).autoCorrect, {
+            suppressed: true,
+            reason: "verified",
+            restored: true,
+            restoreReason: "verified",
+            settings: ["ReplaceText"],
+            restoreSettings: ["ReplaceText"],
+            prior: { ReplaceText: true },
         });
     });
 });

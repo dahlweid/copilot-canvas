@@ -31,11 +31,20 @@
 #
 #     The earlier per-process result was not careless -- it is what you get from
 #     the natural form of the test. It read the second instance *while the first
-#     was still alive*, and the value is not flushed until the writer exits, so a
-#     concurrent reader sees the stale value and it looks exactly like isolation.
-#     The discriminator is quitting the writer first. The HKCU Word\Options key
-#     really does stay absent throughout; that key is simply not where these
-#     live, so its absence was evidence of nothing.
+#     was still alive*, and a concurrent reader sees the pre-write value, which
+#     looks exactly like isolation. The discriminator is quitting the writer
+#     first. The HKCU Word\Options key really does stay absent throughout; that
+#     key is simply not where these live, so its absence was evidence of nothing.
+#
+#     What is measured is two observations and no mechanism: a CONCURRENT reader
+#     sees the old value, and a reader started AFTER the writer exits sees the
+#     new one. A flush at writer exit accounts for that; so does the second
+#     instance caching these at startup; so does a write-behind on any schedule
+#     shorter than the gap. Nothing here distinguishes them, and an earlier
+#     draft of this comment asserted the flush as if it had been measured. It
+#     had not. The two observations are what the code depends on and they are
+#     enough: touch these only on an instance we own, and put them back before
+#     returning. Where they are stored, and when they are written, remains open.
 #
 #     Two things now do the work, and the ownership gate is only one of them: we
 #     touch these on an owned instance ONLY, and we restore the captured prior
@@ -473,13 +482,20 @@ function Resolve-Doc($docId) {
 #      throughout. Both observations are reproducible. The conclusion drawn from
 #      them is false.
 #
-#      Arm C read the second instance WHILE THE FIRST STILL HELD THEM OFF. The
-#      value is not flushed until the writer exits, so a concurrent reader sees
-#      the stale value, which is indistinguishable from isolation. Re-measured
-#      sequentially -- set, QUIT the writer, then read a fresh instance -- all
-#      five come back changed. **They persist for the user.** The HKCU key is
-#      absent because that is not where they live; its absence was evidence of
-#      nothing and should never have been cited as if it were.
+#      Arm C read the second instance WHILE THE FIRST STILL HELD THEM OFF. A
+#      concurrent reader sees the pre-write value, which is indistinguishable
+#      from isolation. Re-measured sequentially -- set, QUIT the writer, then
+#      read a fresh instance -- all five come back changed. **They persist for
+#      the user.** The HKCU key is absent because that is not where they live;
+#      its absence was evidence of nothing and should never have been cited as
+#      if it were.
+#
+#      Stated as observations, because that is all that was measured: concurrent
+#      reader sees old, post-exit reader sees new. Do not restate this as "not
+#      flushed until the writer exits" -- that names a mechanism the probes
+#      cannot separate from the second instance caching at startup. The
+#      correction and the error it corrects have the same shape, which is why it
+#      is worth the two extra lines to avoid repeating it here.
 #
 #      A concurrent read cannot test persistence. That is the whole defect, and
 #      it is the same shape as the share-column error: an instrument that could
@@ -567,14 +583,63 @@ $script:AC_SETTINGS = @(
 # Capture the current values, then switch autocorrect off, then verify. The
 # capture is not bookkeeping -- because these persist for the user, it is the
 # only record of what to put back, and it must happen before the first write.
+#
+# Every container accessor is guarded, for a reason that is stronger here than
+# in Restore-AutoCorrect. There are two containers, so an accessor can raise
+# AFTER the first group's three writes have landed -- Word dying mid-call gives
+# RPC_E_DISCONNECTED on `$script:App.Options` while `$script:App.AutoCorrect`
+# already answered. An exception leaving this function propagates past the
+# assignment that binds $acState, so the caller's `finally` is never armed and
+# three settings stay off on the user's machine forever, unreported. The
+# read-back loop has the same hole without needing two groups: by then all five
+# writes have landed.
+#
+# That hole is only reachable by a RAISE. Every `return` below -- not_verifiable,
+# not_settable, not_applied -- is safe, because a return binds $acState and arms
+# the `finally`. So the mutations that exercise the return paths stay green over
+# it, which is exactly why it survived four review rounds: the design was right
+# and the guard was missing on the three lines that could throw.
+#
+# $script:AcPrior is the second half of the belt. The priors live in a script
+# variable as well as in the returned state, so an unforeseen throw anywhere
+# after the capture loop still leaves the restore something to put back rather
+# than losing it with the stack frame.
+#
+# MUTATION-CHECKED, both directions, with probe-autocorrect-restore.mjs. Inject
+# a throw into the second group's Container on its second access -- the write
+# loop, i.e. after the first group's three writes have landed -- by replacing
+# that scriptblock with
+#     { $script:MutN = 1 + [int]$script:MutN
+#       if ($script:MutN -eq 2) { throw 'MUTANT: RPC_E_DISCONNECTED' }
+#       $script:App.Options }
+# and resetting $script:MutN = 0 beside the $script:AutoCorrect reset at the top
+# of Cmd-Create, so the counter is per-create rather than per-host -- a global
+# counter fires during the probe's own setup and the probe dies before it can
+# assert anything, which looks like evidence and is not.
+#
+#   with these guards:  create returns, reports `not_settable` naming
+#                       AutoFormatAsYouTypeReplaceQuotes and ...Symbols,
+#                       reports restored=true, and a FRESH instance still reads
+#                       all five ON. The user's machine is untouched.
+#   with the guards and the in-try assignment both reverted (the shape this
+#                       file had at 7ed4298): create RAISES word_error, and no
+#                       autocorrect report comes back at all -- the `finally`
+#                       was never entered, because the assignment that binds
+#                       $acState sits outside the `try`. Read from the source
+#                       rather than inferred: the damage itself is not visible
+#                       in that arm because the PROBE restores the machine in
+#                       its own finally. Production has no such net.
 function Disable-AutoCorrect {
+    $script:AcPrior = @{}
     if ($null -eq $script:OwnedPid) { return @{ suppressed = $false; reason = 'attached_instance'; prior = @{} } }
 
-    $prior = @{}
+    $prior = $script:AcPrior
     $unreadable = @()
     foreach ($g in $script:AC_SETTINGS) {
-        $c = & $g.Container
+        $c = $null
+        try { $c = & $g.Container } catch { $c = $null }
         foreach ($name in $g.Names) {
+            if ($null -eq $c) { $unreadable += $name; continue }
             try { $prior[$name] = $c.$name } catch { $unreadable += $name }
         }
     }
@@ -584,8 +649,10 @@ function Disable-AutoCorrect {
 
     $failed = @()
     foreach ($g in $script:AC_SETTINGS) {
-        $c = & $g.Container
+        $c = $null
+        try { $c = & $g.Container } catch { $c = $null }
         foreach ($name in $g.Names) {
+            if ($null -eq $c) { $failed += $name; continue }
             try { $c.$name = $false } catch { $failed += $name }
         }
     }
@@ -593,8 +660,10 @@ function Disable-AutoCorrect {
 
     $stuck = @()
     foreach ($g in $script:AC_SETTINGS) {
-        $c = & $g.Container
+        $c = $null
+        try { $c = & $g.Container } catch { $c = $null }
         foreach ($name in $g.Names) {
+            if ($null -eq $c) { $unreadable += $name; continue }
             $value = $null
             try { $value = $c.$name } catch { $unreadable += $name; continue }
             if ($value -ne $false) { $stuck += $name }
@@ -624,6 +693,15 @@ function Disable-AutoCorrect {
 # census at the end of a run would ever notice. The single construction site is
 # in Initialize-Word, behind Test-AppAlive, and this function does not call it.
 function Restore-AutoCorrect($state) {
+    # Falls back to $script:AcPrior when the state is missing. That is not
+    # defensive padding: if Disable-AutoCorrect raises after its capture loop,
+    # the caller's $acState is still $null, and restoring from the argument
+    # alone would report `nothing_captured` while the priors we did record went
+    # with the stack frame. Reported-and-permanent is better than
+    # silent-and-permanent, but neither is a restore.
+    if ($null -eq $state -and $null -ne $script:AcPrior -and $script:AcPrior.Count -gt 0) {
+        $state = @{ prior = $script:AcPrior }
+    }
     if ($null -eq $state -or $null -eq $state.prior -or $state.prior.Count -eq 0) {
         return @{ restored = $false; reason = 'nothing_captured' }
     }
@@ -1827,6 +1905,13 @@ function Cmd-Create($a) {
     $path = [string]$a.path
     $started = [Diagnostics.Stopwatch]::StartNew()
 
+    # Cleared at entry so the dispatcher can attach it unconditionally. The
+    # early returns below happen before autocorrect is ever touched, and a
+    # report left over from a previous create would ride out on them -- a
+    # restore outcome attached to a call that never disabled anything, which is
+    # asserting something this invocation did not observe.
+    $script:AutoCorrect = $null
+
     if ([string]::IsNullOrWhiteSpace($path)) { return @{ status = 'invalid_path'; path = $path } }
     if (Test-Path -LiteralPath $path -PathType Container) { return @{ status = 'path_is_directory'; path = $path } }
     if (Test-Path -LiteralPath $path -PathType Leaf) { return @{ status = 'file_exists'; path = $path } }
@@ -1844,17 +1929,25 @@ function Cmd-Create($a) {
 
     Initialize-Word
 
-    # Autocorrect goes off HERE, not at Initialize-Word, and comes back on in the
-    # `finally` below. These settings persist for the user (see the header), so
-    # the window in which the user's Word is altered has to be the authoring call
-    # and nothing wider. Leaving them off for the life of the host -- which is
-    # what suppressing at init did -- means every idle minute is a minute of the
-    # user's Word silently changed.
-    $acState = Disable-AutoCorrect
-
+    # Autocorrect goes off inside the `try`, not before it, and comes back on in
+    # the `finally` below. These settings persist for the user (see the header),
+    # so the window in which the user's Word is altered has to be the authoring
+    # call and nothing wider. Leaving them off for the life of the host -- which
+    # is what suppressing at init did -- means every idle minute is a minute of
+    # the user's Word silently changed.
+    #
+    # The `finally` is armed BEFORE the first write, which is the whole reason
+    # this assignment sits inside the try rather than above it. Disable-AutoCorrect
+    # writes to two containers, so a raise between them left three settings off
+    # with no `finally` to put them back. It no longer raises for that reason --
+    # its accessors are guarded now -- and this is the second half of the same
+    # fix: an unforeseen throw from anywhere in it still reaches a restore.
+    $acState = $null
     $doc = $null
     $result = $null
     try {
+        $acState = Disable-AutoCorrect
+
         $buildStarted = [Diagnostics.Stopwatch]::StartNew()
         $doc = $script:App.Documents.Add()
         $state = @{ pending = $doc.Paragraphs.Item(1) }
@@ -1979,18 +2072,35 @@ function Cmd-Create($a) {
         # precisely the code most likely to be skipped.
         $restore = Restore-AutoCorrect $acState
         $report = @{}
-        foreach ($k in $acState.Keys) { $report[$k] = $acState[$k] }
+        # $acState is $null when Disable-AutoCorrect threw rather than returned.
+        # Enumerating .Keys on it would raise inside the `finally` and replace
+        # the real error with a NullReference -- the exact failure the guards in
+        # Restore-AutoCorrect exist to avoid, one line further out.
+        if ($null -ne $acState) {
+            foreach ($k in $acState.Keys) { $report[$k] = $acState[$k] }
+        } else {
+            $report.suppressed = $false
+            $report.reason = 'not_verifiable'
+        }
         $report.restored = $restore.restored
         if ($restore.ContainsKey('reason'))   { $report.restoreReason = $restore.reason }
         if ($restore.ContainsKey('settings')) { $report.restoreSettings = $restore.settings }
         $script:AutoCorrect = $report
     }
 
-    # Set after the try/catch/finally, not inside it: the report is only complete
-    # once the `finally` above has run the restore, so building it with the
-    # document result would carry the disable outcome and claim nothing about
-    # whether the user's settings were put back.
-    $result.autoCorrect = $script:AutoCorrect
+    # The autocorrect report is attached by the dispatcher, not here.
+    #
+    # It used to be set on this line, after the try/catch/finally, so that it
+    # carried the restore outcome and not just the disable. That much was right
+    # and still is. What it missed is that two paths -- `file_exists` and
+    # `create_failed` -- `return` from inside the try, so the `finally` runs the
+    # restore, builds the report, and then the return skips this line and throws
+    # the report away. A caller could not tell a clean restore from a failed one
+    # on exactly the two paths where a half-suppressed machine is most likely.
+    #
+    # Attaching at the single call site covers every return, including these,
+    # without turning `file_exists` into a throw -- which the comment at its
+    # check explains must not happen, because the catch deletes $path.
 
     # Close() returning is not proof the file is released. The next thing the
     # caller does is read this file back to confirm what was written, and a
@@ -2038,7 +2148,19 @@ try {
                 'open' { Send-Ok $id (Cmd-Open $cmdArgs) }
                 'structure' { Send-Ok $id (Cmd-Structure $cmdArgs) }
                 'edit' { Send-Ok $id (Cmd-Edit $cmdArgs) }
-                'create' { Send-Ok $id (Cmd-Create $cmdArgs) }
+                'create' {
+                    # Attached here rather than inside Cmd-Create because two of
+                    # its paths return from within the try whose finally runs the
+                    # restore: the report exists by the time control reaches this
+                    # line on every path, and no return can skip it. Cmd-Create
+                    # clears the variable at entry, so this is never a previous
+                    # call's outcome.
+                    $created = Cmd-Create $cmdArgs
+                    if ($created -is [hashtable] -and $null -ne $script:AutoCorrect) {
+                        $created.autoCorrect = $script:AutoCorrect
+                    }
+                    Send-Ok $id $created
+                }
                 'export' { Send-Ok $id (Cmd-Export $cmdArgs) }
                 'outline' { Send-Ok $id (Cmd-Outline $cmdArgs) }
                 'search' { Send-Ok $id (Cmd-Search $cmdArgs) }
