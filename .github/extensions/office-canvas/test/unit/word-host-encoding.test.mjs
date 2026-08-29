@@ -29,6 +29,15 @@
 // it would have caught the whole defect on `ubuntu-latest` without Word
 // installed.
 //
+// Availability is the lesser reason. This is also the only half that cannot be
+// silenced by the machine it runs on. The integration checks can see this defect
+// only where the OEM codepage differs from UTF-8 -- measured here as 850, with
+// `chcp`. Configure a host for UTF-8 system-wide and an unset `InputEncoding`
+// defaults to UTF-8: nothing is corrupted, and all three of them go green with
+// the fix reverted, reporting a passing suite for an environment that could not
+// produce the input. A source assertion has no such blind spot, because it never
+// decodes anything.
+//
 // Measured by spikes/isolation/probes/probe-console-input-encoding.mjs, which
 // drives the same spawn shape three ways: control corrupts, both UTF-8 forms
 // are intact, and the setter does not throw on a redirected pipe.

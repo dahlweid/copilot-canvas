@@ -631,7 +631,12 @@ try {
     // way.
     const UML = String.fromCharCode(0x00e4, 0x00f6, 0x00fc, 0x00df, 0x00c4, 0x00d6, 0x00dc);
     // 0xC3, the UTF-8 lead byte of every Latin-1 supplement character, decoded
-    // as CP437. It is the signature of one crossing of the corrupting boundary.
+    // as the OEM codepage. It is the signature of one crossing of the corrupting
+    // boundary. The codepage is deliberately *not* named here: this ran under
+    // 850 (measured with `chcp`), while an earlier version of this comment
+    // asserted 437. The mark is identical either way, because both map 0xC3 to
+    // U+251C -- which is exactly why naming one was a claim nothing here had
+    // established, and why the assertion below does not depend on it.
     // Note the inverse test would be wrong: mojibake *contains* U+00E4, so
     // "no U+00E4 present" does not detect corruption.
     const MOJIBAKE_MARK = String.fromCharCode(0x251c);
