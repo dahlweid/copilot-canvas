@@ -283,7 +283,27 @@ replied — which for this repo's loop is *us*, once per round:
 | PR | records | authored by reviewer | authored by us, empty |
 | --- | --- | --- | --- |
 | #42 | 5 | 3 (bodies 1889, 473, 384) | 2 |
-| #47 | 4 | 2 (bodies 2095, 370) | 2 |
+| #47 | 4 | 3 (bodies 2095, 370, **120**) | 1 |
+
+The 120-byte record on #47 is the billing phantom, and it is counted here as
+reviewer-authored because that is what it is — a phantom is produced by the
+reviewer, not by a reply. An earlier version of this row read `2 … | 2`, which
+double-counted a reply and hid the phantom; the row is re-derived from
+`/pulls/47/reviews` rather than reasoned about.
+
+**A correction is a claim, and inherits the burden of one.** A reviewer found
+the inconsistency above and proposed the row should read `5 | 3 | 2`. The
+finding was right and the proposed fix was wrong: querying the endpoint returns
+**four** records — `2095`, `370` and `120` from the Bot, one empty from a User —
+so the truth is `4 | 3 | 1`. Adopting the correction unmeasured would have
+replaced one wrong row with another and retired the finding that could have
+caught it. **Measure the fix, not just the defect** — and note this happened
+three times in one afternoon, each time with a true conclusion resting on a
+mechanism nobody had checked: a codepage named but never read (`chcp` said 850,
+not 437), a suppression flag reporting that assignments did not throw, and this
+file's own justification for `assertNoLeakedWord` citing attribution when the
+work is done by a timeout. **The conclusion surviving is what stops anyone
+looking at the mechanism.**
 
 Three consequences. **Counting records to derive the round number over-counts by
 exactly the number of replies you have posted** — deterministic, not a race, and
@@ -1093,9 +1113,31 @@ baseline of 14. A ±1 delta across a multi-minute run therefore resolves nothing
 and — the half that matters — **it would equally fail to show a real leak.** A
 census that does not move is one draw from a distribution whose amplitude
 exceeds the signal, and it had been read as a positive result when it is a
-non-event. **Ask for the per-suite PID-differencing assertion in
-`word-pids.mjs` by name and pass count**: it diffs over seconds, and attributes
-by the pid the host itself started, so other sessions' churn cannot enter it.
+non-event. **Ask for the per-suite leak assertion `assertNoLeakedWord` in
+`word-pids.mjs` by name and pass count** — but for the right reason, which is
+not the one first written here.
+
+**The reason that assertion beats a census is its 90 s polling deadline, not
+attribution.** The justification originally recorded — *"it diffs over seconds
+and attributes by the pid the host itself started, so other sessions' churn
+cannot enter it"* — is wrong in both clauses, and was corrected by the session
+that was asked to run it. `pidsBefore` is captured before the first test and
+asserted after the last, so the window is ~1.5–2.5 minutes, the **same order as
+the census**. And `newWordPids` (`word-pids.mjs:59-61`) is a pure set difference
+with no ownership predicate; the `ledger` only splits the failure *message* into
+owned versus unattributed, as its own docstring says: *"Both still fail."* The
+text even names "another session's" as a possible cause of a red.
+
+What actually does the work is `timeoutMs = 90000` at `word-pids.mjs:110-119`:
+it polls and fails only if a pid is **still alive at the deadline**. Foreign
+Words on this machine live ~45–75 s, so the poll **outlasts** the churn rather
+than excluding it. The distinction is load-bearing: the assertion is not immune
+to other sessions, so a residual false red is possible — that is #37 — and
+anyone shortening that deadline or widening the capture window on the strength
+of "background churn cannot enter it" would be acting on a mechanism that does
+not exist. The property that matters holds either way, and it is the one the
+census lacked: **it can go red for a real leak**, because a Word we minted and
+dropped is still alive at 90 s.
 
 **An API that answers "was your instruction accepted" is not answering "is the
 world now in that state".** Third instance in this repo, each in different
