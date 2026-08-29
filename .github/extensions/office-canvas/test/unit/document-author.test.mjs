@@ -13,7 +13,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -281,6 +281,80 @@ test("'created' with no file on disk is reported as a failure", async () => {
 
         const err = await failed(author, doc);
         assert.equal(err.code, "create_not_persisted");
+        // The one errno that licenses the message's claim of absence.
+        assert.equal(throughToolBoundary(err).data?.cause, "ENOENT");
+        assert.equal(throughToolBoundary(err).data?.created, false);
+    });
+});
+
+test("a directory is not refused as a file that already exists", async () => {
+    // `stat` resolves for any filesystem entry, so a preflight that asked only
+    // whether it resolved refused a directory with `file_exists` -- advising the
+    // caller to use edit_document on a directory.
+    //
+    // The wrong answer is the smaller half. The refusal runs *upstream* of the
+    // host, whose `path_is_directory` classifier is correct, so the bad answer
+    // also prevented the good one. This asserts the host was reached at all,
+    // because that is the part a message-only fix would leave broken.
+    await withTemp(async (dir) => {
+        const asDirectory = path.join(dir, "report.docx");
+        await mkdir(asDirectory);
+
+        let hostSaw = null;
+        const author = new DocumentAuthor({
+            reader: stubReader(asDirectory),
+            host: {
+                create: async ({ path: p }) => {
+                    hostSaw = p;
+                    return { status: "path_is_directory", path: p };
+                },
+            },
+        });
+
+        const err = throughToolBoundary(await failed(author, asDirectory));
+
+        assert.equal(hostSaw, asDirectory, "the preflight refused before the host could classify");
+        assert.equal(err.code, "invalid_path");
+        assert.match(err.message, /is a directory/i);
+        assert.doesNotMatch(err.message, /edit_document/i, "a directory was described as an existing document");
+    });
+});
+
+test("a file that cannot be read back is not reported as one that was never written", async () => {
+    // `.catch(() => null)` collapsed every verification failure into "no file",
+    // and the message then asserted absence -- a cause a failed read cannot
+    // establish. The two want opposite responses: "nothing on disk" invites
+    // another attempt, "could not read it back" must not, because re-authoring
+    // would overwrite a document that already exists.
+    //
+    // The failing read is real, not stubbed: the path is a directory, so the
+    // read stream fails `EISDIR`. Measured on this machine rather than assumed,
+    // because the whole point of the split is which errno actually arrives.
+    await withTemp(async (dir) => {
+        const asDirectory = path.join(dir, "report.docx");
+        await mkdir(asDirectory);
+
+        const author = new DocumentAuthor({
+            reader: stubReader(asDirectory),
+            host: {
+                create: async () => ({
+                    status: "created",
+                    released: true,
+                    autoCorrect: { suppressed: false, reason: "attached_instance" },
+                }),
+            },
+        });
+
+        const err = throughToolBoundary(await failed(author, asDirectory));
+
+        assert.equal(err.code, "create_unverified");
+        assert.equal(err.data?.cause, "EISDIR");
+        assert.equal(err.data?.created, null, "a read that only failed was reported as proof of absence");
+        assert.match(err.message, /Do not create it again/);
+        assert.doesNotMatch(err.message, /there is no file at that path/);
+        // Asserted through the boundary, because this is a path where a document
+        // may exist and the description tells callers to check the field.
+        assert.deepEqual(err.data?.autoCorrect, { suppressed: false, reason: "attached_instance" });
     });
 });
 

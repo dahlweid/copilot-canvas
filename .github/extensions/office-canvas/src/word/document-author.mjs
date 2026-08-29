@@ -185,8 +185,10 @@ export class DocumentAuthor {
 
         // Cheapest possible refusal, before Word is involved at all. The host
         // checks this again; that is not redundancy but the same non-atomicity
-        // the edit path has, and the authoritative check is the later one.
-        if (await exists(docPath)) failFromStatus({ status: "file_exists" }, docPath);
+        // the edit path has, and the authoritative check is the later one --
+        // which is also why this asks only about a regular file and lets every
+        // other kind of entry through to be classified there.
+        if (await isExistingFile(docPath)) failFromStatus({ status: "file_exists" }, docPath);
 
         const result = await this.#host.create({
             path: docPath,
@@ -199,11 +201,59 @@ export class DocumentAuthor {
         // Word said it saved. Confirm against the filesystem before saying so to
         // the caller: `SaveAs2` returning is not evidence a file exists, and
         // "created" with nothing on disk is the failure an agent cannot detect.
-        const revisionToken = await fileRevisionToken(docPath).catch(() => null);
+        //
+        // Two outcomes, not one. `.catch(() => null)` used to collapse every
+        // failure into "no file", and the message then asserted absence -- a
+        // cause a failed read cannot establish. `fileRevisionToken` opens a read
+        // stream, so a failure arrives as an errno: `ENOENT` genuinely means
+        // nothing is there, while `EACCES`/`EPERM`/`EBUSY` mean the file could
+        // not be read and may well exist. (Read streams are the context the
+        // errno mapping in `document-reader.mjs` was measured in, so it applies
+        // here directly rather than by transport.)
+        //
+        // They are split because they want opposite responses at the worst
+        // possible moment -- Word has just claimed it saved. "Nothing on disk"
+        // invites another attempt; "could not read it back" must not, because
+        // re-authoring would write over a document that already exists. This is
+        // the repo's own rule: split where the platform distinguishes.
+        let revisionToken = null;
+        let verifyFailure = null;
+        try {
+            revisionToken = await fileRevisionToken(docPath);
+        } catch (err) {
+            verifyFailure = err;
+        }
         if (!revisionToken) {
+            const cause = verifyFailure?.code ?? null;
+            if (cause === "ENOENT") {
+                throw new CreateError(
+                    "create_not_persisted",
+                    `Word reported ${path.basename(docPath)} as created but there is no file at that path.`,
+                    { data: { created: false, cause } },
+                );
+            }
+            // States what was observed and names no cause beyond the errno the
+            // platform supplied. `created` is null, not false: whether a
+            // document exists is exactly what could not be established.
             throw new CreateError(
-                "create_not_persisted",
-                `Word reported ${path.basename(docPath)} as created but there is no file at that path.`,
+                "create_unverified",
+                `Word reported ${path.basename(docPath)} as created, but reading the file back to verify that failed ` +
+                    `(${verifyFailure?.message ?? "no error was reported"}). Do not create it again — a document may ` +
+                    `exist at that path, and re-authoring would overwrite it. Use read_document to find out.`,
+                {
+                    data: {
+                        created: null,
+                        cause,
+                        // Rides along for the same reason it does on
+                        // `document_unreadable`: a document may have been
+                        // authored on this path, so the question the tool
+                        // description tells callers to ask still has a subject.
+                        autoCorrect: {
+                            suppressed: Boolean(result.autoCorrect?.suppressed),
+                            reason: result.autoCorrect?.reason ?? null,
+                        },
+                    },
+                },
             );
         }
 
@@ -299,10 +349,24 @@ export class DocumentAuthor {
     }
 }
 
-async function exists(docPath) {
+/**
+ * Whether `docPath` names an existing *regular file*.
+ *
+ * `stat` resolves for any filesystem entry, so testing only that it resolved
+ * made a directory take the `file_exists` refusal — telling the caller the file
+ * already exists and to use `edit_document` on it, about a directory.
+ *
+ * The damage is not only the wrong answer. The host classifies this correctly
+ * (`path_is_directory`, `word-host.ps1`), and this preflight runs *upstream* of
+ * it, so a true-for-anything test does not merely answer badly: it shadows the
+ * component that answers well, exactly as picking `blocks` out of the tool
+ * arguments once shadowed the validator's refusal of unknown fields.
+ *
+ * So anything that is not a regular file falls through to the host on purpose.
+ */
+async function isExistingFile(docPath) {
     try {
-        await stat(docPath);
-        return true;
+        return (await stat(docPath)).isFile();
     } catch {
         return false;
     }

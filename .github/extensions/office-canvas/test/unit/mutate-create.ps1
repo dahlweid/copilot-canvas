@@ -91,7 +91,7 @@ $mutants = @(
 
     @{ name = 'an existing file overwritten'
        file = 'src/word/document-author.mjs'
-       from  = '        if (await exists(docPath)) failFromStatus({ status: "file_exists" }, docPath);'
+       from  = '        if (await isExistingFile(docPath)) failFromStatus({ status: "file_exists" }, docPath);'
        to    = '        if (false) failFromStatus({ status: "file_exists" }, docPath);' }
 
     @{ name = 'autocorrect outcome reported as always suppressed'
@@ -181,14 +181,31 @@ export function paragraphsIn(spec) { return spec.blocks.length; }
 '
        to    = '' }
 
+    # Anchored on the `cause:` line above the block, not on the block alone.
+    # `create_unverified` carries an identical `autoCorrect` literal, so the
+    # shorter anchor matched twice and the runner reported AMBIGUOUS -- it would
+    # have deleted the field from both failures while claiming to test one.
     @{ name = 'autoCorrect dropped from the one failure that still authored a document'
        file = 'src/word/document-author.mjs'
-       from  = '                        autoCorrect: {
+       from  = '                        cause: err.code ?? null,
+                        autoCorrect: {
                             suppressed: Boolean(result.autoCorrect?.suppressed),
                             reason: result.autoCorrect?.reason ?? null,
                         },
 '
-       to    = '' }
+       to    = '                        cause: err.code ?? null,
+' }
+
+    @{ name = 'a directory refused as an existing file, shadowing the host classifier'
+       file = 'src/word/document-author.mjs'
+       from  = '        return (await stat(docPath)).isFile();'
+       to    = '        await stat(docPath);
+        return true;' }
+
+    @{ name = 'an unreadable file reported as a file that was never written'
+       file = 'src/word/document-author.mjs'
+       from  = '            if (cause === "ENOENT") {'
+       to    = '            if (true) {' }
 
     # additionalProperties: false enforces nothing on this host (issue #28), so
     # the only thing that can refuse an unknown argument is validateSpec -- and
