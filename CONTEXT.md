@@ -252,7 +252,7 @@ different string on each endpoint that reports it:
 | --- | --- |
 | REST `/pulls/{n}/reviews` | `copilot-pull-request-reviewer[bot]` |
 | REST `/pulls/{n}/comments` | **`Copilot`** |
-| GraphQL `reviewThreads…author.login` | `copilot-pull-request-reviewer` |
+| GraphQL `reviewThreads.nodes.comments.nodes.author.login` | `copilot-pull-request-reviewer` |
 
 A filter correct for two of the three returns **empty** on the third, and an
 empty result is indistinguishable from a clean round — so the mistake reports
