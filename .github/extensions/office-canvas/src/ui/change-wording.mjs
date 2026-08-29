@@ -36,3 +36,36 @@ export function describeChange(record) {
 
 /** The operations this module has wording for. Exported for the drift check. */
 export const DESCRIBED_OPS = Object.keys(PHRASES);
+
+/**
+ * The whole banner line, and whether there is anywhere to jump to.
+ *
+ * `page` is null whenever the edit result carried no usable page number. The
+ * first version of this interpolated it regardless and put **"page null"** in
+ * front of the reader, beside a "Show me" button that scrolled nowhere. Both
+ * halves came from assuming a page is always known.
+ *
+ * The wording says "page not reported" and not "Word could not report the page".
+ * All the record preserves is that no usable number arrived; whether Word
+ * declined to give one or the editor never asked is not something this code
+ * distinguished, and naming either would be asserting a cause we did not
+ * measure.
+ *
+ * `jumpable` is false in that case, so the caller can hide the control rather
+ * than offer an action that cannot happen.
+ */
+export function describeChangeBanner(record) {
+    const phrase = describeChange(record);
+    const page = Number.isInteger(record?.page) && record.page >= 1 ? record.page : null;
+
+    if (page === null) {
+        // Nothing is marked either -- with no page, the plan has no candidate --
+        // so this must not promise a marker the reader could go looking for.
+        return { text: `${phrase} — page not reported`, jumpable: false };
+    }
+
+    const text = record?.locatable
+        ? `${phrase} — page ${page}`
+        : `${phrase} — page ${page}, marked but not highlighted`;
+    return { text, jumpable: true };
+}

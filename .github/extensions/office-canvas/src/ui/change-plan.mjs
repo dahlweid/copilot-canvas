@@ -28,6 +28,26 @@
 import { locateText } from "./locate-text.mjs";
 
 /**
+ * The pages that could possibly answer for this record.
+ *
+ * Exported because the viewer needs the same answer for a different question:
+ * when a page finishes painting, is it worth re-running the plan? Deriving both
+ * from one function is deliberate. When the view asked its own version of this
+ * -- `record.page === page.number` -- the straddle page below was searched by
+ * the planner but never re-triggered by a paint, so a change located on the
+ * preceding page stayed unmarked until some unrelated event repainted. Two
+ * copies of a rule that must agree is the drift this repo has been bitten by
+ * three times; there is now one copy.
+ */
+export function candidatePages(record) {
+    if (!record || !Number.isInteger(record.page) || record.page < 1) return [];
+    // A deletion has no text to find, so the page before it is not insurance --
+    // it is just a page we would have no reason to mark.
+    if (!record.locatable || !record.text) return [record.page];
+    return [record.page - 1, record.page].filter((number) => number >= 1);
+}
+
+/**
  * Decides what the overlay should mark.
  *
  * `pages` is `[{ number, items }]` in page order, `items` being the extracted
@@ -47,7 +67,10 @@ export function planChangeMarks(record, pages) {
         return reported ? [{ number: reported.number, found: null }] : [];
     }
 
-    const candidates = [record.page - 1, record.page].map((n) => byNumber.get(n)).filter(Boolean);
+    const candidates = candidatePages(record)
+        .map((number) => byNumber.get(number))
+        .filter(Boolean);
+
 
     const marks = [];
     let searchable = true;

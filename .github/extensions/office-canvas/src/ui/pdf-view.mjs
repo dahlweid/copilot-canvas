@@ -20,7 +20,7 @@
 // save nothing on files this size.
 
 import * as pdfjs from "/vendor/pdf.min.mjs";
-import { planChangeMarks } from "./change-plan.mjs";
+import { candidatePages, planChangeMarks } from "./change-plan.mjs";
 import { describeChange } from "./change-wording.mjs";
 
 pdfjs.GlobalWorkerOptions.workerSrc = "/vendor/pdf.worker.min.mjs";
@@ -225,8 +225,12 @@ export class PdfView {
         await page.textLayer.render();
 
         // A page can be painted after the record arrived -- lazily, that is the
-        // normal case for a change below the fold.
-        if (this.#change?.page === page.number) this.#applyChange();
+        // normal case for a change below the fold. Ask the planner which pages
+        // matter rather than deciding here: the straddle page is a candidate
+        // too, and a private answer to that question was wrong.
+        if (this.#change && candidatePages(this.#change).includes(page.number)) {
+            this.#applyChange();
+        }
     }
 
     // --- the change overlay --------------------------------------------------

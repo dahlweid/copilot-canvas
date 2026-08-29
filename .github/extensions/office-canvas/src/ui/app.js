@@ -2,7 +2,7 @@
 // privileged bridge from an extension canvas iframe to the host.
 
 import { PdfView } from "./pdf-view.mjs";
-import { describeChange } from "./change-wording.mjs";
+import { describeChangeBanner } from "./change-wording.mjs";
 
 const $ = (id) => document.getElementById(id);
 
@@ -89,9 +89,9 @@ function showChange() {
     }
 
     view.setChange(record);
-    el.changeText.textContent = record.locatable
-        ? `${describeChange(record)} — page ${record.page}`
-        : `${describeChange(record)} — page ${record.page}, marked but not highlighted`;
+    const banner = describeChangeBanner(record);
+    el.changeText.textContent = banner.text;
+    el.jumpToChange.hidden = !banner.jumpable;
     el.changeBar.hidden = false;
 }
 

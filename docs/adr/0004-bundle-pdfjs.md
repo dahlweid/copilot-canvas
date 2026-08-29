@@ -28,12 +28,39 @@ An earlier draft claimed parity with the native viewer on tagged PDFs. That
 claim was withdrawn because nothing had been tested, and it is **not**
 reinstated here: parity was never measured, by anyone.
 
-It also cannot be measured this way. The native plugin renders in its own
-process and exposes no DOM to the embedding page — the very fact this decision
-rests on — so there is nothing to enumerate on that side and no like-for-like
-comparison to run. Establishing parity would mean driving a real screen reader
-against both viewers, which is outside what a probe in this repo can do. So what
-follows is an absolute statement of what pdf.js gives us, not a comparison.
+It also cannot be measured this way, and the reason matters more than the
+verdict. The tempting phrasing — "the plugin exposes no DOM, so there is nothing
+to compare" — is an outcome-level reason and it is subtly wrong: a screen reader
+does not read the DOM either. It reads an accessibility tree. pdf.js publishes
+into that tree *via* the DOM the browser builds it from; the native plugin
+publishes into it directly, from its own process, through its own provider. Both
+sides therefore have something a screen reader can consume. What only one side
+has is a channel a probe running **inside the page** can enumerate. The
+asymmetry is in our instrument, not in the two viewers, and stating it the other
+way would credit pdf.js with an advantage this repo has not shown it to have.
+
+So, to the standard this repo now holds negatives to — what a successful
+comparison would have looked like, precisely enough that its absence is a
+finding and not a shrug:
+
+- **Instrument.** A real screen reader (NVDA's speech-viewer log is the cheapest
+  capture) driven over a real desktop, not a probe in the page.
+- **Arms.** The same tagged PDF, exported through our own pipeline, opened once
+  in the canvas and once in the native plugin.
+- **Measurement.** The announced sequence for a full read-through of one page:
+  the order items are spoken in, and whether each heading is announced *as* a
+  heading at its level.
+- **Verdict.** Parity iff the two sequences agree on reading order and on
+  heading level. A difference in either direction is the finding; the direction
+  decides whether the gap below is worth fixing or whether we have understated
+  pdf.js.
+- **Control.** The instrument has to be shown able to produce both answers —
+  a document with deliberately broken tags must come back as a *mismatch*, or a
+  match means nothing. This is the arm that would be easiest to skip and would
+  invalidate the whole result.
+
+None of that has been run, by anyone. Everything below is an absolute statement
+of what pdf.js gives us, and no part of it is a comparison.
 
 Measured by `spikes/pdfjs/probes/probe-accessibility.mjs` against a five-page
 document exported through our own pipeline (pdf.js 6.2.108):

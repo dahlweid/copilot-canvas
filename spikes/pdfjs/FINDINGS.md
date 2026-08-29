@@ -155,5 +155,75 @@ nothing" kind:**
   roled nodes and found none, which reads like "the tree has no refs". The refs
   live on `{type: "content", id}` leaves, which carry no `role` and so were never
   visited. Counted properly there are 17.
+- A third, made after the fact and worth as much as the other two: this file used
+  to justify the impossibility of a comparison with "the plugin exposes no DOM".
+  That is an outcome-level reason and it is wrong at the mechanism — a screen
+  reader consumes an accessibility tree, not a DOM. pdf.js reaches that tree
+  through the DOM; the plugin reaches it directly from its own process. Both are
+  legible to AT. Only one is legible to a probe running in the page, so the
+  asymmetry belongs to our instrument, and writing it as a property of the
+  viewers would have credited pdf.js with an advantage nothing here measured.
+
+**What a successful comparison would have looked like** — recorded so that "not
+measured" is a finding with a shape, not a shrug. Instrument: a real screen
+reader's speech log, driven over a desktop. Arms: one tagged PDF from our own
+pipeline, opened in the canvas and in the native plugin. Measurement: the
+announced sequence for one page — reading order, and whether each heading is
+announced as a heading at its level. Verdict: parity iff both agree on order and
+level; a difference either way is the result, and its direction says whether the
+gap above matters or whether pdf.js is being undersold here. Control: a document
+with deliberately broken tags must come back a *mismatch*, or a match proves
+only that the instrument is insensitive.
 
 Not measured by anyone: actual assistive-technology output, from either viewer.
+
+## Two mutants that ran and one class of mutant that cannot
+
+A mutation gate reports three outcomes, not two. `KILLED` and `SURVIVED` both
+mean the mutant was applied; a mutant whose anchor is absent was **never
+applied**, and counting it either way is a lie. `mutate-pdfjs.ps1` therefore has
+a third category, `MISSING`, and fails on it. It has now caught two separate
+mechanisms in this branch alone, neither of which produced a red line before it
+existed.
+
+**Mechanism 1 — the tool never reads the file you mutated.** `.gitattributes`
+marking the vendored parts `-text` is a guard like any other, so the mutant moved
+it aside. But git resolves attributes from the **index** when the working-tree
+file is absent, so once `.gitattributes` was committed the mutant stopped
+disabling anything and both of its tests went `KILLED` to `SURVIVED` silently.
+The mutant must `git rm --cached` as well. **Generally: mutating a tracked
+configuration file is inert whenever the consuming tool reads the committed copy
+rather than the working one** — and that is the normal case for git's own
+configuration, not an exotic one.
+
+**Mechanism 2 — the anchor is mangled before it is ever compared.**
+`mutate-pdfjs.ps1` is run with `powershell -File`, which is Windows PowerShell
+5.1, and 5.1 decodes a BOM-less file as ANSI. Every anchor in it was ASCII until
+an em dash appeared in one, at which point three mutants stopped matching and
+were never applied. The failure is worse than it looks: the mutants with ASCII
+anchors keep passing, so the run still ends in a wall of `KILLED` and only the
+count moves. Fixed by giving the script a UTF-8 BOM, and guarded by a self-check
+that asserts an em dash is one character before any mutant runs — placed first,
+because a partial run is the hardest kind to notice. The self-check was itself
+mutation-checked by stripping the BOM from a copy: it exits 1.
+
+Both belong to one family: **a mutation gate can report a kill it never made.**
+Three sessions have now found different members of it independently — a moved
+anchor, a config read from the index, and a mis-decoded anchor — which suggests
+the category is worth naming in `CONTEXT.md` rather than the instances.
+
+## Two font probes, declined
+
+Issue #9 lists an `ENGR.TTF` export probe and a not-installed-font probe. Neither
+was run, and this is a decision rather than an omission.
+
+`standard_fonts/` and `cmaps/` are not in the package — Word embeds every font as
+a subset, so pdf.js never reaches for a standard font file (finding 1). No result
+either probe could produce changes a byte of what ships: a surprising result
+would tell us something about Word's embedding, not about the viewer, and there
+is no code path it would send us to. A probe that cannot change a decision is not
+evidence, it is cost — and on a machine with a dozen concurrent Word instances it
+would produce numbers needing a caveat longer than the finding.
+
+Re-open both if the font directories are ever shipped, which is the condition
+under which the answer would start to matter.

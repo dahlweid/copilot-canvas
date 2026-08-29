@@ -11,7 +11,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { planChangeMarks } from "../../src/ui/change-plan.mjs";
+import { candidatePages, planChangeMarks } from "../../src/ui/change-plan.mjs";
 
 // A text item as pdf.js reports it. Only `str` matters to the locator; the
 // transform is what the viewer later turns into quads.
@@ -124,4 +124,83 @@ test("no record and no pages mark nothing", () => {
     assert.deepEqual(planChangeMarks(null, [painted(1, "a")]), []);
     assert.deepEqual(planChangeMarks(record(), []), []);
     assert.deepEqual(planChangeMarks(record(), null), []);
+});
+
+// --- which pages the viewer must re-check when one paints ----------------------
+//
+// Review round 1 found the defect these pin. `planChangeMarks` searches the
+// reported page *and* the one before it, but the viewer decided for itself when
+// a freshly painted page was worth re-planning, and asked only
+// `record.page === page.number`. A change that actually sat on the straddle page
+// was therefore planned but never triggered: painting the page it was on did
+// not count as painting a page of interest, so the overlay stayed missing until
+// something unrelated forced a re-apply. One rule, two copies, and the copies
+// disagreed.
+
+test("the page before the reported one is a candidate", () => {
+    // This is the whole defect: 4 must be in the set, or painting page 4 never
+    // re-applies the change that is on it.
+    assert.deepEqual(candidatePages(record({ page: 5 })), [4, 5]);
+});
+
+test("a deletion has no straddle page to check", () => {
+    // Nothing to find, so the page before earns no look.
+    assert.deepEqual(candidatePages(record({ page: 5, locatable: false, text: null })), [5]);
+});
+
+test("page 1 never produces a page 0", () => {
+    assert.deepEqual(candidatePages(record({ page: 1 })), [1]);
+});
+
+test("a record with no usable page has no candidates", () => {
+    for (const page of [null, undefined, 0, -1, 2.5, NaN, "3"]) {
+        assert.deepEqual(candidatePages(record({ page })), [], `page ${JSON.stringify(page)}`);
+    }
+    assert.deepEqual(candidatePages(null), []);
+});
+
+test("every page the plan can mark is a page the viewer would re-check", () => {
+    // The property that actually matters, stated so neither side can drift: if
+    // `planChangeMarks` would put a mark on a page, `candidatePages` must name
+    // it -- otherwise that mark is unreachable when the page paints late, which
+    // for anything below the fold is the normal case rather than an edge one.
+    const cases = [
+        record({ page: 5 }),
+        record({ page: 5, locatable: false, text: null }),
+        record({ page: 1 }),
+        record({ page: 2 }),
+    ];
+    const pages = [painted(1, "alpha"), painted(2, "hello there"), painted(3, "gamma"),
+                   painted(4, "hello there"), painted(5, "epsilon")];
+    for (const rec of cases) {
+        const marked = planChangeMarks(rec, pages).map((mark) => mark.number);
+        const candidates = candidatePages(rec);
+        for (const number of marked) {
+            assert.ok(
+                candidates.includes(number),
+                `plan marks page ${number} for ${JSON.stringify(rec)} but candidatePages says ${JSON.stringify(candidates)}`,
+            );
+        }
+    }
+});
+
+test("the viewer derives the trigger instead of restating it", async () => {
+    // A source check because `pdf-view.mjs` imports pdf.js from an absolute
+    // `/vendor/` URL and cannot be loaded under Node. The behaviour above cannot
+    // reach the one line that had the bug, so this asserts the line is gone and
+    // that the shared answer is imported. Without it the fix is one careless
+    // edit from returning, silently and only in a browser.
+    const { readFile } = await import("node:fs/promises");
+    const { fileURLToPath } = await import("node:url");
+    const source = await readFile(
+        fileURLToPath(new URL("../../src/ui/pdf-view.mjs", import.meta.url)),
+        "utf8",
+    );
+    assert.match(source, /import \{[^}]*\bcandidatePages\b[^}]*\} from "\.\/change-plan\.mjs"/);
+    assert.match(source, /candidatePages\(this\.#change\)\.includes\(page\.number\)/);
+    assert.doesNotMatch(
+        source,
+        /#change\??\.page\s*===\s*page\.number/,
+        "the viewer is deciding for itself which pages matter again",
+    );
 });

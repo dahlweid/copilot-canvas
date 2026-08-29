@@ -223,17 +223,21 @@ try {
 const teardownAt = Date.now();
 
 await check("no Word process was left behind", async () => {
-    // Advisory, and the message the shared helper prints is stronger than what
-    // it can know: "these started during this test, so they are ours" is exactly
-    // the inference issue #25 says is unsound -- every WINWORD.EXE is parented to
-    // the DCOM launcher, so a PID that appeared during the run may belong to any
-    // session on the machine. Measured on this very run: three pids reported,
-    // one of which started *after* teardown had begun, and two more appeared
-    // while the report was being printed.
+    // Advisory, per issue #25: every WINWORD.EXE is parented to the DCOM
+    // launcher, so a pid that appeared during the run may belong to any session
+    // on the machine and pid-set differencing cannot tell which.
     //
-    // So the failure is annotated with start times rather than suppressed. A
-    // process that started after teardown cannot be ours; one that started
-    // during the run and outlived it is a question worth answering by hand.
+    // What this adds is the one fact that *can* discriminate, and which the
+    // shared helper does not have: when each surviving process started. A
+    // process that started after our teardown began cannot be ours, whatever
+    // else is true. Measured on the first run of this file -- three pids
+    // reported, one of them past teardown, and two more appearing while the
+    // report printed. The re-run on a quiet machine was clean, which is the
+    // control: the assertion can come back green, so a red one means something.
+    //
+    // The annotation is added to the failure rather than replacing it. Nothing
+    // here is suppressed, and nothing is killed -- a pid we cannot attribute is
+    // a pid we must not touch.
     try {
         await assertNoLeakedWord(pidsBefore);
     } catch (err) {
@@ -261,8 +265,7 @@ await check("no Word process was left behind", async () => {
                 return `  ${pid}: started ${new Date(at).toISOString()}${after}`;
             })
             .join("\n");
-        err.message += `\n\nStart times (issue #25 -- attribution is unsound here):\n${detail}`;
-        throw err;
+        err.message += `\n\nStart times (issue #25 -- attribution is unsound here):\n${detail}`;        throw err;
     }
 });
 

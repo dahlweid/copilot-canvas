@@ -1,4 +1,4 @@
-# Mutation check for the pdf.js viewer and change-overlay unit tests.
+﻿# Mutation check for the pdf.js viewer and change-overlay unit tests.
 #
 # Not part of the suite: a test that cannot fail is invisible to a green run, so
 # each defect below is reintroduced, the tests are run, and the run must go red.
@@ -8,12 +8,37 @@
 # guard of it. A single-guard mutation here would "confirm" a test that was only
 # half live -- which has already happened once in this repo.
 #
+# ## This file must keep its UTF-8 BOM
+#
+# It is run with `powershell -File`, which is Windows PowerShell 5.1, and 5.1
+# decodes a BOM-less script as ANSI. Every anchor here was pure ASCII until an
+# em dash appeared in one, at which point three mutants stopped matching their
+# anchors and were silently never applied -- a mutation gate reporting a kill it
+# never made, which is the third distinct mechanism for that this repo has found.
+# The BOM makes 5.1 read the file as UTF-8 and the anchors match again.
+#
+# The `MISSING` category below is what caught it, and is why it exists: a mutant
+# whose anchor is absent has measured nothing, and counting it as a survivor or
+# as a kill would both be wrong.
+#
 # Run from the extension root:
 #   powershell -File test/unit/mutate-pdfjs.ps1
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $repo = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $root))
+
+# Does this script's own text survive being read? An em dash is one character
+# when the file is decoded as UTF-8 and three when it is decoded as ANSI, so this
+# fails loudly on the mis-decode that silently unhooked three mutants once. It
+# has to come before any mutant runs: a mangled anchor still produces a green
+# `KILLED` line for every mutant whose anchor happens to be ASCII, and a partial
+# run is the thing hardest to notice.
+if ("$([char]0x2014)".Length -ne 1 -or 'X—X'.Length -ne 3) {
+    Write-Host "This script was decoded as ANSI, not UTF-8 -- its BOM is missing." -ForegroundColor Red
+    Write-Host "Every non-ASCII anchor would silently fail to match. Restore the BOM." -ForegroundColor Red
+    exit 1
+}
 
 $suite = @(
     'test/unit/vendor-pdfjs.test.mjs',
@@ -23,7 +48,8 @@ $suite = @(
     'test/unit/viewer-state.test.mjs',
     'test/unit/vendor-checkout.test.mjs',
     'test/unit/ui-contract.test.mjs',
-    'test/unit/change-plan.test.mjs'
+    'test/unit/change-plan.test.mjs',
+    'test/unit/change-wording.test.mjs'
 )
 
 # `tools/` lives above the extension folder, so its mutants are anchored against
@@ -297,8 +323,49 @@ $mutants = @(
 
     @{ name = 'the page before the reported one is never searched'
        file = 'src/ui/change-plan.mjs'
-       from = '    const candidates = [record.page - 1, record.page].map((n) => byNumber.get(n)).filter(Boolean);'
-       to   = '    const candidates = [record.page].map((n) => byNumber.get(n)).filter(Boolean);' }
+       from = '    return [record.page - 1, record.page].filter((number) => number >= 1);'
+       to   = '    return [record.page];' }
+
+    # --- the banner, and the trigger that feeds it -----------------------------
+
+    # Round 1 of review found both of these in the running viewer's logic.
+
+    # The defect exactly as it shipped: the view answering "is this page worth
+    # re-planning?" for itself, and getting a different answer than the planner.
+    # Only the source check can see this -- `pdf-view.mjs` cannot be imported
+    # under Node -- which is precisely why the source check exists.
+    @{ name = 'the viewer decides for itself which painted pages matter'
+       file = 'src/ui/pdf-view.mjs'
+       from = '        if (this.#change && candidatePages(this.#change).includes(page.number)) {
+            this.#applyChange();
+        }'
+       to   = '        if (this.#change?.page === page.number) this.#applyChange();' }
+
+    # Both halves of the null-page handling go together. Removing only the text
+    # branch would leave `jumpable` correct and vice versa, and either on its own
+    # would "confirm" tests that were only half live.
+    @{ name = 'a missing page is interpolated into the banner and still offered'
+       file = 'src/ui/change-wording.mjs'
+       from = '    if (page === null) {
+        // Nothing is marked either -- with no page, the plan has no candidate --
+        // so this must not promise a marker the reader could go looking for.
+        return { text: `${phrase} — page not reported`, jumpable: false };
+    }
+
+    const text = record?.locatable'
+       to   = '    const text = record?.locatable' }
+
+    # The narrower half, so a test that only ever checks the wording is caught.
+    @{ name = 'a change with no page is still offered as a destination'
+       file = 'src/ui/change-wording.mjs'
+       from = '        return { text: `${phrase} — page not reported`, jumpable: false };'
+       to   = '        return { text: `${phrase} — page not reported`, jumpable: true };' }
+
+    # And the reverse: the wording alone, with the offer left correct.
+    @{ name = 'the unreported-page wording names a cause it never measured'
+       file = 'src/ui/change-wording.mjs'
+       from = '        return { text: `${phrase} — page not reported`, jumpable: false };'
+       to   = '        return { text: `${phrase} — page unknown, Word could not report it`, jumpable: false };' }
 )
 
 $survived = @()
