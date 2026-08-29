@@ -2,7 +2,10 @@
 #
 # Not part of the suite: a test that cannot fail is invisible to a green run, so
 # each defect below is reintroduced, the suite is run, and the run must go red.
-# Anything reported as SURVIVED is a test that proves nothing.
+# Anything reported as SURVIVED is a test that proves nothing -- and anything
+# reported as MISSING or AMBIGUOUS is a *mutant* that proves nothing, which is
+# the worse of the two because the total keeps counting it. See the comment
+# above the counters for why the three are reported apart.
 #
 # Run from the extension root:
 #   powershell -File test/unit/mutate-create.ps1
@@ -196,7 +199,26 @@ export function paragraphsIn(spec) { return spec.blocks.length; }
        to    = '        const spec = { blocks: args?.blocks };' }
 )
 
+# Three ways a mutant can fail to be evidence, and they need different fixes, so
+# they are counted separately. Folding them together is how "26/26" starts
+# reading as strength while coverage falls:
+#
+#   SURVIVED  the defect was introduced and no test noticed.   -> weak test
+#   MISSING   the anchor no longer exists, so nothing was       -> stale anchor
+#             introduced at all. The commonest cause is an
+#             ordinary edit to the file under test moving the
+#             line; the mutant then silently stops testing
+#             anything while still being counted.
+#   AMBIGUOUS the anchor appears more than once, so the mutant  -> narrow anchor
+#             changes more than its name claims and a kill
+#             cannot be attributed to the defect named.
+#
+# All three are fatal. The distinction is in the reporting, because a reader
+# told "survived" will go looking for a weak test, and for MISSING there isn't
+# one -- the test is fine and the anchor moved.
 $survived = @()
+$missing = @()
+$ambiguous = @()
 
 # A mutant is only informative against a suite that is otherwise green. The first
 # run of this script reported 16 of 16 killed while one test was throwing ENOENT
@@ -211,9 +233,24 @@ if ($LASTEXITCODE -ne 0) {
 foreach ($m in $mutants) {
     $file = Join-Path $root $m.file
     $original = [IO.File]::ReadAllText($file)
-    if (-not $original.Contains($m.from)) {
-        Write-Host ("MISSING  {0} -- anchor not found in {1}" -f $m.name, $m.file) -ForegroundColor Yellow
-        $survived += $m.name
+
+    # Counted, not just tested for presence. `String.Replace` replaces every
+    # occurrence, so an anchor that matches twice quietly widens the mutant
+    # beyond the defect its name describes.
+    $occurrences = ([regex]::Matches($original, [regex]::Escape($m.from))).Count
+    if ($occurrences -eq 0) {
+        Write-Host ("MISSING  {0} -- anchor not found in {1}; re-anchor it" -f $m.name, $m.file) -ForegroundColor Yellow
+        $missing += $m.name
+        continue
+    }
+    if ($occurrences -gt 1) {
+        Write-Host ("AMBIGUOUS {0} -- anchor matches {1}x in {2}; narrow it" -f $m.name, $occurrences, $m.file) -ForegroundColor Yellow
+        $ambiguous += $m.name
+        continue
+    }
+    if ($m.from -eq $m.to) {
+        Write-Host ("MISSING  {0} -- mutant is a no-op in {1}" -f $m.name, $m.file) -ForegroundColor Yellow
+        $missing += $m.name
         continue
     }
 
@@ -234,10 +271,25 @@ foreach ($m in $mutants) {
 }
 
 Write-Host ''
-if ($survived.Count -eq 0) {
+$broken = $survived.Count + $missing.Count + $ambiguous.Count
+if ($broken -eq 0) {
     Write-Host ("All {0} mutants killed." -f $mutants.Count) -ForegroundColor Green
     exit 0
 }
-Write-Host ("{0} of {1} mutants survived:" -f $survived.Count, $mutants.Count) -ForegroundColor Red
-$survived | ForEach-Object { Write-Host "  - $_" }
+# Reported as "not evidence" rather than "survived": only the first group means
+# a test is weak. The other two mean the mutant never ran, which is the failure
+# that inflates the count instead of reducing it.
+Write-Host ("{0} of {1} mutants are not evidence:" -f $broken, $mutants.Count) -ForegroundColor Red
+if ($survived.Count -gt 0) {
+    Write-Host "  survived (the defect was introduced and no test noticed):" -ForegroundColor Red
+    $survived | ForEach-Object { Write-Host "    - $_" }
+}
+if ($missing.Count -gt 0) {
+    Write-Host "  missing anchor (nothing was introduced; the test may be fine):" -ForegroundColor Yellow
+    $missing | ForEach-Object { Write-Host "    - $_" }
+}
+if ($ambiguous.Count -gt 0) {
+    Write-Host "  ambiguous anchor (more was changed than the name claims):" -ForegroundColor Yellow
+    $ambiguous | ForEach-Object { Write-Host "    - $_" }
+}
 exit 1
