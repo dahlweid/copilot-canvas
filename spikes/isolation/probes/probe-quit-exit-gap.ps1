@@ -35,7 +35,7 @@ foreach ($rep in 1..$reps) {
         "rep $rep : UNATTRIBUTABLE -- census diff was $($new.Count) pids [$($new -join ',')]."
         "         Refusing to measure or kill. Aborting run."
         # Deliberately no ReleaseComObject here, and this was raised in review.
-        # Three measured reasons it is not the fix it looks like:
+        # Two measured reasons, and a third thing that is NOT one:
         #   1. `Quit()` (no-arg) binds under PS 5.1 and Word does exit -- #34's
         #      control arm measured exactly this: the bare form is reaped after
         #      the owning process exits, and it was the *swallowed* `Quit(0)`,
@@ -43,8 +43,24 @@ foreach ($rep in 1..$reps) {
         #   2. The RCW does not outlive this process; the script breaks and ends
         #      within milliseconds, and `Quit()` returns 3-28 ms before Word
         #      goes, so the release would not be what ends the instance anyway.
-        #   3. ReleaseComObject is not neutral. PR #16 round 5 measured a case
-        #      where adding it *caused* the leak it was meant to prevent.
+        # The decline stands on 1 and 2 alone.
+        #
+        # It previously cited a third reason -- PR #16 round 5 measuring
+        # ReleaseComObject *causing* the leak it was meant to prevent -- and
+        # summarised it as "ReleaseComObject is not neutral". That is a real
+        # measurement carried to a scope it never covered, which is this repo's
+        # named recurring failure (PLAN.md sec 20 entry 2). Read the source at
+        # word-host.ps1 `Cmd-Edit`: it measured `ReleaseComObject($window)` on a
+        # *Protected View window* RCW, across *multiple* operations of a
+        # long-lived host, and explicitly declines to pin the mechanism beyond
+        # naming Protected View's uninstrumented second WINWORD as the likely
+        # route. None of that is in play for an `Application` RCW in a script
+        # that exits milliseconds later.
+        #
+        # The check that settles it is internal: `Stop-Word` in that same file
+        # releases the Application RCW itself. If the #16 result generalised,
+        # it would convict the host's own teardown -- so it does not generalise,
+        # and it was never evidence about this line.
         # What this path genuinely cannot do is verify the outcome: it aborts
         # precisely because attribution failed, so there is no pid it is
         # entitled to poll or to kill. Reporting and stopping is the honest end.

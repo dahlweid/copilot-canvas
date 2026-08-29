@@ -1320,6 +1320,7 @@ rewriting it.
 | 4 | `.github/extensions/office-canvas/src/word/word-host.ps1` `Cmd-Edit` — "`Close()` returning is not proof the file is released", **plus a worked stopwatch poll implementing the remedy** | `Stop-Word`, in the **same file**, using a fixed sleep | ~840 lines, **same file** |
 | 5 | `spikes/isolation/probes/probe-quit-exit-gap.ps1` — `Quit()` **returns** in 3-28 ms, correcting a `~120 ms` claim | **five** further copies of the same wrong figure: `docs/adr/0005-transient-lock-write-model.md:51` in a table headed *measured*, `.github/extensions/office-canvas/test/integration/word-pids.mjs:87`, `.github/extensions/office-canvas/test/integration/edit-smoke.mjs:259`, `spikes/isolation/probes/probe-word-ownership.ps1:273`, `spikes/isolation/probes/probe-fileshare-algebra.ps1:211` | corrected in one file, by me, in the commit that added this section |
 | 6 | `.github/extensions/office-canvas/src/word/word-host.ps1` `Write-HostDiagnostic` — "stdout is the JSON-RPC channel and writing to it corrupts the protocol, so diagnostics go to stderr, **which word-host.mjs captures and surfaces**" | `.github/extensions/office-canvas/src/word/word-host.mjs:58,105,175` — stderr was captured into a ring buffer with exactly **one** reader, in `#onExit`, feeding only `#rejectAll`. A clean dispose has nothing in flight, so the buffer was discarded | **the same sentence** |
+| 7 | `.github/extensions/office-canvas/src/word/word-host.ps1` `Cmd-Edit` (~`:1112-1131`) — `ReleaseComObject` on a **Protected View window** RCW, **across operations** of a long-lived host, mechanism explicitly unpinned | `spikes/isolation/probes/probe-quit-exit-gap.ps1:46` — cited as "ReleaseComObject is not neutral" to decline a review finding about an **`Application`** RCW in a script that exits milliseconds later | **different object, different lifecycle** — and it *shipped* |
 
 **1** is the mildest and the best documented: the ADR says so itself at `:100`
 — *"This paragraph said `ReadWrite` until the table above was read properly."*
@@ -1402,6 +1403,33 @@ only available evidence that two things were being proved by one assertion.
 Measured end to end, with a control, in
 `spikes/isolation/probes/probe-decline-diagnostic-reach.mjs`: the host emitted
 the decline, and the callback the extension supplies received nothing at all.
+
+**7 is entry 2's shape — a measurement carried to a scope it never covered —
+and it is the first of that shape in this list to actually *ship*.** Entry 2 was
+caught in review, before it landed. This one was committed, in the same PR whose
+whole contribution is this section, in a comment written to *decline* a review
+finding. It is the strongest available demonstration that cataloguing the class
+confers nothing: the citation gave the decline the authority of a measurement
+while the measurement was about a different object with a different lifecycle.
+
+The two halves are worth separating. The #16 note it cites is **correct and
+carefully scoped** — it names the object (a Protected View window RCW), the axis
+(across operations, not within one), and explicitly refuses to pin a mechanism
+beyond noting Protected View's uninstrumented second WINWORD. Nothing about it
+had to be wrong for entry 7 to happen. What travelled was not the note but a
+**summary of it** — *"ReleaseComObject is not neutral"* — and the summary is
+where the scope was dropped, because a scope is exactly what a summary discards.
+A measurement quoted in one line is a measurement stripped of its conditions;
+that is the same defect as labelling a run "the quiet-machine case", arriving
+from the citing end rather than the measuring end.
+
+What caught it was the cheapest check available and one nobody had run: reading
+the cited source instead of the citation. The **decisive** evidence was
+internal — `Stop-Word` in that very file calls `ReleaseComObject($script:App)`
+itself. Had the #16 result generalised, it would have convicted the host's own
+teardown, in the function this PR exists to fix. **A general claim that would
+convict its own codebase is not a general claim**, and that test costs one grep
+of the file you are already citing.
 
 Note also *why* nothing caught it: the error made `Quit()` look slower to return
 than it is, so every consumer over-waited and no test could fail. **A wrong
