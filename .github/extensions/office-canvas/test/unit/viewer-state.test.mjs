@@ -23,6 +23,8 @@ class FakeCache {
     wordVersion = "fake";
     keys = new Map();
     refreshCalls = 0;
+    /** One-shot gates; each `refresh` call consumes the first still queued. */
+    gates = [];
 
     #info(docPath) {
         if (!this.keys.has(docPath)) this.keys.set(docPath, `${path.basename(docPath)}-1`);
@@ -36,19 +38,55 @@ class FakeCache {
         return next;
     }
 
+    /**
+     * Holds the next `refresh` open until the returned function is called, so a
+     * second edit can arrive while the first render is still in flight.
+     */
+    blockNext() {
+        let release;
+        this.gates.push(new Promise((resolve) => {
+            release = resolve;
+        }));
+        return release;
+    }
+
     async open(docPath) {
         return this.#info(docPath);
     }
-    async pdf() {}
+    /**
+     * Shaped like the real one, which returns `{ file }` -- `#servePdf`
+     * destructures it. Returning nothing here made the destructure throw a
+     * `TypeError` that the route reports as `render_failed`, a code naming a
+     * cause nothing had determined.
+     */
+    async pdf(docPath) {
+        return { file: `${docPath}.pdf`, key: this.keys.get(docPath) ?? null };
+    }
     async refresh(docPath) {
         this.refreshCalls += 1;
+        // Read *before* the gate. A render reports the file as it stood when it
+        // began, not as it stands when it finishes -- resolving the key after the
+        // wait would make a stale render unconstructible, which is the one state
+        // these tests need to be able to build.
+        const snapshot = this.#info(docPath);
+        const gate = this.gates.shift();
+        if (gate) await gate;
         // Defaults to a render, which is what most tests want. Set `changed` to
         // false to exercise the no-op path: `cache.refresh` reporting that the
         // file has not moved is what makes `ViewerInstance.refresh` return
         // early *without* advancing `this.doc`.
         const changed = this.nextChanged ?? true;
-        return { ...this.#info(docPath), changed };
+        return { ...snapshot, changed };
     }
+}
+
+/** Spins the event loop until `predicate` holds, or gives up and returns false. */
+async function until(predicate, limit = 200) {
+    for (let i = 0; i < limit; i++) {
+        if (predicate()) return true;
+        await new Promise((resolve) => setImmediate(resolve));
+    }
+    return predicate();
 }
 
 const record = (over = {}) => ({
@@ -110,6 +148,106 @@ test("a render that changes nothing keeps the overlay up", async () => {
     await viewerInstance.refresh({ force: true });
     assert.equal(viewerInstance.doc.key, key, "precondition: the render key did not move");
     assert.ok(viewerInstance.state.change, "an unchanged render must not take the overlay down");
+});
+
+test("an edit that joins an older render waits for one that can contain it", async () => {
+    // Production shape: every caller carrying a record forces (extension.mjs's
+    // refreshCanvasesFor). Two rapid edits -- A lands, its render starts, B lands
+    // and joins it. The join reports `changed: true`, but that image is post-A and
+    // pre-B, so settling for it would stamp B's overlay onto A's page. `changed`
+    // proves a render happened, not which one.
+    const viewerInstance = viewer();
+    await viewerInstance.openDocument(DOC_A);
+
+    const release = cache.blockNext();
+    const callsBefore = cache.refreshCalls;
+
+    cache.touch(DOC_A); // edit A lands on disk
+    const firstRefresh = viewerInstance.refresh({ force: true, change: record({ text: "Edit A." }) });
+    assert.ok(
+        await until(() => cache.refreshCalls > callsBefore),
+        "precondition: the first refresh reached the cache and is being held there",
+    );
+
+    const freshKey = cache.touch(DOC_A); // edit B lands while A's render is in flight
+    const secondRefresh = viewerInstance.refresh({ force: true, change: record({ text: "Edit B." }) });
+
+    release();
+    await Promise.all([firstRefresh, secondRefresh]);
+
+    assert.equal(viewerInstance.state.change?.text, "Edit B.", "precondition: B's record is the one showing");
+    assert.equal(
+        viewerInstance.doc.key,
+        freshKey,
+        "B's overlay was published against a render that began before B existed",
+    );
+});
+
+test("a render that completes after a newer edit does not stamp that edit", async () => {
+    // The same pairing reached from the opposite side, and it needs its own test
+    // because it is a different line of code. `#stampChange` stamps whatever
+    // `this.change` currently holds -- so when A's render finishes, the record it
+    // finds there is B's, overwritten by the caller that joined it. Stamping then
+    // ties B to A's image without B's caller ever having settled for it.
+    //
+    // Unforced, so nothing re-renders afterwards to paper over the stamp: the only
+    // safe outcome is that no overlay is published at all.
+    const viewerInstance = viewer();
+    await viewerInstance.openDocument(DOC_A);
+
+    const release = cache.blockNext();
+    const callsBefore = cache.refreshCalls;
+
+    cache.touch(DOC_A);
+    const firstRefresh = viewerInstance.refresh({ change: record({ text: "Edit A." }) });
+    assert.ok(
+        await until(() => cache.refreshCalls > callsBefore),
+        "precondition: the first refresh reached the cache and is being held there",
+    );
+
+    cache.touch(DOC_A);
+    const secondRefresh = viewerInstance.refresh({ change: record({ text: "Edit B." }) });
+
+    release();
+    await Promise.all([firstRefresh, secondRefresh]);
+
+    assert.equal(
+        cache.refreshCalls,
+        callsBefore + 1,
+        "precondition: the second edit joined the in-flight render rather than starting its own",
+    );
+    assert.equal(
+        viewerInstance.state.change,
+        null,
+        "an overlay was published against a render that cannot contain the edit it describes",
+    );
+});
+
+test("a forced refresh with no record still refuses the no-op it joined", async () => {
+    // The other half of the join condition. The test above covers a caller
+    // carrying a record; this one carries none, so only `joined.changed` stands
+    // between it and settling for a refresh that rendered nothing. A watcher echo
+    // that fires before Word has finished saving is exactly that no-op, and the
+    // canvas's own force-refresh button is exactly this caller.
+    const viewerInstance = viewer();
+    await viewerInstance.openDocument(DOC_A);
+
+    const release = cache.blockNext();
+    const callsBefore = cache.refreshCalls;
+    cache.nextChanged = false; // the in-flight refresh finds a file that has not moved
+
+    const first = viewerInstance.refresh({});
+    assert.ok(
+        await until(() => cache.refreshCalls > callsBefore),
+        "precondition: the first refresh reached the cache and is being held there",
+    );
+    const second = viewerInstance.refresh({ force: true });
+
+    release();
+    const [, secondResult] = await Promise.all([first, second]);
+
+    assert.equal(cache.refreshCalls, callsBefore + 2, "the forced caller settled for a render that did not happen");
+    assert.equal(secondResult.changed, true);
 });
 
 test("a second edit supersedes the first rather than accumulating", async () => {
@@ -205,9 +343,13 @@ test("a forced refresh does not settle for a no-op it joined", async () => {
 
 test("a record arriving during an in-flight refresh is not swallowed", async () => {
     // Two refreshes overlap all the time: the file watcher fires as an echo of
-    // our own save, just as the edit's own refresh is starting. The second
-    // caller joins the first rather than re-rendering, and its record has to
-    // survive that join or the overlay silently never appears for that edit.
+    // our own save, just as the edit's own refresh is starting. The second caller
+    // must not lose its record to that overlap -- if it silently returned the
+    // joined render the overlay would simply never appear for that edit.
+    //
+    // It does not join, and that is the point: a render already in flight began
+    // before this record existed, so it cannot be shown to contain the edit.
+    // A forced caller therefore pays for a second render rather than settling.
     const viewerInstance = viewer();
     await viewerInstance.openDocument(DOC_A);
 
@@ -227,7 +369,7 @@ test("a record arriving during an in-flight refresh is not swallowed", async () 
     release();
     await Promise.all([first, second]);
 
-    assert.equal(cache.refreshCalls, 1, "precondition: the second call joined the first");
+    assert.equal(cache.refreshCalls, 2, "the forced caller must render for real rather than settle for the join");
     assert.equal(viewerInstance.state.change?.text, "Landed during.");
 });
 

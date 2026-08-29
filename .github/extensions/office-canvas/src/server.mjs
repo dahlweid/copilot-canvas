@@ -147,6 +147,13 @@ export class ViewerInstance {
     #watcher = null;
     #refreshing = null;
 
+    // Counts change records as they are recorded. `changed` tells you a render
+    // happened; this tells you whether the record in `this.change` is still the
+    // one a given render was started for. A render that began before a record
+    // existed invoked `cache.refresh` before that edit landed, so its image
+    // cannot be shown to contain it however recently it finished.
+    #changeEpoch = 0;
+
     constructor({ cache, instanceId, workspacePath, log = () => {}, spawnFn = spawn, vendorDir = VENDOR_DIR }) {
         this.cache = cache;
         this.instanceId = instanceId;
@@ -297,8 +304,8 @@ export class ViewerInstance {
     async refresh({ force = false, change } = {}) {
         if (!this.doc) throw new DocumentError("not_open", "No document is open in this canvas.");
 
-        // Recorded before anything else can publish state. Both paths below
-        // re-assign it with a render key, so this bare assignment matters for
+        // Recorded before anything else can publish state. The render below
+        // re-assigns it with a render key, so this bare assignment matters for
         // one reason only: it *invalidates the previous overlay immediately*.
         // Without it, an in-flight refresh that turns out to be a no-op would
         // broadcast state while `this.change` still held the last edit's record,
@@ -307,30 +314,50 @@ export class ViewerInstance {
         // it is dropped by #changeIfCurrent, which is the safe direction:
         // stamping it with the *current* key here would instead publish the new
         // edit's text over the pre-edit render.
-        if (change !== undefined) this.change = change;
+        if (change !== undefined) {
+            this.change = change;
+            this.#changeEpoch += 1;
+        }
 
         if (this.#refreshing) {
             const joined = await this.#refreshing;
-            // Only a refresh that actually re-rendered carries this edit. One that
-            // turned out to be a no-op returned early without advancing `this.doc`,
-            // so the key here is still the *pre-edit* render -- and stamping
-            // against it publishes this edit's text over the previous image, which
-            // is the exact hazard named above arriving through the other door.
-            // Left unstamped the record is dropped by #changeIfCurrent, which is
-            // the safe direction.
-            if (joined.changed) {
-                if (change !== undefined) {
-                    this.#stampChange(this.doc?.key ?? null);
-                    this.#broadcast("reloaded", { ...this.state, restorePage: this.lastPage });
-                }
-                return joined;
-            }
-            // A forced caller needs a render that includes its edit, and the no-op
-            // it joined did not produce one. Returning here would drop the render
-            // as well as the overlay, so fall through and refresh for real.
+            // Only a caller with no opinion about the overlay may settle for a
+            // joined render, and `changed` is what rules out a no-op: one that
+            // returned early without advancing `this.doc` leaves the key at the
+            // pre-edit render.
+            //
+            // A caller *with* a record may never settle for one, and the reason
+            // is stronger than "usually unsafe" -- it is never provable. The
+            // joined render invoked `cache.refresh` before this record existed,
+            // so it read the file at some moment we cannot observe and may
+            // predate this edit. `changed` says a render happened; it does not
+            // say which. On two rapid edits -- A lands, its refresh starts, B
+            // lands and joins it -- the join reports `changed: true` for an
+            // image that is post-A and pre-B, and B's overlay lands on A's page.
+            //
+            // So this branch deliberately does not test the record against the
+            // render. It was written that way first and the condition could
+            // never be false: a render already in flight always began at an
+            // earlier epoch than a record created by the call that joins it.
+            // A guard with no reachable failure is worse than none, because it
+            // reads as protection.
+            if (joined.changed && change === undefined) return joined;
+            // Fall through. A forced caller renders for real, which is what makes
+            // its record safe to stamp -- the overlay is not lost, it is paid for
+            // with the one render that can be proven to contain the edit. An
+            // unforced caller returns the joined render with the record left
+            // unstamped, and #changeIfCurrent drops it: losing an overlay is the
+            // safe direction, drawing one over the wrong image is not.
             if (!force) return joined;
         }
 
+        // Recorded before `cache.refresh` is invoked, which is the moment this
+        // render's view of the file is fixed. If a newer record arrives while it
+        // is in flight, `this.change` below is no longer the record this render
+        // was started for, and stamping it would tie that newer edit to this
+        // older image -- the same stale pairing the join above refuses, reached
+        // from the opposite side.
+        const startedEpoch = this.#changeEpoch;
         this.#refreshing = (async () => {
             const docPath = this.doc.path;
             const result = await this.cache.refresh(docPath);
@@ -339,7 +366,12 @@ export class ViewerInstance {
             this.doc = result;
             this.status = "ready";
             this.error = null;
-            if (change !== undefined) this.#stampChange(result.key);
+            // `#stampChange` stamps whatever `this.change` currently holds, which
+            // is deliberate -- but a caller that arrived while this render was in
+            // flight has already overwritten it with a newer record. Stamping then
+            // would tie *their* edit to *this* render, which is the same stale
+            // pairing the join above refuses, reached from the opposite side.
+            if (change !== undefined && this.#changeEpoch === startedEpoch) this.#stampChange(result.key);
             await this.#watcher.acknowledge();
             this.#pushState();
             this.#broadcast("reloaded", { ...this.state, restorePage: this.lastPage });

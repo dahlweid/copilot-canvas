@@ -12,6 +12,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { candidatePages, planChangeMarks } from "../../src/ui/change-plan.mjs";
+import { MIN_PARTIAL_CHARS } from "../../src/ui/locate-text.mjs";
 
 // A text item as pdf.js reports it. Only `str` matters to the locator; the
 // transform is what the viewer later turns into quads.
@@ -22,6 +23,14 @@ const painted = (number, ...lines) => ({ number, items: lines.map(item) });
 
 /** A page that has not painted, so it can answer nothing. */
 const blank = (number) => ({ number, items: null });
+
+// A paragraph long enough that each half still clears MIN_PARTIAL_CHARS, split at
+// the page break. Composed so the two halves concatenate to the whole -- the
+// assertion below would be worthless if the fixture merely put related text on
+// two pages.
+const STRADDLE_HEAD = "the replacement paragraph that ";
+const STRADDLE_TAIL = "runs across the page break";
+const STRADDLE_FULL = STRADDLE_HEAD + STRADDLE_TAIL;
 
 const record = (over = {}) => ({
     op: "replace_text",
@@ -57,14 +66,60 @@ test("the page before the reported one is marked when the text is there", () => 
     );
 });
 
-test("a paragraph split across the break is marked on both halves", () => {
-    const marks = planChangeMarks(
-        record({ text: "the replacement paragraph" }),
-        [painted(1, "x"), painted(2, "the replacement paragraph"), painted(3, "the replacement paragraph")],
+test("a paragraph genuinely split across the break is marked on both halves", () => {
+    // The real straddle: a prefix ends page 2, the suffix begins page 3, and
+    // neither page carries the whole search text. `locateText`'s partial matching
+    // is what covers this, so the statuses are asserted and not just the page
+    // numbers -- marking [2, 3] is reachable with partial matching deleted
+    // entirely, by any fixture that puts the complete text on both pages.
+    const marks = planChangeMarks(record({ text: STRADDLE_FULL }), [
+        painted(1, "x"),
+        painted(2, STRADDLE_HEAD),
+        painted(3, STRADDLE_TAIL),
+    ]);
+    assert.ok(
+        STRADDLE_HEAD.trim().length >= MIN_PARTIAL_CHARS && STRADDLE_TAIL.length >= MIN_PARTIAL_CHARS,
+        "precondition: each half must clear the partial-match floor, or this measures the fallback instead",
     );
     assert.deepEqual(
-        marks.map((m) => m.number),
-        [2, 3],
+        marks.map((m) => [m.number, m.found?.status]),
+        [
+            [2, "partial"],
+            [3, "partial"],
+        ],
+    );
+});
+
+test("a split whose halves are each too short to match falls back to a page marker", () => {
+    // Partial matching has a floor, so a short paragraph broken across the page
+    // break is genuinely unlocatable. The requirement is that it degrades to the
+    // page-level marker rather than marking nothing: something did change on the
+    // reported page and the user is entitled to know which page.
+    const half = "a".repeat(MIN_PARTIAL_CHARS - 1);
+    const marks = planChangeMarks(record({ text: `${half} ${half}` }), [painted(2, `${half} `), painted(3, half)]);
+    assert.deepEqual(marks, [{ number: 3, found: null }]);
+});
+
+test("the same text on two pages is marked on both, which over-marks by design", () => {
+    // Not a straddle -- this is one paragraph's text appearing whole on two pages,
+    // a running header or a repeated heading. Both are `located`, so both are
+    // boxed, and at most one of them is the edit.
+    //
+    // Recorded as a known over-mark rather than fixed. The alternative is to pick
+    // one, and nothing here distinguishes them: `page` narrows the field to two
+    // candidates and says nothing about which. Picking would assert a position the
+    // code never determined, which is the rule this module exists to keep.
+    const marks = planChangeMarks(record(), [
+        painted(1, "x"),
+        painted(2, "the replacement paragraph"),
+        painted(3, "the replacement paragraph"),
+    ]);
+    assert.deepEqual(
+        marks.map((m) => [m.number, m.found?.status]),
+        [
+            [2, "located"],
+            [3, "located"],
+        ],
     );
 });
 

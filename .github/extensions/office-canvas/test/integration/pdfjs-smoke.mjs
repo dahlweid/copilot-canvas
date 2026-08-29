@@ -188,12 +188,18 @@ try {
         assert.equal(after.change?.text, record.text, "the record did not reach the viewer state");
     });
 
-    await check("the marking plan finds a real record on the page it names", async () => {
+    await check("the locator and the plan agree on text Word actually wrote", async () => {
         // The one thing here that is not a pdf.js measurement: the locator and
         // the plan are fed the record from the edit above and a page carrying
         // the text Word actually wrote. It cannot prove pdf.js reports that text
         // -- only a browser can -- but it does prove the two halves agree on a
-        // record that came out of Word rather than out of a fixture.
+        // record that came out of Word rather than out of a fixture, which is
+        // what would go red on a ligature, a smart quote or a non-ASCII glyph.
+        //
+        // The page number below is fabricated, and the name of this check says so
+        // by not mentioning pages: `page: 2` is chosen to match the synthetic page
+        // list, not read from the export. Nothing here measures where Word put the
+        // paragraph.
         const read = await cache.readStructure(fixture);
         const edited = read.paragraphs.find((p) => p.text.includes(MARKER));
         assert.ok(edited, "the edited paragraph was not found on re-read");

@@ -256,24 +256,19 @@ $mutants = @(
 
     @{ name = 'an omitted change is treated as a request to clear'
        file = '.github/extensions/office-canvas/src/server.mjs'; at = 'repo'
-       from = '        if (change !== undefined) this.change = change;'
-       to   = '        this.change = change ?? null;' }
+       from = '        if (change !== undefined) {
+            this.change = change;'
+       to   = '        {
+            this.change = change ?? null;' }
 
     @{ name = 'an explicit null is stamped into a record instead of staying cleared'
        file = '.github/extensions/office-canvas/src/server.mjs'; at = 'repo'
        from = '        if (this.change) this.change = { ...this.change, docKey };'
        to   = '        this.change = { ...this.change, docKey };' }
 
-    @{ name = 'a record arriving during an in-flight refresh is swallowed'
-       file = '.github/extensions/office-canvas/src/server.mjs'; at = 'repo'
-       from = '                if (change !== undefined) {
-                    this.#stampChange(this.doc?.key ?? null);'
-       to   = '                if (false) {
-                    this.#stampChange(this.doc?.key ?? null);' }
-
     @{ name = 'the record is never tied to the render it describes'
        file = '.github/extensions/office-canvas/src/server.mjs'; at = 'repo'
-       from = '            if (change !== undefined) this.#stampChange(result.key);'
+       from = '            if (change !== undefined && this.#changeEpoch === startedEpoch) this.#stampChange(result.key);'
        to   = '            /* not stamped */' }
 
     # --- the change bar -------------------------------------------------------
@@ -430,10 +425,17 @@ $mutants = @(
     # that refresh actually re-rendered. A no-op returns without advancing
     # `this.doc`, so stamping publishes the new edit's text over the pre-edit
     # image -- the hazard the comment above `refresh` names, by the other door.
-    @{ name = 'a joined refresh stamps its record without checking it re-rendered'
+    @{ name = 'a joined refresh settles for a render that predates its edit'
        file = 'src/server.mjs'
-       from = '            if (joined.changed) {'
-       to   = '            if (true) {' }
+       from = '            if (joined.changed && change === undefined) return joined;'
+       to   = '            if (joined.changed) return joined;' }
+
+    # ...and the same conjunction from the other side: a caller with no record
+    # may still only settle for a render that happened.
+    @{ name = 'a joined refresh settles for a no-op'
+       file = 'src/server.mjs'
+       from = '            if (joined.changed && change === undefined) return joined;'
+       to   = '            if (change === undefined) return joined;' }
 
     # ...and the other half: a forced caller that joined a no-op has no render
     # containing its edit, so it must refresh for real rather than return it.
@@ -441,6 +443,24 @@ $mutants = @(
        file = 'src/server.mjs'
        from = '            if (!force) return joined;'
        to   = '            return joined;' }
+
+    # The stale pairing reached from the render's own side. `#stampChange` stamps
+    # whatever `this.change` holds, and a caller that joined this render has
+    # already overwritten it with a newer record -- which this image cannot
+    # contain, because it invoked `cache.refresh` before that record existed.
+    @{ name = 'a completed render stamps whatever record it finds, however new'
+       file = 'src/server.mjs'
+       from = '            if (change !== undefined && this.#changeEpoch === startedEpoch) this.#stampChange(result.key);'
+       to   = '            if (change !== undefined) this.#stampChange(result.key);' }
+
+    # Partial matching is the whole of the straddle handling: with it gone a
+    # paragraph broken across the break is found on neither page. The change-plan
+    # straddle fixture must be able to see that, which a fixture carrying the
+    # complete text on both pages cannot -- it stays `located` either way.
+    @{ name = 'a straddling paragraph is not matched by its halves'
+       file = 'src/ui/locate-text.mjs'
+       from = '    const limit = Math.min(needle.length - 1, text.length);'
+       to   = '    const limit = -1;' }
 
     # `vendor_missing` names a cause and prescribes a remedy. Reporting it for a
     # read that failed for any other reason sends the reader after the wrong

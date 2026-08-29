@@ -213,10 +213,12 @@ then rejected at install. That is corrected, and `test/unit/validator.test.mjs` 
 boundary from both sides so the values cannot be "tidied" back to `1024*1024`.
 
 **Fonts are a non-issue; the worker is the constraint.** The predicted blocker was pdf.js's
-binary `standard_fonts/`. Probing a Word-exported PDF found 8 `/FontFile*` entries, 4
-subset-tagged `BaseFont`s, zero standard-14 references and Identity-encoded CID fonts — every
-font is embedded, so `standard_fonts/` (780 KB binary) and `cmaps/` (1.17 MB, 169 binary
-files) never need to ship, and C4's binary refusal never fires. What does bite is
+binary `standard_fonts/`. Probing one Word-exported PDF found 8 `/FontFile*` entries, 4
+subset-tagged `BaseFont`s, zero standard-14 references and Identity-encoded CID fonts — that
+document embeds every font it uses, so `standard_fonts/` (780 KB binary) and `cmaps/` (1.17 MB,
+169 binary files) are not shipped, and C4's binary refusal never fires. One document does not
+establish the general case and the probe does not claim it; see `spikes/pdfjs/FINDINGS.md` §1
+for the scope kept and the risk accepted. What does bite is
 `pdf.worker.min.mjs` at **1,262,398 bytes**, which exceeds the *per-file* cap on both paths.
 It is UTF-8 JavaScript, so it is not refused for being binary — it is simply too large for any
 single file. §15.5's design therefore splits the worker across three committed parts under

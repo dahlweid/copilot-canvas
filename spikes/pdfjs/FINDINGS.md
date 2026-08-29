@@ -11,7 +11,8 @@ PDFs.
 envelope and the **binary font files would be the blocker**. Measurement inverted
 both.
 
-**Fonts are a non-issue.** A Word-exported PDF embeds everything it uses:
+**Fonts are a non-issue.** The Word-exported PDF measured — `demo.docx`, one
+document — embedded everything it used:
 
 | Metric | Value |
 | --- | --- |
@@ -21,9 +22,14 @@ both.
 | Type0/CID fonts | 2, all Identity encoding |
 | Non-Identity CMaps | 0 |
 
-So pdf.js's `standard_fonts/` (780 KB) and `cmaps/` (1.17 MB, 169 binary files)
-never need to ship — which also removes the binary-file problem entirely, since
-C4 refuses binaries.
+`probe-pdf-fonts.mjs` states its own scope — "for THIS document" — and that scope
+is kept here deliberately: one document cannot establish what Word does with
+every font, and nothing below needs it to. So pdf.js's `standard_fonts/` (780 KB)
+and `cmaps/` (1.17 MB, 169 binary files) are not shipped — which also removes the
+binary-file problem entirely, since C4 refuses binaries. Were some other document
+to reference a standard-14 font, the consequence would be a fallback face in the
+rendered page, not a failure to render; that is the risk the narrow claim leaves
+open, and it is accepted rather than unmeasured-and-unmentioned.
 
 Scanning all 446 font faces in `C:\Windows\Fonts` found **none that
 unambiguously forbids embedding**. Exactly one, `ENGR.TTF`, sets
@@ -243,11 +249,18 @@ would keep, not what it did.
 Issue #9 lists an `ENGR.TTF` export probe and a not-installed-font probe. Neither
 was run, and this is a decision rather than an omission.
 
-`standard_fonts/` and `cmaps/` are not in the package — Word embeds every font as
-a subset, so pdf.js never reaches for a standard font file (finding 1). No result
-either probe could produce changes a byte of what ships: a surprising result
-would tell us something about Word's embedding, not about the viewer, and there
-is no code path it would send us to. A probe that cannot change a decision is not
+`standard_fonts/` and `cmaps/` are not in the package. In the one document
+measured, Word embedded **every font it used** as a subset — 8 `/FontFile*`, zero
+standard-14 references — so pdf.js never reached for a standard font file
+(finding 1). That is a claim about `demo.docx`, not about Word: one document
+cannot establish what Word does with every font, and `probe-pdf-fonts.mjs` says
+"for THIS document" in its own conclusion.
+
+The decision does not rest on the general claim, which is why it is not worth
+widening the probe. No result either font probe could produce changes a byte of
+what ships: the directories are already absent, a surprising result would tell us
+something about Word's embedding rather than about the viewer, and there is no
+code path it would send us to. A probe that cannot change a decision is not
 evidence, it is cost — and on a machine with a dozen concurrent Word instances it
 would produce numbers needing a caveat longer than the finding.
 
