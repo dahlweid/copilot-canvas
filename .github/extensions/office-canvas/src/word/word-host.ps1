@@ -368,16 +368,58 @@ function Stop-Word {
     $script:DocArgs = @{}
     if ($null -ne $script:App) {
         if ($null -ne $script:OwnedPid) {
-            try { $script:App.Quit($WD_DO_NOT_SAVE_CHANGES) } catch { }
+            # No argument, deliberately. `Application.Quit` takes its parameters
+            # as `VARIANT*`, and Windows PowerShell 5.1 -- which is what
+            # `powershell.exe` gives, and what this host runs under -- refuses to
+            # bind a by-value argument to one:
+            #
+            #   Argument "1" must be System.Management.Automation.PSReference.
+            #   Use [ref].
+            #
+            # Measured, on both the literal `0` and a variable holding it: it
+            # throws every time, and the process is still alive 21 s later. There
+            # is no literal-versus-variable distinction, which is the trap --
+            # under PowerShell 7.6.5 *none* of the three forms throw, so a
+            # reduction run in a 7.x shell clears this and is worthless.
+            # `Quit()` and `Quit([ref]$WD_DO_NOT_SAVE_CHANGES)` both bind under
+            # 5.1 and exit within 3 s; the no-argument form takes the same
+            # default, so it is the smaller of the two.
+            #
+            # Not to be generalised to `$doc.Close($WD_DO_NOT_SAVE_CHANGES)`
+            # above: that takes a by-value `VARIANT` too, and was *measured* not
+            # to throw under 5.1. Why the two differ is unknown and is not worth
+            # a guess -- which is exactly why neither may be inferred from the
+            # other. Do not "consistency-fix" `Close` to take no argument: with
+            # none, Word prompts on a dirty document, and a modal prompt in a
+            # hidden instance is the silent hang this host exists to avoid.
+            try { $script:App.Quit() } catch { }
         }
         try { [Runtime.InteropServices.Marshal]::ReleaseComObject($script:App) | Out-Null } catch { }
         $script:App = $null
     }
-    # Belt and braces: if the instance we own somehow survived Quit, end it.
+    # The instance we own, if Quit did not take it. Until the call above was
+    # fixed this was not a fallback but the entire teardown: the Quit threw into
+    # its swallowing catch on every single run, so no instance this host ever
+    # started got a graceful exit -- every one was killed here. The leak
+    # assertion in edit-smoke stayed green throughout, rescued by the very line
+    # whose comment called it redundant. A green teardown assertion is weak
+    # evidence while the teardown swallows.
+    #
+    # The wait is a poll rather than the fixed 300 ms it used to be, and that is
+    # not tidying: measured through the full suite, `Quit()` returns before Word
+    # has gone, so with the old fixed wait the corrected call still ended in a
+    # kill and the fix had *no observable effect at all*. Isolated in both
+    # directions -- `Quit()` with the poll exits on its own and this branch never
+    # fires; the old by-value call with the same poll still throws and still
+    # needs the kill. Both halves are load-bearing.
     if ($null -ne $script:OwnedPid) {
         try {
-            Start-Sleep -Milliseconds 300
-            $p = Get-Process -Id $script:OwnedPid -ErrorAction SilentlyContinue
+            $p = $null
+            for ($i = 0; $i -lt 30; $i++) {
+                Start-Sleep -Milliseconds 100
+                $p = Get-Process -Id $script:OwnedPid -ErrorAction SilentlyContinue
+                if ($null -eq $p -or $p.ProcessName -ne 'WINWORD') { break }
+            }
             if ($null -ne $p -and $p.ProcessName -eq 'WINWORD') { $p.Kill() }
         } catch { }
         $script:OwnedPid = $null
