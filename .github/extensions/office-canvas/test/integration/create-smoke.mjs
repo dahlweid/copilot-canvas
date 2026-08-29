@@ -246,14 +246,64 @@ try {
     });
 
     await check("autocorrect was suppressed on the instance that authored it", () => {
-        // Asserted rather than assumed. Measured (probe-autocorrect.ps1) the
-        // settings are per-*process*: switched off on instance A, a second
-        // process reads them still on, and HKCU carries no value before, during
-        // or after. So suppression is safe on an instance we started, and is
-        // deliberately skipped on one we merely attached to -- which is the
-        // user's own Word. This suite always starts its own, so `false` here
-        // means the suppression path did not run.
-        assert.equal(created.autoCorrect.suppressed, true, `not suppressed: ${created.autoCorrect.reason}`);
+        // Asserted rather than assumed, and `suppressed` is a READ-BACK: the host
+        // records the prior values, writes false, then reads all five and
+        // compares. It used to mean "five assignments did not throw", which is a
+        // write reporting itself as a read and could not have gone red if Word
+        // had accepted an assignment without applying it.
+        //
+        // RETRACTED, and this comment is the reason the retraction matters. It
+        // used to say the settings are per-*process* -- switched off on instance
+        // A, a second process reads them still on -- and concluded suppression
+        // cannot reach the user's Word. The observation reproduces; the
+        // conclusion is false. That probe read B **while A was still alive**, and
+        // the value is not flushed until the writer exits, so a concurrent read
+        // cannot tell isolation from persistence-with-lag. Re-measured
+        // sequentially (set, QUIT, read a fresh instance) all five come back
+        // changed: they persist for the user.
+        //
+        // So the host now captures and restores around the authoring call, and
+        // the assertion below has two halves. `restored` is the one carrying the
+        // user-safety claim -- a suppression proven and a restoration unproven is
+        // the same defect one step later.
+        //
+        // What this check CANNOT see, stated so it is not mistaken for full
+        // cover: this machine's found state is already all-false, which is also
+        // what suppression writes, so prior == target and a skipped write leaves
+        // the right value behind. Both halves were proven falsifiable by
+        // mutating to a *wrong* value rather than a no-op -- `not_applied
+        // (CorrectInitialCaps)` and `not_restored (ReplaceText)` -- but the case
+        // the restore actually exists for is a user whose autocorrect is ON, and
+        // that case cannot occur here. It is manufactured in
+        // spikes/isolation/probes/probe-autocorrect-restore.mjs, which sets all
+        // five ON, runs this tool, and reads a fresh instance afterwards.
+        // Both messages name the settings the host reported, not just the reason.
+        // A red that says only `not_applied` proves the check can fail; it does
+        // not prove it failed for the thing it is watching, and those are
+        // different claims. The list is taken from the report rather than
+        // restated here, so it cannot drift from what the host actually checks.
+        const naming = (label, why, settings) =>
+            `${label}: ${why ?? "no reason given"}${settings?.length ? ` (${settings.join(", ")})` : ""}`;
+
+        assert.equal(
+            created.autoCorrect.suppressed,
+            true,
+            naming("not suppressed", created.autoCorrect.reason, created.autoCorrect.settings),
+        );
+        assert.equal(
+            created.autoCorrect.restored,
+            true,
+            naming("not restored", created.autoCorrect.restoreReason, created.autoCorrect.restoreSettings),
+        );
+
+        // The capture is what makes a restore possible at all, so its absence is
+        // a distinct failure from a restore that ran and did not take.
+        assert.ok(created.autoCorrect.prior, "no prior values were captured");
+        assert.equal(
+            Object.keys(created.autoCorrect.prior).length,
+            5,
+            `captured ${Object.keys(created.autoCorrect.prior).length} prior values, expected all 5`,
+        );
     });
 
     await check("text goes in verbatim, with no autocorrect substitution", async () => {

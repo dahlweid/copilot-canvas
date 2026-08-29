@@ -106,6 +106,39 @@ export const CREATABLE = new Set([".docx"]);
 export const creatableList = () => [...CREATABLE].join(", ");
 
 /**
+ * The single place that decides which autocorrect fields cross into a tool
+ * result.
+ *
+ * This shape was previously written out as an object literal at each of its
+ * three call sites, listing `suppressed` and `reason`. When the host grew
+ * `restored` -- the field that carries the user-safety claim, since these
+ * settings persist for the user and a disable we fail to undo is permanent --
+ * every site kept forwarding the old two and dropped it. The value arrived at
+ * this boundary and stopped, and the host-side result was correct throughout.
+ *
+ * That is the same failure as `asToolError` forwarding only `code`, `message`
+ * and `data`: a field set below a boundary that nothing above it can observe.
+ * It was caught because create-smoke asserts on the tool result rather than on
+ * the host response -- an assertion one layer lower would have passed while no
+ * caller could see the field.
+ *
+ * So the list lives here once and the call sites derive from it. Adding a field
+ * to the host and forgetting a site is no longer possible.
+ */
+function reportedAutoCorrect(result) {
+    const ac = result?.autoCorrect ?? {};
+    return {
+        suppressed: Boolean(ac.suppressed),
+        reason: ac.reason ?? null,
+        restored: Boolean(ac.restored),
+        restoreReason: ac.restoreReason ?? null,
+        settings: ac.settings ?? null,
+        restoreSettings: ac.restoreSettings ?? null,
+        prior: ac.prior ?? null,
+    };
+}
+
+/**
  * Maps the host's structured status onto typed errors.
  *
  * The host reports failure as a `status` on a successful response rather than by
@@ -296,10 +329,7 @@ export class DocumentAuthor {
                     // `document_unreadable`: a document may have been
                     // authored on this path, so the question the tool
                     // description tells callers to ask still has a subject.
-                    autoCorrect: {
-                        suppressed: Boolean(result.autoCorrect?.suppressed),
-                        reason: result.autoCorrect?.reason ?? null,
-                    },
+                    autoCorrect: reportedAutoCorrect(result),
                 },
             );
         }
@@ -333,10 +363,7 @@ export class DocumentAuthor {
                 {
                     created: true,
                     cause: err.code ?? null,
-                    autoCorrect: {
-                        suppressed: Boolean(result.autoCorrect?.suppressed),
-                        reason: result.autoCorrect?.reason ?? null,
-                    },
+                    autoCorrect: reportedAutoCorrect(result),
                 },
             );
         }
@@ -363,12 +390,10 @@ export class DocumentAuthor {
         return {
             created: { path: docPath, description: describeSpec(spec), blocks: spec.blocks.length },
             // Whether autocorrect was switched off on the instance that authored
-            // this, and if not, why not. Surfaced so a caller can assert it
-            // rather than take it on trust.
-            autoCorrect: {
-                suppressed: Boolean(result.autoCorrect?.suppressed),
-                reason: result.autoCorrect?.reason ?? null,
-            },
+            // this, whether the user's own settings were put back afterwards, and
+            // if either failed, why. Surfaced so a caller can assert it rather
+            // than take it on trust.
+            autoCorrect: reportedAutoCorrect(result),
             // No predicted paragraph count is reported. An earlier version
             // returned one and it was wrong by construction: it modelled Word's
             // COM `Paragraphs.Count`, which counts a row-end mark per table row,

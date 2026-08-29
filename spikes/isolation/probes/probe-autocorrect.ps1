@@ -449,6 +449,34 @@ try {
         }
 
         # --- C: is switching them off scoped to one instance? ----------------
+        #
+        # RETRACTED. This arm concluded "per-process": A switches them off, B
+        # starts and still reads them on, therefore our suppression cannot reach
+        # the user's Word. The observation reproduces. The conclusion is false.
+        #
+        # The defect is one line: B is started **while A is still alive**. These
+        # values are not flushed until the writing instance exits, so a
+        # concurrent reader sees the pre-write value whether they are per-process
+        # or per-user. Isolation and persistence-with-lag are the *same
+        # observation* here, and this arm cannot separate them -- it was cited
+        # for exactly the property its own construction made invisible.
+        #
+        # Re-measured sequentially (set in A, QUIT A, then read a fresh
+        # instance): all five come back changed. They are per-user and they
+        # persist. Suppression therefore edits the user's own Word permanently,
+        # which is why word-host.ps1 now captures and restores around the
+        # authoring call rather than switching them off at startup.
+        #
+        # The registry readings below are also evidence of nothing. The HKCU
+        # Word\Options key genuinely is absent, but that is simply not where
+        # these live, so its absence never supported the isolation reading.
+        #
+        # Arm F's finding stands and is untouched: the baits rewrite 0 of 6 with
+        # every setting ON, so a verbatim bait is a forward guard, not proof of
+        # suppression.
+        #
+        # The sequential measurement lives in probe-autocorrect-restore.mjs,
+        # which also proves the restore persists for the user's next Word.
         'C' {
             $key = 'HKCU:\Software\Microsoft\Office\16.0\Word\Options'
             function Show-Registry([string] $label) {

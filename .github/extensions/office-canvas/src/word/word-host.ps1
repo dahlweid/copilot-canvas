@@ -21,16 +21,26 @@
 #     reader trusts without checking.
 #   * A Word instance we did not create is never quit and never hidden.
 #   * Global Application.Options are only ever modified on an instance we
-#     started. This line used to say they are never modified, which
-#     `Suppress-AutoCorrect` made false. The reason is *not* that they persist
-#     for the user: measured, they are per-process -- toggled off in one
-#     instance, a fresh second process still read the original values, and the
-#     HKCU Word\Options key stayed absent throughout, including after both
-#     instances quit. The reason is that a Word we merely attached to *is* the
-#     user's Word, and changing it changes what they are looking at right now.
-#     So the ownership gate is the thing doing the work here; the per-process
-#     isolation is a measured property of Word we benefit from, not a guarantee
-#     we own.
+#     started, and are put back before the command that changed them returns.
+#     This line used to say they are never modified, which `Suppress-AutoCorrect`
+#     made false; it then said the change was safe because the settings are
+#     per-process. **That was wrong, and it was wrong in the dangerous
+#     direction.** Measured sequentially (set, QUIT the writer, then read from a
+#     fresh instance): all five settings come back changed. They persist for the
+#     user.
+#
+#     The earlier per-process result was not careless -- it is what you get from
+#     the natural form of the test. It read the second instance *while the first
+#     was still alive*, and the value is not flushed until the writer exits, so a
+#     concurrent reader sees the stale value and it looks exactly like isolation.
+#     The discriminator is quitting the writer first. The HKCU Word\Options key
+#     really does stay absent throughout; that key is simply not where these
+#     live, so its absence was evidence of nothing.
+#
+#     Two things now do the work, and the ownership gate is only one of them: we
+#     touch these on an owned instance ONLY, and we restore the captured prior
+#     values in a `finally` before returning. Restoring at teardown instead would
+#     be defeated by our own quit path, which kills the host after 20 s.
 
 param(
     # Directory used to record which WINWORD process this host owns, so an
@@ -456,45 +466,175 @@ function Resolve-Doc($docId) {
 # Two things were measured before this was written
 # (spikes/isolation/probes/probe-autocorrect.ps1, arms C and A/B/E/F/G/H):
 #
-#   1. The settings are per *process*. Switched off on one hidden instance and
-#      read back from a second, independent WINWORD while the first still held
-#      them off, all five read True. HKCU:\Software\Microsoft\Office\16.0\Word\
-#      Options read <absent> before, during and after -- including after both
-#      instances had quit. They are not per-user and they are not persisted.
-#   2. Autocorrect never fired on any programmatic insertion tested: 0 of 6 bait
-#      lines rewritten across Range.Text assignment and Selection.TypeText, typed
-#      whole and character by character, with every setting on. The one arm that
-#      rewrote anything (3 of 6) was an explicit Content.AutoFormat() call, which
-#      this host never makes.
+#   1. RETRACTED, and it was the load-bearing one. The original arm C concluded
+#      the settings are per *process* -- switched off on one hidden instance and
+#      read back from a second, independent WINWORD, all five read True -- and
+#      that HKCU:\Software\Microsoft\Office\16.0\Word\Options read <absent>
+#      throughout. Both observations are reproducible. The conclusion drawn from
+#      them is false.
+#
+#      Arm C read the second instance WHILE THE FIRST STILL HELD THEM OFF. The
+#      value is not flushed until the writer exits, so a concurrent reader sees
+#      the stale value, which is indistinguishable from isolation. Re-measured
+#      sequentially -- set, QUIT the writer, then read a fresh instance -- all
+#      five come back changed. **They persist for the user.** The HKCU key is
+#      absent because that is not where they live; its absence was evidence of
+#      nothing and should never have been cited as if it were.
+#
+#      A concurrent read cannot test persistence. That is the whole defect, and
+#      it is the same shape as the share-column error: an instrument that could
+#      not observe the property it was being cited for, so nothing went red.
+#
+#   2. Stands. Autocorrect never fired on any programmatic insertion tested: 0 of
+#      6 bait lines rewritten across Range.Text assignment and Selection.TypeText,
+#      typed whole and character by character, with every setting on. The one arm
+#      that rewrote anything (3 of 6) was an explicit Content.AutoFormat() call,
+#      which this host never makes.
 #
 # So this is belt and braces rather than the mechanism that makes authoring
-# correct -- but (2) is a statement about today's Word, and five property writes
-# is a cheap way to stop depending on it.
+# correct -- (2) is what actually keeps text verbatim today, and it is a
+# statement about today's Word rather than a guarantee.
 #
-# Finding (1) is also why this is gated on ownership. Per-process means an
-# instance we merely attached to is the user's own running Word, and switching
-# their autocorrect off underneath them is exactly the thing the header rule
-# forbids. On an attached instance the settings are left alone and (2) carries
-# the correctness on its own.
+# The retraction of (1) is why this no longer runs at Initialize-Word and simply
+# stays off. Because the settings persist, leaving them off leaks out of our
+# process and silently changes the user's own Word -- which it demonstrably did:
+# a fresh instance on this machine read all five False before this session
+# touched anything, and our own runs are a sufficient cause. So the pair is now
+# capture-disable / restore, wrapped around the authoring call in a `finally`.
+#
+# Restoring at teardown instead was considered and rejected: our own quit path
+# kills the host after 20 s, so a restore hung off teardown is skipped by the one
+# failure mode we have already measured.
+#
+# Ownership still gates it, for the original reason -- an attached instance is
+# the user's Word and must not be touched even briefly.
 #
 # The property names are the ones that exist on this Word, taken from the probe
 # rather than from memory. A misspelled COM property reads $null silently and
 # throws only on assignment, so three plausible names -- ReplaceHyphens,
 # ReplaceHyphensWithDash, CorrectTwoInitialCapitals -- cost a run before this
 # list was pinned to something measured.
-function Suppress-AutoCorrect {
-    if ($null -eq $script:OwnedPid) { return @{ suppressed = $false; reason = 'attached_instance' } }
+# The settings are READ BACK, and `suppressed = $true` means Word reports them
+# off -- not merely that five assignments did not throw. The difference is the
+# whole value of this function. An earlier version returned $true on "nothing
+# threw", and create-smoke.mjs called it "the settings read-back check" in the
+# comment that discharges the bait assertion onto it. Neither the flag nor the
+# baits could have gone red if Word had accepted an assignment without applying
+# it: the baits rewrite 0 of 6 with every setting ON (line ~90 there), so they
+# are inert on this machine by construction. That left the PR's headline claim
+# resting on an inference.
+#
+# Three outcomes, split because the platform distinguishes them and they mean
+# different things. Assignment threw -> `not_settable`, the name is wrong or
+# refused. Read returned a value that is not $false -> `not_applied`, we
+# observed it is still on. Read threw -> `not_verifiable`, we observed nothing
+# at all, which is not the same as observing failure and must not borrow its
+# name.
+#
+# Compare against $false explicitly. A misspelled COM property reads $null (see
+# above), and $null is falsy in PowerShell, so `if (-not $v)` would accept the
+# exact case the read-back exists to catch.
+#
+# WHAT THE READ-BACKS CANNOT SEE, measured rather than reasoned about. On this
+# machine the found state is already all-$false, which is also the value the
+# disable writes. prior == target, so a write that is SKIPPED ENTIRELY leaves
+# the right value behind and both read-backs stay green. Mutation-checking with
+# a no-op is therefore vacuous here, and the checks that follow were instead
+# proven with a wrong value: assigning $true in the disable goes red with
+# `not_applied (CorrectInitialCaps)`, and restoring the inverse goes red with
+# `not_restored (ReplaceText)`.
+#
+# The vacuity is benign for the disable -- a setting already off that we fail to
+# write is still off. It is NOT benign for the restore, whose entire purpose is
+# the user whose autocorrect is ON, where prior != target and a skipped write
+# leaves our $false on their machine permanently. That case cannot occur on this
+# machine, so no test here can enter it.
+# spikes/isolation/probes/probe-autocorrect-restore.mjs manufactures it: it sets
+# all five ON, runs the tool, and reads a FRESH instance afterwards -- so it
+# observes what was persisted for the user's next Word rather than what the
+# authoring instance held. Both halves are falsifiable there, and both were
+# confirmed red under the same mutation.
+#
+# The names are listed ONCE, at $script:AC_SETTINGS, and every pass -- capture,
+# disable, verify, restore, verify-restore -- derives from it. Stating them
+# twice would let a later edit add a setting to one pass and not another, which
+# reads as suppressed while being unchecked, or gets disabled and never put back.
+$script:AC_SETTINGS = @(
+    @{ Container = { $script:App.AutoCorrect }; Names = @('ReplaceText', 'CorrectSentenceCaps', 'CorrectInitialCaps') },
+    @{ Container = { $script:App.Options };     Names = @('AutoFormatAsYouTypeReplaceQuotes', 'AutoFormatAsYouTypeReplaceSymbols') }
+)
+
+# Capture the current values, then switch autocorrect off, then verify. The
+# capture is not bookkeeping -- because these persist for the user, it is the
+# only record of what to put back, and it must happen before the first write.
+function Disable-AutoCorrect {
+    if ($null -eq $script:OwnedPid) { return @{ suppressed = $false; reason = 'attached_instance'; prior = @{} } }
+
+    $prior = @{}
+    $unreadable = @()
+    foreach ($g in $script:AC_SETTINGS) {
+        $c = & $g.Container
+        foreach ($name in $g.Names) {
+            try { $prior[$name] = $c.$name } catch { $unreadable += $name }
+        }
+    }
+    # Refuse to write anything we could not first record. Disabling a setting
+    # whose prior value we never captured is unrestorable, and it persists.
+    if ($unreadable.Count -gt 0) { return @{ suppressed = $false; reason = 'not_verifiable'; settings = $unreadable; prior = $prior } }
 
     $failed = @()
-    foreach ($name in @('ReplaceText', 'CorrectSentenceCaps', 'CorrectInitialCaps')) {
-        try { $script:App.AutoCorrect.$name = $false } catch { $failed += $name }
+    foreach ($g in $script:AC_SETTINGS) {
+        $c = & $g.Container
+        foreach ($name in $g.Names) {
+            try { $c.$name = $false } catch { $failed += $name }
+        }
     }
-    foreach ($name in @('AutoFormatAsYouTypeReplaceQuotes', 'AutoFormatAsYouTypeReplaceSymbols')) {
-        try { $script:App.Options.$name = $false } catch { $failed += $name }
+    if ($failed.Count -gt 0) { return @{ suppressed = $false; reason = 'not_settable'; settings = $failed; prior = $prior } }
+
+    $stuck = @()
+    foreach ($g in $script:AC_SETTINGS) {
+        $c = & $g.Container
+        foreach ($name in $g.Names) {
+            $value = $null
+            try { $value = $c.$name } catch { $unreadable += $name; continue }
+            if ($value -ne $false) { $stuck += $name }
+        }
     }
 
-    if ($failed.Count -gt 0) { return @{ suppressed = $false; reason = 'not_settable'; settings = $failed } }
-    return @{ suppressed = $true }
+    if ($unreadable.Count -gt 0) { return @{ suppressed = $false; reason = 'not_verifiable'; settings = $unreadable; prior = $prior } }
+    if ($stuck.Count -gt 0) { return @{ suppressed = $false; reason = 'not_applied'; settings = $stuck; prior = $prior } }
+    return @{ suppressed = $true; prior = $prior }
+}
+
+# Put back exactly what was captured, and verify that too. A restore that
+# silently fails leaves the user's Word altered permanently, which is the whole
+# defect this pair exists to close -- so it gets the same read-back treatment as
+# the disable, for the same reason.
+#
+# Every COM access here is guarded: this runs in a `finally`, so it may run with
+# Word already dead, and an exception raised here would replace the real error
+# with a confusing one. A restore we could not perform is reported, never thrown.
+function Restore-AutoCorrect($state) {
+    if ($null -eq $state -or $null -eq $state.prior -or $state.prior.Count -eq 0) {
+        return @{ restored = $false; reason = 'nothing_captured' }
+    }
+
+    $failed = @()
+    foreach ($g in $script:AC_SETTINGS) {
+        $c = $null
+        try { $c = & $g.Container } catch { $c = $null }
+        foreach ($name in $g.Names) {
+            if (-not $state.prior.ContainsKey($name)) { continue }
+            if ($null -eq $c) { $failed += $name; continue }
+            try { $c.$name = $state.prior[$name] } catch { $failed += $name; continue }
+            $value = $null
+            try { $value = $c.$name } catch { $failed += $name; continue }
+            if ($value -ne $state.prior[$name]) { $failed += $name }
+        }
+    }
+
+    if ($failed.Count -gt 0) { return @{ restored = $false; reason = 'not_restored'; settings = $failed } }
+    return @{ restored = $true }
 }
 
 function Initialize-Word {
@@ -551,7 +691,10 @@ function Initialize-Word {
     # Force-disable macros before any document is opened. We render documents
     # the user may not have authored.
     try { $script:App.AutomationSecurity = $MSO_AUTOMATION_SECURITY_FORCE_DISABLE } catch { }
-    $script:AutoCorrect = Suppress-AutoCorrect
+    # Autocorrect is deliberately NOT touched here. It used to be, and because
+    # the settings persist for the user that left their Word altered for the
+    # whole life of this host. It is now disabled and restored around each
+    # authoring call instead -- see Cmd-Create.
 }
 
 function Close-Doc($docId) {
@@ -1692,6 +1835,14 @@ function Cmd-Create($a) {
 
     Initialize-Word
 
+    # Autocorrect goes off HERE, not at Initialize-Word, and comes back on in the
+    # `finally` below. These settings persist for the user (see the header), so
+    # the window in which the user's Word is altered has to be the authoring call
+    # and nothing wider. Leaving them off for the life of the host -- which is
+    # what suppressing at init did -- means every idle minute is a minute of the
+    # user's Word silently changed.
+    $acState = Disable-AutoCorrect
+
     $doc = $null
     $result = $null
     try {
@@ -1737,7 +1888,6 @@ function Cmd-Create($a) {
             status         = 'created'
             paragraphCount = [int]$doc.Paragraphs.Count
             tableCount     = [int]$doc.Tables.Count
-            autoCorrect    = $script:AutoCorrect
             buildMs        = $buildMs
             saveMs         = $saveMs
         }
@@ -1809,7 +1959,29 @@ function Cmd-Create($a) {
             try { $doc.Close($WD_DO_NOT_SAVE_CHANGES) } catch { }
             try { [Runtime.InteropServices.Marshal]::ReleaseComObject($doc) | Out-Null } catch { }
         }
+
+        # The user's settings go back before this command returns, on every path
+        # including the failure one. This is the half that carries the safety
+        # claim: because these persist, a disable we do not undo is a permanent
+        # change to a machine we do not own.
+        #
+        # It lives here rather than in teardown deliberately. Our own quit path
+        # kills the host after 20 s, so cleanup hung off teardown is guarded by
+        # precisely the code most likely to be skipped.
+        $restore = Restore-AutoCorrect $acState
+        $report = @{}
+        foreach ($k in $acState.Keys) { $report[$k] = $acState[$k] }
+        $report.restored = $restore.restored
+        if ($restore.ContainsKey('reason'))   { $report.restoreReason = $restore.reason }
+        if ($restore.ContainsKey('settings')) { $report.restoreSettings = $restore.settings }
+        $script:AutoCorrect = $report
     }
+
+    # Set after the try/catch/finally, not inside it: the report is only complete
+    # once the `finally` above has run the restore, so building it with the
+    # document result would carry the disable outcome and claim nothing about
+    # whether the user's settings were put back.
+    $result.autoCorrect = $script:AutoCorrect
 
     # Close() returning is not proof the file is released. The next thing the
     # caller does is read this file back to confirm what was written, and a
