@@ -18,7 +18,7 @@ import { ViewerInstance } from "./src/server.mjs";
 import { artifactsRoot } from "./src/store.mjs";
 import { createIdleShutdown } from "./src/word-lifecycle.mjs";
 import { normalizeReadArgs, DEFAULT_READ_LIMIT, MAX_READ_LIMIT } from "./src/word/read-args.mjs";
-import { MAX_HEADING_LEVEL, MIN_HEADING_LEVEL, OPERATION_NAMES } from "./src/word/edit-intent.mjs";
+import { MAX_HEADING_LEVEL, MIN_HEADING_LEVEL, OPERATION_HELP, OPERATION_NAMES } from "./src/word/edit-intent.mjs";
 import { asToolError } from "./src/tool-error.mjs";
 
 /** instanceId -> ViewerInstance */
@@ -409,13 +409,6 @@ const readDocumentTool = {
         });
     },
 };
-
-const OPERATION_HELP = [
-    "replace_text — rewrite the paragraph's text, keeping its style.",
-    "insert_paragraph_after / insert_paragraph_before — add a new paragraph next to it.",
-    "delete_paragraph — remove it.",
-    "set_heading_level — make it a heading (1–9) or body text (0).",
-].join(" ");
 
 const editDocumentTool = {
     name: "edit_document",

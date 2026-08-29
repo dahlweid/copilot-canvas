@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import {
     describeIntent,
     EditIntentError,
+    OPERATION_HELP,
     MAX_HEADING_LEVEL,
     MIN_HEADING_LEVEL,
     OPERATION_NAMES,
@@ -200,4 +201,34 @@ test("validateIntent enforces exactly the bound the schema declares", () => {
 
     assert.equal(codeOf(at(MIN_HEADING_LEVEL - 1)), "invalid_heading_level");
     assert.equal(codeOf(at(MAX_HEADING_LEVEL + 1)), "invalid_heading_level");
+});
+
+test("the help text documents every operation, and only real ones", () => {
+    // Generated from the same table that validates, so this cannot drift -- but
+    // assert it anyway, because "cannot drift" is a property of the current
+    // implementation and this is the property callers depend on.
+    for (const name of OPERATION_NAMES) {
+        assert.ok(OPERATION_HELP.includes(`${name} —`), `${name} is not documented in the help text`);
+    }
+    const documented = [...OPERATION_HELP.matchAll(/([a-z_]+) —/g)].map((m) => m[1]);
+    assert.deepEqual(documented.sort(), [...OPERATION_NAMES].sort(), "the help text names an operation that does not exist");
+});
+
+test("the heading range the help advertises is the range the validator enforces", () => {
+    // Read as a caller reads it: the numbers come out of the rendered text, not
+    // out of the constants. Asserting `help.includes(MAX_HEADING_LEVEL)` would
+    // build the expectation from the same constant that built the text and pass
+    // for any value of it -- the tautology `supported-types.test.mjs` documents.
+    const found = OPERATION_HELP.match(/heading \((\d+)[–-](\d+)\) or body text \((\d+)\)/);
+    assert.ok(found, `no heading range in the help text: ${OPERATION_HELP}`);
+
+    const [lowest, highest, body] = [Number(found[1]), Number(found[2]), Number(found[3])];
+    const at = (headingLevel) => () =>
+        validateIntent({ op: "set_heading_level", address: "p:0123456789ab", headingLevel });
+
+    for (const level of [body, lowest, highest]) {
+        assert.equal(at(level)().headingLevel, level, `the help advertises ${level} but the validator refuses it`);
+    }
+    assert.equal(codeOf(at(highest + 1)), "invalid_heading_level", `the validator accepts ${highest + 1}, which the help does not advertise`);
+    assert.equal(codeOf(at(body - 1)), "invalid_heading_level", `the validator accepts ${body - 1}, which the help does not advertise`);
 });

@@ -56,14 +56,47 @@ export class EditIntentError extends Error {
  * hoc so that an operation cannot quietly accept a field it then ignores.
  */
 export const OPERATIONS = {
-    replace_text: { text: "required", headingLevel: "rejected" },
-    insert_paragraph_after: { text: "required", headingLevel: "optional" },
-    insert_paragraph_before: { text: "required", headingLevel: "optional" },
-    delete_paragraph: { text: "rejected", headingLevel: "rejected" },
-    set_heading_level: { text: "rejected", headingLevel: "required" },
+    replace_text: {
+        text: "required",
+        headingLevel: "rejected",
+        help: "rewrite the paragraph's text, keeping its style",
+    },
+    insert_paragraph_after: {
+        text: "required",
+        headingLevel: "optional",
+        help: "add a new paragraph after it",
+    },
+    insert_paragraph_before: {
+        text: "required",
+        headingLevel: "optional",
+        help: "add a new paragraph before it",
+    },
+    delete_paragraph: {
+        text: "rejected",
+        headingLevel: "rejected",
+        help: "remove it",
+    },
+    set_heading_level: {
+        text: "rejected",
+        headingLevel: "required",
+        help: `make it a heading (${MIN_HEADING_LEVEL + 1}–${MAX_HEADING_LEVEL}) or body text (${MIN_HEADING_LEVEL})`,
+    },
 };
 
 export const OPERATION_NAMES = Object.keys(OPERATIONS);
+
+/**
+ * The caller-facing description of the operations, generated from the same
+ * table that validates them.
+ *
+ * It lives here rather than in `extension.mjs` for two reasons. It cannot then
+ * document an operation that does not exist, or omit one that does — the two
+ * lists are one list. And it is importable, so a test can assert on the text a
+ * caller actually reads; the version in `extension.mjs` was module-scope in a
+ * file that calls `joinSession()` on import and so could only ever be checked
+ * by reading its own source as a string.
+ */
+export const OPERATION_HELP = OPERATION_NAMES.map((name) => `${name} — ${OPERATIONS[name].help}.`).join(" ");
 
 /**
  * Text a paragraph may be given.

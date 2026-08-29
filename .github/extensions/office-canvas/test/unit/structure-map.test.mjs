@@ -21,7 +21,7 @@ test("a German heading style id resolves through the canonical name in w:name", 
     // "heading 1" whatever the UI language is.
     const result = map([paragraph("Kapitel Eins", { styleId: "berschrift1" })]);
     const [p] = result.paragraphs;
-    assert.equal(p.styleId, "berschrift1", "the id is carried verbatim, for an edit to reapply");
+    assert.equal(p.styleId, "berschrift1", "the id is carried verbatim, localized and lossy as Word wrote it");
     assert.equal(p.styleName, "heading 1");
     assert.equal(p.headingLevel, 1);
 });

@@ -289,8 +289,17 @@ export function buildStructureMap(xml, { limit = 0, offset = 0 } = {}) {
             // addresses Word through this, never through `index`.
             wordIndex,
             text,
-            // The localized id, kept because an edit that wants to reapply this
-            // style must use it -- the English name would throw.
+            // Word's own id for the style, verbatim: `berschrift1` on this
+            // German Word, because Word mints the id from the localized name
+            // and drops the non-ASCII characters.
+            //
+            // Reported for identification, not for reapplication. Assigning a
+            // style *by* this id throws -- measured, and recorded next to
+            // `Set-ParagraphHeadingLevel` in `word-host.ps1`, where the English
+            // `Heading 1` throws too. The write side therefore names no style
+            // at all: it assigns numeric `wd*` constants or another paragraph's
+            // Style *object*, and `edit-intent.mjs` rejects `styleId` as an
+            // input outright.
             styleId: styleId ?? null,
             styleName: style?.name ?? styleId ?? null,
             headingLevel,
