@@ -56,6 +56,8 @@ export class WordHost {
     #child = null;
     #buffer = "";
     #stderr = "";
+    /** Partial stderr line, so a diagnostic split across chunks logs once. */
+    #stderrLine = "";
     #pending = new Map();
     #nextId = 1;
     #starting = null;
@@ -83,6 +85,7 @@ export class WordHost {
         this.#starting = (async () => {
             this.#buffer = "";
             this.#stderr = "";
+            this.#stderrLine = "";
 
             const child = spawn(
                 "powershell.exe",
@@ -103,6 +106,7 @@ export class WordHost {
             child.stderr.setEncoding("utf8");
             child.stderr.on("data", (chunk) => {
                 this.#stderr = (this.#stderr + chunk).slice(-4000);
+                this.#onStderr(chunk);
             });
             child.on("exit", (code, signal) => this.#onExit(code, signal));
             child.on("error", (err) => {
@@ -169,6 +173,36 @@ export class WordHost {
                 entry.reject(err);
             }
         }
+    }
+
+    // The host writes diagnostics to stderr because stdout is the protocol
+    // channel and a stray line there corrupts it. Those diagnostics have to
+    // reach a reader, and until PR #36 they did not: the ring buffer above had
+    // exactly one consumer, in #onExit, where it decorates the rejection given
+    // to calls still in flight. A clean dispose has none of those, and the
+    // orphan sweep runs at *startup*, so a refusal to kill -- which means a
+    // leaked Word, a pid collision, or both -- sat in the buffer for the whole
+    // session and was dropped at the end of it.
+    //
+    // Measured rather than reasoned, in probe-decline-diagnostic-reach.mjs,
+    // with a control arm that reads the host's raw stderr so a silent subject
+    // arm is attributable: the host emitted the decline, and the log callback
+    // the extension supplies received nothing at all.
+    //
+    // So stderr is line-split and surfaced as it arrives. The ring buffer is
+    // kept as well, because the exit path needs the tail even when the process
+    // died before a line terminated.
+    #onStderr(chunk) {
+        this.#stderrLine += chunk;
+        let index;
+        while ((index = this.#stderrLine.indexOf("\n")) >= 0) {
+            const line = this.#stderrLine.slice(0, index).trim();
+            this.#stderrLine = this.#stderrLine.slice(index + 1);
+            if (line) this.log(line);
+        }
+        // A host that writes a long unterminated line must not grow this
+        // unboundedly; the ring buffer above still holds the tail for #onExit.
+        if (this.#stderrLine.length > 4000) this.#stderrLine = this.#stderrLine.slice(-4000);
     }
 
     #onExit(code, signal) {
@@ -379,6 +413,13 @@ export class WordHost {
         const child = this.#child;
         let quit = false;
         try {
+            // 20 s is not just this call's patience: Stop-Word's exit poll runs
+            // inside this command, so this timeout is a hard ceiling on it. The
+            // timeout path below kills the host outright, which would cut that
+            // poll short and turn a graceful Word exit into a killed one --
+            // measured in probe-quit-rpc-ceiling.mjs. word-host.ps1's wait
+            // carries the reciprocal note; raising either alone silently
+            // changes what the other means.
             await this.#send("quit", {}, 20_000);
             quit = true;
         } catch (err) {

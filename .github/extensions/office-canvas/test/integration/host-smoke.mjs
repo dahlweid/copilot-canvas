@@ -7,7 +7,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
@@ -198,6 +198,105 @@ try {
     await check("close releases the document", async () => {
         const res = await host.closeDocument({ docId });
         assert.equal(res.closed, true);
+    });
+
+    // The reap in Clear-OrphanedWord is the most exposed kill in the host: a pid
+    // file outlives a crashed host by an unbounded interval, so "there is a
+    // WINWORD at this pid" says even less there than it does inside Stop-Word's
+    // bounded wait. Pid reuse cannot be forced, but the state it produces can:
+    // a live WINWORD at the recorded pid whose identity is not the recorded one.
+    // Recording the wrong identity for a Word we know is alive reaches the same
+    // branch, and the Word at risk is ours, so a failure damages nothing but us.
+    await check("the orphan sweep does not kill a Word whose identity does not match", async () => {
+        const { ownedPid } = await host.ping();
+        assert.ok(ownedPid, "expected the host to report the pid of the Word it owns");
+
+        // A measured dead pid rather than an assumed one: this child has exited
+        // by the time its own $PID comes back to us.
+        const { stdout } = await execFileAsync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", "$PID"]);
+        const deadHostPid = Number.parseInt(stdout.trim(), 10);
+        assert.ok(Number.isInteger(deadHostPid) && deadHostPid > 0, "expected a pid from the probe child");
+
+        const reapDir = await mkdtemp(path.join(tmpdir(), "word-canvas-reap-"));
+        // Two entries, both naming our live Word, reaching the two ways identity
+        // can fail to be proved: a recorded start time that is not this Word's,
+        // and a single-field file from a host predating the identity field --
+        // which is what an upgrade leaves lying in the pid directory. Both must
+        // decline, and one sweep covers both.
+        const stale = [
+            {
+                path: path.join(reapDir, `${deadHostPid}.pid`),
+                body: `${ownedPid} 1`,
+                why: "mismatched start time",
+                expect: "does not match the recorded",
+            },
+            {
+                path: path.join(reapDir, `${deadHostPid + 1}.pid`),
+                body: `${ownedPid}`,
+                why: "legacy entry with no identity",
+                expect: "no start time was ever recorded",
+            },
+        ];
+        for (const entry of stale) await writeFile(entry.path, entry.body, "utf8");
+
+        const reaperLog = [];
+        const reaper = new WordHost({
+            log: (m) => {
+                reaperLog.push(m);
+                process.stderr.write(`[reaper] ${m}\n`);
+            },
+            onOwnedPid: (pid) => ledger.record(pid),
+            pidDir: reapDir,
+        });
+        try {
+            try {
+                await reaper.ping(); // startup runs the sweep
+            } finally {
+                await reaper.dispose();
+            }
+
+            // Assert the branch was reached before asserting on what it did. The
+            // sweep deletes every entry it processes, so a surviving file means it
+            // skipped that one -- its recording pid was reused and looked alive --
+            // and the check below would then be green without having tested
+            // anything. Skipped-but-green is the failure a guard test can least
+            // afford, so an unprocessed entry is a hard failure and not a skip.
+            for (const entry of stale) {
+                const processed = await stat(entry.path).then(() => false, () => true);
+                assert.equal(processed, true, `the sweep never processed the ${entry.why} entry, so it proved nothing`);
+            }
+
+            assert.ok(
+                (await wordPids()).includes(ownedPid),
+                `the sweep killed pid ${ownedPid} without having proved it owned it`,
+            );
+
+            // Surviving is a SHARED outcome: both entries name the same Word, so
+            // either guard alone keeps it alive and the assertion above stays
+            // green while the other branch is gone. A mutation check found that
+            // -- removing the null-identity guard left the legacy entry declined
+            // anyway by the comparison below it, and nothing reddened. So each
+            // entry must be attributed to the branch that declined it, and the
+            // decline has to be found on the log the extension actually reads,
+            // which is the channel a refusal is worthless without.
+            for (const entry of stale) {
+                const reported = reaperLog.some(
+                    (line) => line.includes(`refusing to reap pid ${ownedPid}`) && line.includes(entry.expect),
+                );
+                assert.equal(
+                    reported,
+                    true,
+                    `the ${entry.why} entry was not reported as declined for its own reason; the log said: ${
+                        reaperLog.join(" | ") || "(nothing)"
+                    }`,
+                );
+            }
+        } finally {
+            // A failing assertion above must not also leak a temp directory:
+            // this test runs on every suite run, so the accumulation would be
+            // silent and unbounded.
+            await rm(reapDir, { recursive: true, force: true }).catch(() => {});
+        }
     });
 } finally {
     await host.dispose();

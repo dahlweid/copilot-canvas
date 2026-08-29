@@ -67,6 +67,10 @@ $FAIL_FAST_PASSWORD = '#word-canvas-no-password#'
 
 $script:App = $null
 $script:OwnedPid = $null
+# The start time of the Word at $script:OwnedPid, captured when ownership is
+# learned. A pid identifies a process only as long as that process lives; this
+# is what lets a later kill prove it is acting on the same one.
+$script:OwnedStart = $null
 $script:Docs = @{}
 # Remembers how each document was opened so a dead COM connection can be
 # recovered without the caller noticing.
@@ -125,9 +129,80 @@ function Get-PidFilePath {
     return (Join-Path $PidDir "$PID.pid")
 }
 
-function Test-IsWordPid([int]$candidate) {
+# A pid is a handle, valid at a moment -- not an identity. Windows recycles pids,
+# so `is there a WINWORD at this pid` and `is this the WINWORD we started` are
+# different questions, and only the second one licenses a Kill. StartTime is the
+# cheapest stable discriminator available: measured, it is readable on our own
+# instance and identical across separate Get-Process calls.
+#
+# Returns $null when the start time cannot be read. Callers must treat that as
+# "ownership unproven" and refuse to kill -- never as "probably ours". Note that
+# a non-elevated probe on this machine could NOT produce an unreadable
+# StartTime, even against SYSTEM-owned pids 0 and 4, so this branch is written
+# from the documented failure rather than from an observed one. That is
+# precisely why it must not be a silent catch: an instrument that has never
+# produced a positive cannot tell us the branch is dead.
+function Get-WordStartTime([int]$candidate) {
+    try {
+        $p = Get-Process -Id $candidate -ErrorAction SilentlyContinue
+        if ($null -eq $p -or $p.ProcessName -ne 'WINWORD') { return $null }
+        return $p.StartTime
+    } catch { return $null }
+}
+
+# Verifies identity and kills through ONE pinned handle, and is the only
+# sanctioned way to kill a Word in this host.
+#
+# Checking identity and then killing is not enough even when both go through a
+# single `Process` object, and that is measured rather than reasoned. On
+# Windows PowerShell 5.1, with a process allowed to exit between the two calls:
+#
+#   one Process object, .Handle never touched -> Kill() throws "Zugriff
+#     verweigert" (access denied), i.e. it re-opened the pid and found
+#     something it may not terminate
+#   one Process object, .Handle touched first -> Kill() throws "the process
+#     (NNNN) has exited", i.e. it consulted the handle it already held
+#
+# Two different failures from the same sequence is the discriminator: without
+# the pin, `Kill()` performs its own OpenProcess by pid, so the pid can be
+# recycled between the StartTime read and the terminate and the two land on
+# different processes. Touching `.Handle` caches an open handle on the object;
+# Windows will not reuse a pid while a handle to it is open, so from that point
+# the identity read and the kill are provably about the same process.
+#
+# `StartTime` routing through the same cached handle is inferred rather than
+# measured -- both go through .NET's GetProcessHandle -- but the ordering makes
+# that immaterial: the pin is taken before the read, so anything the read sees
+# is what the kill will terminate.
+#
+# Returns one of: 'killed', 'gone' (nothing of ours is at this pid -- either no
+# process, or one that is not Word), or 'declined:<reason>' (a WINWORD is there
+# and we could not prove it is ours). Callers must report a decline rather than
+# swallow it: it means a leaked Word, a pid collision, or both.
+function Stop-VerifiedWord([int]$candidate, $expectedStart) {
     $p = Get-Process -Id $candidate -ErrorAction SilentlyContinue
-    return ($null -ne $p -and $p.ProcessName -eq 'WINWORD')
+    if ($null -eq $p) { return 'gone' }
+    # Pin first. Every check below is only meaningful once the pid is held.
+    try { $null = $p.Handle } catch { return 'declined:the process handle could not be opened, so the pid cannot be pinned' }
+    if ($p.ProcessName -ne 'WINWORD') { return 'gone' }
+    if ($null -eq $expectedStart) { return 'declined:no start time was ever recorded for this pid' }
+    $actual = try { $p.StartTime } catch { $null }
+    if ($null -eq $actual) { return 'declined:the start time could not be read, so ownership is unproven' }
+    if ($actual -ne $expectedStart) { return "declined:start time $actual does not match the recorded $expectedStart" }
+    try { $p.Kill() } catch { return "declined:the terminate failed ($($_.Exception.Message.Split([char]10)[0]))" }
+    return 'killed'
+}
+
+# stdout is the JSON-RPC channel and writing to it corrupts the protocol, so
+# diagnostics go to stderr. That stderr reaches the extension's log because
+# word-host.mjs line-splits it and calls `log` as it arrives -- which is a
+# statement about the far side of a boundary, so it is measured
+# (spikes/isolation/probes/probe-decline-diagnostic-reach.mjs) and covered by
+# the orphan-sweep test, not asserted from this side. It was false when first
+# written: stderr went into a ring buffer read only on exit, and a refusal to
+# kill -- emitted during the startup sweep -- was discarded at a clean dispose.
+function Write-HostDiagnostic([string]$text) {
+    try { [Console]::Error.WriteLine($text) } catch { }
 }
 
 function Clear-OrphanedWord {
@@ -142,10 +217,27 @@ function Clear-OrphanedWord {
             if (-not [int]::TryParse([IO.Path]::GetFileNameWithoutExtension($file.Name), [ref]$hostPid)) { continue }
             if ($hostPid -eq $PID) { continue }
             if ($null -ne (Get-Process -Id $hostPid -ErrorAction SilentlyContinue)) { continue }  # still running
+            # The ledger records the start time alongside the pid because this
+            # reap is the most exposed kill in the host: the file outlives a
+            # crashed host by an unbounded interval, so `there is a WINWORD at
+            # this pid` says even less here than it does in Stop-Word's 10 s
+            # window. A legacy single-field file has no recorded identity, so it
+            # is unproven by construction and the Word is reported, not killed.
+            $recorded = (Get-Content -LiteralPath $file.FullName -Raw -ErrorAction SilentlyContinue)
             $wordPid = 0
-            if ([int]::TryParse((Get-Content -LiteralPath $file.FullName -Raw -ErrorAction SilentlyContinue).Trim(), [ref]$wordPid)) {
-                if (Test-IsWordPid $wordPid) {
-                    try { (Get-Process -Id $wordPid).Kill() } catch { }
+            $expectedStart = $null
+            if ($null -ne $recorded) {
+                $parts = $recorded.Trim() -split '\s+'
+                if ($parts.Count -ge 1) { [void][int]::TryParse($parts[0], [ref]$wordPid) }
+                $ticks = [long]0
+                if ($parts.Count -ge 2 -and [long]::TryParse($parts[1], [ref]$ticks)) {
+                    $expectedStart = [datetime]::new($ticks)
+                }
+            }
+            if ($wordPid -gt 0) {
+                $outcome = Stop-VerifiedWord $wordPid $expectedStart
+                if ($outcome -notin @('killed', 'gone')) {
+                    Write-HostDiagnostic "[word-host] refusing to reap pid ${wordPid} recorded by host ${hostPid}: $($outcome -replace '^declined:', ''). Not killed; it is either a leaked Word or an unrelated process that inherited the pid."
                 }
             }
             Remove-Item -LiteralPath $file.FullName -Force -ErrorAction SilentlyContinue
@@ -153,12 +245,16 @@ function Clear-OrphanedWord {
     } catch { }
 }
 
-function Register-OwnedWord([int]$wordPid) {
+function Register-OwnedWord([int]$wordPid, $startTime) {
     $file = Get-PidFilePath
     if ($null -eq $file) { return }
     try {
         if (-not (Test-Path -LiteralPath $PidDir)) { New-Item -ItemType Directory -Force -Path $PidDir | Out-Null }
-        Set-Content -LiteralPath $file -Value "$wordPid" -Encoding ascii
+        # pid alone is a coordinate; the start ticks are what make it an identity
+        # a later reaper can verify. Written as one line, whitespace separated,
+        # so a file from an older host still parses as "pid, identity unknown".
+        $ticks = if ($null -ne $startTime) { $startTime.Ticks } else { '' }
+        Set-Content -LiteralPath $file -Value "$wordPid $ticks".Trim() -Encoding ascii
     } catch { }
 }
 
@@ -313,6 +409,7 @@ function Initialize-Word {
         # creating a replacement, or later calls fail with RPC_E_DISCONNECTED.
         $script:App = $null
         $script:OwnedPid = $null
+        $script:OwnedStart = $null
         $script:Docs = @{}
     }
 
@@ -341,9 +438,14 @@ function Initialize-Word {
     }
     if ($new.Count -ge 1) {
         $script:OwnedPid = [int]$new[0]
-        Register-OwnedWord $script:OwnedPid
+        # Captured here, at the moment ownership is learned, and never re-read at
+        # kill time: reading it just before the Kill would compare an impostor
+        # against itself and always match.
+        $script:OwnedStart = Get-WordStartTime $script:OwnedPid
+        Register-OwnedWord $script:OwnedPid $script:OwnedStart
     } else {
         $script:OwnedPid = $null
+        $script:OwnedStart = $null
     }
 
     if ($null -ne $script:OwnedPid) {
@@ -409,20 +511,107 @@ function Stop-Word {
     # not tidying: measured through the full suite, `Quit()` returns before Word
     # has gone, so with the old fixed wait the corrected call still ended in a
     # kill and the fix had *no observable effect at all*. Isolated in both
-    # directions -- `Quit()` with the poll exits on its own and this branch never
-    # fires; the old by-value call with the same poll still throws and still
-    # needs the kill. Both halves are load-bearing.
+    # directions -- `Quit()` with the poll exits on its own on an idle machine
+    # and this branch does not fire; the old by-value call with the same poll
+    # still throws and still needs the kill. Both halves are load-bearing.
+    #
+    # That "does not fire" is an observation on an idle machine, not a
+    # guarantee, and the distinction is #26's: exit latency is load-dependent,
+    # so on a busy machine this branch fires and the graceful path is pre-empted.
+    # Nothing here can promise otherwise -- see the ceiling below for why the
+    # remedy is not simply a bigger number.
+    #
+    # The wait is bounded by elapsed time, not by an iteration count. Measured
+    # by probe-quit-exit-gap.ps1, `Quit()` returns in 3-28 ms and the process
+    # exits 3039-3702 ms after that, so the count-based version this replaced --
+    # 30 x 100 ms, nominally 3000 ms -- budgeted less than the thing it waits for.
+    #
+    # It worked anyway, and the reason is worth stating because it is the actual
+    # defect: the loop's real budget was 4014-4375 ms, and *none of that margin
+    # was chosen*. Its control run separates the two sources -- `Start-Sleep
+    # -Milliseconds 100` overshoots, so the sleeps alone come to ~3292 ms, and
+    # `Get-Process` adds a further 24-46 ms per call depending on load. Both are
+    # incidental costs of unrelated APIs, both are load-dependent, and nothing
+    # asserts either. Had they narrowed -- or had Word been slower, which under
+    # load it measurably is -- the kill below would have resumed firing and this
+    # fix would have silently reverted to the behaviour it exists to correct,
+    # with every test still green.
+    #
+    # Timing out here is not a failure -- it falls through to the kill -- so the
+    # bound is deliberately generous rather than fitted to the numbers above.
+    #
+    # It is *not*, however, freely chosen, and that is the part a future reader
+    # will otherwise re-derive. This function runs inside the `quit` JSON-RPC
+    # command, and word-host.mjs's `dispose` sends that command under a 20 s
+    # client timeout whose expiry kills the host process outright (`#send`,
+    # "restarting host"). So the client's timeout is a hard ceiling on this
+    # wait, and a bound above it does not buy Word more time to exit -- it
+    # spends the difference getting the host killed mid-wait, destroying the
+    # graceful exit that raising the number was meant to protect.
+    #
+    # Measured, probe-quit-rpc-ceiling.mjs, wait made unconditional so the bound
+    # is what the quit costs:
+    #
+    #   bound 10000 ms (under the ceiling): quit returned cleanly at 10279 ms
+    #   bound 30000 ms (over the ceiling):  client timed out at 20007 ms, host killed
+    #
+    # This is why #26's suggestion of 30 s -- reasonable from the exit
+    # distribution alone, and matching what the test-side waiters use -- is not
+    # portable into this function. word-pids.mjs can wait 90 s because nothing
+    # is waiting on *it*.
+    #
+    # Argued from the spread rather than a mean, since the mean is the figure
+    # that moved: across every run anyone has taken here, samples span 779 ms to
+    # 3702 ms, and word-pids.mjs records a Word that survived a 30 s poll under
+    # concurrent load. The tail is not bounded by anything we have measured, so
+    # **no reachable bound is outside the distribution** -- 30 s would not be
+    # either, even if the 20 s ceiling allowed it. That kills the idea that the
+    # right number is one the distribution cannot cross, and with it the
+    # temptation to nudge 10 s to 15 s, which would look measured and change
+    # nothing.
+    #
+    # So this is a budget, not a guarantee, and the design has to be safe when
+    # it expires rather than tuned so that it does not. It is: expiry falls
+    # through to a kill that must first prove identity. 10 s is ~2.7x the
+    # slowest exit yet observed and half the ceiling, leaving the rest of the
+    # teardown room inside the same 20 s.
+    #
+    # The two numbers are coupled and nothing enforces the coupling, so the
+    # 20 s in word-host.mjs carries the reciprocal note. Raising either alone
+    # is a silent change to the other's meaning.
     if ($null -ne $script:OwnedPid) {
         try {
             $p = $null
-            for ($i = 0; $i -lt 30; $i++) {
+            $waited = [Diagnostics.Stopwatch]::StartNew()
+            while ($waited.ElapsedMilliseconds -lt 10000) {
                 Start-Sleep -Milliseconds 100
                 $p = Get-Process -Id $script:OwnedPid -ErrorAction SilentlyContinue
                 if ($null -eq $p -or $p.ProcessName -ne 'WINWORD') { break }
             }
-            if ($null -ne $p -and $p.ProcessName -eq 'WINWORD') { $p.Kill() }
+            # `a WINWORD exists at this pid` was an adequate guard while the gap
+            # between looking and killing was the old incidental ~300 ms. This
+            # branch now waits up to 10 s, so the same guard spans a window
+            # thirty times longer, and a pid recycled onto another WINWORD in
+            # that gap would be killed as ours -- taking a user's unsaved
+            # documents with it. Widening the wait is what obliged the guard to
+            # become an identity check rather than an existence check.
+            #
+            # The loop above is deliberately *not* the guard. It observes with a
+            # bare Get-Process because an observation may be stale without harm;
+            # only the terminate needs a pinned handle, and Stop-VerifiedWord
+            # takes its own. Nothing read in the loop is carried into the kill.
+            $outcome = Stop-VerifiedWord $script:OwnedPid $script:OwnedStart
+            if ($outcome -notin @('killed', 'gone')) {
+                # Refusing to kill is the safe half. Saying nothing is not:
+                # this is either a Word we leaked or a pid collision, and both
+                # are worth knowing. #33 replaced every bare `catch {}` in this
+                # function for the same reason, and a silent `else` would
+                # reintroduce it in a different shape.
+                Write-HostDiagnostic "[word-host] declining to kill pid $($script:OwnedPid): $($outcome -replace '^declined:', '') (recorded start $($script:OwnedStart)). Either our Word exited and the pid was reused, or its identity could not be proved. Not killed."
+            }
         } catch { }
         $script:OwnedPid = $null
+        $script:OwnedStart = $null
     }
     Unregister-OwnedWord
 }
@@ -1187,11 +1376,17 @@ function Cmd-Edit($a) {
     }
 
     if ($null -ne $result) {
-        # Close() returning is not proof the file is released -- Quit() is known
-        # to return ~120 ms before its process actually exits. Measure it rather
-        # than assume, because the next thing the caller does is read the file
-        # to confirm the edit, and a re-open into a still-held file is the hang
-        # this whole command is built to avoid.
+        # Close() returning is not proof the file is released. Quit() is cited
+        # here only as precedent for "a call returning is not the work being
+        # done" -- measured, it returns 3.0-3.7 s before its process exits. It is
+        # not evidence about Close, which is a different call with measurably
+        # different behaviour, and nothing about either may be inferred from the
+        # other; the poll below is what establishes the fact for Close. (This
+        # comment read "~120 ms" until that number was actually measured. It was
+        # wrong by a factor of ~25-30, and Stop-Word had sized a wait on it.)
+        # Measure it rather than assume, because the next thing the caller does
+        # is read the file to confirm the edit, and a re-open into a still-held
+        # file is the hang this whole command is built to avoid.
         $releaseStarted = [Diagnostics.Stopwatch]::StartNew()
         $released = $false
         while ($releaseStarted.ElapsedMilliseconds -lt 5000) {

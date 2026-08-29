@@ -270,7 +270,8 @@ Remove-Item -LiteralPath $ready, $release, $outcome -Force -ErrorAction Silently
 Remove-Item -LiteralPath Env:WORDPROBE_READY, Env:WORDPROBE_RELEASE, Env:WORDPROBE_OUTCOME -ErrorAction SilentlyContinue
 
 # --- census: did this probe leave anything behind? ---------------------------
-# Poll rather than sleep flat. `Quit()` returns in ~120 ms while the process
+# Poll rather than sleep flat. `Quit()` returns in 3-28 ms (measured,
+# probe-quit-exit-gap.ps1) while the process
 # outlives it by seconds, and the tail is load-dependent: a Quit-to-exit
 # measured at 2.7-6.1 s idle survived a 30 s poll with another session driving
 # Word concurrently.
