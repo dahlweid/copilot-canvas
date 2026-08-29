@@ -266,36 +266,38 @@ inline findings when it had two. Select comments by `created_at` against the
 review's `submitted_at` instead, and cross-check the body's *comments generated*
 count against the number retrieved.
 
-**A review record can be an empty stub, and an empty stub is indistinguishable
-from a clean round.** Requesting a review sometimes creates a stub within
-seconds, with the substantive review arriving minutes later against the same
-commit. Measured twice on #42:
+**An empty-bodied review record is somebody's *reply*, not a pending review.**
+`/pulls/{n}/reviews` mixes actual reviews with one record per reply posted to a
+review thread. The reply-records carry an empty body and are authored by whoever
+replied — which for this repo's loop is *us*, once per round:
 
-| record | submitted | commit | body |
+| PR | records | authored by reviewer | authored by us, empty |
 | --- | --- | --- | --- |
-| `5057359653` | 08:14:49Z | `b6ebdb5` | **empty** |
-| `5057365906` | 08:17:58Z | `b6ebdb5` | the finding |
-| `5057371102` | 08:21:27Z | `bac53f3` | **empty** |
-| `5057375339` | 08:24:08Z | `bac53f3` | the finding |
+| #42 | 5 | 3 (bodies 1889, 473, 384) | 2 |
+| #47 | 4 | 2 (bodies 2095, 370) | 2 |
 
-**"Sometimes" is doing real work in that sentence, and it is a correction to the
-first version of this rule**, which said a request *produces* two records. The
-very next request — round 1 of the PR that added this paragraph — produced **one**
-record, substantive, 82 s after the request, with no stub at all. Two of two on
-one PR and zero of one on the next: what makes the difference is unknown, so the
-timing is not predictable and must not be planned around.
+Three consequences. **Counting records to derive the round number over-counts by
+exactly the number of replies you have posted** — deterministic, not a race, and
+it walks a PR into the six-round cap early. **Reading "the latest review" can
+return your own reply**: empty body, no findings, indistinguishable from a clean
+round. And `requested_reviewers` empties as soon as the review is delivered, so
+it cannot answer "has this round come back?" either.
 
-What survives is the part that does not depend on the stub appearing. Inside that
-window both obvious questions return a wrong answer: reading the *latest* review
-yields a record with no findings, and `requested_reviewers` has **already
-emptied**, so "is a review pending?" reads as *no*. Counting records to derive
-the round number also double-counts whenever a stub does appear, which walks a PR
-into the six-round cap early.
+Select on author *and* body: a review is authored by the reviewer, opens with a
+state headline (🟢/🟡) and closes with a *comments generated* count.
 
-Discriminate on the body, not on recency, not on the reviewer list, and not on
-the record count: every review actually performed here opens with a state
-headline (🟢/🟡) and closes with a *comments generated* count. An empty body
-means the review has not happened yet.
+Note this pulls the opposite way from the rule above it, and both are true. Do
+not use login as a **filter** you trust to be complete, because the reviewer
+renders as three different strings; do read login as a **discriminator**, because
+a record's author is what tells you which kind of record it is.
+
+**This paragraph was wrong twice before it was right, both times for the same
+reason.** It first claimed a review request *produces* two records, the second
+empty; corrected to "sometimes produces" when the next request produced one; and
+was only correct once someone read `user.login`, which had been sitting in the
+same JSON object throughout. Two rounds of theorising about GitHub's timing, from
+`submitted_at` and body length, when the field naming the cause was already in
+hand. **Before modelling a mechanism, spend the remaining fields.**
 
 **Six rounds, then merge.** This is a hard cap, not a target. At round six the
 PR merges with any remaining comments declined explicitly in a reply. The one
@@ -389,6 +391,17 @@ existing line was not an oversight; it was **evidence that someone had
 recognised the boundary needed an encoding**, and that is precisely what stopped
 anyone looking at its other half.
 
+**The same defect has a zero-distance form: a comment asserting that the far side
+works, written from the near side by someone who could not observe it.** #36's
+diagnostic writer carried *"diagnostics go to stderr, which `word-host.mjs`
+captures and surfaces."* Measured with a control: the host emitted the decline,
+and the extension's log callback received **nothing at all** — stderr was
+buffered into a ring with exactly one consumer, in `#onExit`, which decorates
+rejections for in-flight calls, and a clean dispose has none. The fact and the
+code contradicting it were the same sentence, so nothing had to drift for it to
+be wrong. This is why a fix that exists is worse than no fix when it makes the
+neighbouring half look covered.
+
 Nothing went red, and the reason is worth stating exactly, because the obvious
 explanation is wrong. It is *not* that the write direction is untested — edits
 are written and read back end to end. It is that **every fixture in the
@@ -475,7 +488,12 @@ are provenance, not paths a reader of `main` can open.
   when it matched **more than once**. Abort on any match count you did not predict
   in advance, not only on a count of zero — a mutant landing on the second of two
   matching sites can fail an unrelated test and be recorded as `KILLED`, which is
-  the one direction of this defect that reports good news.
+  the one direction of this defect that reports good news. **It has a real
+  instance** (#26): a mutant scored `KILLED` by two assertions that both read
+  *"the bait paragraph is missing"* — the bait never matched because its character
+  corrupted crossing stdin, so the assertion actually under test never ran. The
+  kill was attributed to assertions that did not execute. It surfaced in a
+  *hand-run* check, which is the one context with no runner to classify it.
 - **The runner never started.** `mutate-create.ps1` (#26) resolves paths relative
   to the extension root and exits 1 when invoked from the repo root. It fails
   *loudly* and is still dangerous, because "gate ran, gate red" and "gate never
@@ -493,6 +511,47 @@ The remedy common to all three is to treat the mutant itself as the thing under
 test: assert that the mutation was applied, and that the *specific* test you
 expect to go red is the one that did. A gate that only counts failures cannot
 tell a killed mutant from an unrelated breakage.
+
+**And a surviving mutant is not always a missing test.** Sometimes it is two
+branches being proved by one shared assertion: deleting a null-identity guard
+reddened nothing because the test asserted a *shared* outcome — the Word is still
+alive — which a second, independent guard satisfied on its own (#36). Both
+branches were covered by an assertion that could not say which one had done the
+work. The remedy there is **attribution**, not a stronger assertion. Note also
+what did *not* catch it: the two-independent-records discriminator, because there
+was no second record of the quantity to disagree with the first.
+
+**"The remedy is cheaper than the measurement" assumes you already know which
+remedy you need.** Recorded because it was wrong here, in coordination advice I
+gave. Faced with a TOCTOU between an identity check and a kill, I recommended
+skipping the measurement and going straight to a P/Invoke that opens one handle
+and does both through it — sound, and it would have been carried. #36 measured
+the cheap half first, on the grounds that it decides whether the P/Invoke is
+needed at all:
+
+| arm | `Kill()` on a process allowed to exit between the calls |
+| --- | --- |
+| one `Process` object, `.Handle` never touched | **access denied** — it re-opened the pid |
+| one `Process` object, `.Handle` touched first | "the process has exited" — it used the retained handle |
+
+Two different failures from the same sequence, which is the discriminator:
+`Kill()` performs its own `OpenProcess` unless a handle is pinned. So the
+reviewer's proposed remedy — capture a single `Process` object — does **not**
+close the window, and the real fix is `$null = $p.Handle`: one line, no
+`Add-Type`, because Windows will not recycle a pid while a handle is open. The
+measurement was cheaper than the remedy I recommended *and* found a cheaper
+remedy than either candidate. Skip a measurement to save effort only when the
+remedies are already known to be the same.
+
+**When no reachable bound lies outside the distribution, stop looking for a
+number.** The `Quit()`-to-exit spread is 779–3702 ms across three sessions, with
+one Word observed surviving a 30 s poll — and the RPC layer imposes a **20 s**
+ceiling above which the client kills the host outright, so a 30 s deadline is not
+merely generous but unreachable: it expires by being killed mid-wait. There is no
+value that makes teardown a guarantee. The deadline is therefore a **budget whose
+expiry must be safe**, not a bound that must hold — here, falling through to an
+identity-proving kill. Nudging such a number upward is the move that looks
+measured and still straddles.
 
 **An instrument that measures correctly and reports illegibly is still a wrong
 answer.** The autocorrect probe on #26 (not on `main`, so it is named here as
@@ -514,5 +573,27 @@ found independently and neither instrument would have caught the other. And
 prose**: the same PR found a comment promising a bait character that its own
 probe had never rewritten, and both findings on #42 were the wording asserting
 behaviour the code did not have. Print evidence escaped (`<U+XXXX>`) rather than
-rendered, and re-run rather than recall when writing about what a probe found.
+rendered.
+
+**"Re-run rather than recall" only covers half of it.** Over-generalised prose
+has a measurement behind it, so re-running at the new scope settles it. Prose
+that was never measured has nothing to re-run, and the failure is upstream: not
+noticing the sentence made a checkable claim at all. `check-citations` covers
+only the easy half — it verifies that a probe *reference* resolves, and says
+nothing about whether the surrounding sentence is what the probe found; the bait
+list that started this had no citation, so nothing was even eligible. The second
+half is caught by asking *"is this a measurement or a memory?"*, which is a
+habit and not a gate. And a guard that cannot fire today is still worth keeping
+if it is labelled as one — the label is the part that has to be true.
+
+**The cheapest instruments fail this way too, and they are the ones nobody
+checks.** Two within ten minutes on #26, and both recur here: a summary grep
+written as `^# (tests|pass|fail)` against a reporter that emits `ℹ tests 284`
+**matched nothing and exited 0** — a check that printed no verdict and read as a
+pass; and `tools/validate-extension.mjs` for `validate-extensions.mjs` **exited
+1**, which reads as "validator red" and means "gate never ran". That is the
+runner-cwd trap again with one letter instead of one directory. I hit the same
+grep twice in one session after documenting it. **Assert that the check produced
+a verdict, not merely that it exited well** — a run that matched nothing and a
+run that passed are the same observable.
 
