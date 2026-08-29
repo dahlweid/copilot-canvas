@@ -89,6 +89,7 @@ $holders = @(
 # Per-holder result vectors, so the identity above can be asserted rather than
 # eyeballed.
 $vectors = @{}
+$script:identityBroken = $false
 
 foreach ($holder in $holders) {
     $target = Join-Path $scratch ("holder-" + [guid]::NewGuid().ToString('N').Substring(0, 6) + '.bin')
@@ -126,18 +127,28 @@ foreach ($holder in $holders) {
 # The assertion the fourth row exists for. Two holders differing only in access
 # mode must be indistinguishable to every reader; if they are not, the shorthand
 # "Word holds a write handle" has stopped being a harmless inference.
+#
+# Columns are named, not indexed. An index is the failure this file is about in
+# miniature: "cell 4" makes the reader reconstruct which column that was from
+# another part of the script, and a reconstruction is exactly what an assertion
+# is supposed to remove.
+$columnLabels = @($readers | ForEach-Object { $_.Label.Trim() }) + @('Copy-Item')
 $wRead  = $vectors['w-read']
 $rwRead = $vectors['rw-read']
 $differences = @()
 for ($i = 0; $i -lt $wRead.Count; $i++) {
     if ($wRead[$i] -ne $rwRead[$i]) {
-        $differences += ("cell {0}: WRITE->{1} vs READWRITE->{2}" -f $i, $wRead[$i], $rwRead[$i])
+        $differences += ("{0}: WRITE holder -> {1} ; READWRITE holder -> {2}" -f $columnLabels[$i], $wRead[$i], $rwRead[$i])
     }
 }
 if ($differences.Count -eq 0) {
-    Write-Output ("ACCESS-MODE IDENTITY HOLDS: WRITE and READWRITE holders granting Read are identical across all {0} readers." -f $wRead.Count)
+    Write-Output ("ACCESS-MODE IDENTITY HOLDS: WRITE and READWRITE holders granting Read are identical across all {0} readers plus Copy-Item." -f $readers.Count)
     Write-Output '  => a holder access mode is not observable from outside; only the share mode is measured.'
 } else {
+    # Recorded rather than thrown, so PART B still runs and reports against real
+    # Word -- but the run must not exit 0, or an assertion nobody reads is worth
+    # no more than the table nobody diffed.
+    $script:identityBroken = $true
     Write-Output 'ACCESS-MODE IDENTITY BROKEN -- the inference this repo relies on no longer holds:'
     foreach ($d in $differences) { Write-Output ("  {0}" -f $d) }
 }
@@ -213,4 +224,12 @@ try {
     Write-Output ''
     Write-Output ("word processes started by this probe: {0}" -f ($startedPids -join ', '))
     Remove-Item -Recurse -Force $scratch -ErrorAction SilentlyContinue
+}
+
+# Placed after the finally so PART B's Word is always reaped first: an exit that
+# skips cleanup would trade a reported failure for a leaked WINWORD.
+if ($script:identityBroken) {
+    Write-Output ''
+    Write-Output 'FAILED: access-mode identity broken (see PART A).'
+    exit 1
 }
