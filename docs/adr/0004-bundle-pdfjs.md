@@ -73,8 +73,19 @@ document exported through our own pipeline (pdf.js 6.2.108):
 | Does the structure reference the text? | Yes — 17 marked-content refs in the tree |
 | Is the text layer in reading order? | Yes — DOM order matched extraction order exactly, 31 spans |
 
-Word is already exporting with `DocStructureTags = $true` (see the export call
-in `word-host.ps1`), which is why the tagging is there to find.
+The tagging is there to find because the export asks for it: `DocStructureTags`
+on `ExportAsFixedFormat`. That flag is not written by name anywhere in the host.
+The call passes **fourteen positional arguments** and the parameter names live in
+a comment above it, so the flag is identified by its index and by nothing else —
+an argument inserted or removed ahead of it re-points it silently, leaves the
+comment still reading correctly, and produces no symptom other than an untagged
+PDF.
+
+So this ADR does not restate the value. `test/unit/export-tagging.test.mjs`
+derives it — names from the comment, index from the names, value from the call —
+and separately asserts the two lists are the same length, which is the only
+assertion that catches the shift. Three mutants cover it, including the shift
+case, which the value check alone passes.
 
 ### The gap, named
 
@@ -90,4 +101,10 @@ this layer's scope. What must not happen is for the measurements above to be
 read as parity — the roles exist in the file, not in the accessibility tree the
 user's software actually sees.
 
-Not measured by anyone: actual assistive-technology output, from either viewer.
+Not measured, and **not measurable from inside the page**: actual
+assistive-technology output, from either viewer. The instrument for it is the
+screen reader named above, driven over a real desktop; nothing running in the
+canvas can stand in for it, because what a probe in the page can enumerate is the
+DOM and what a screen reader consumes is the accessibility tree. That is why this
+gap is stated here rather than closed — the measurement is absent, and the means
+of taking it is absent too.

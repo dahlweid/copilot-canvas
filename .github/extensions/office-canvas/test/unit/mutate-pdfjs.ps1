@@ -59,7 +59,8 @@ $suite = @(
     'test/unit/vendor-checkout.test.mjs',
     'test/unit/ui-contract.test.mjs',
     'test/unit/change-plan.test.mjs',
-    'test/unit/change-wording.test.mjs'
+    'test/unit/change-wording.test.mjs',
+    'test/unit/export-tagging.test.mjs'
 )
 
 # `tools/` lives above the extension folder, so its mutants are anchored against
@@ -376,6 +377,41 @@ $mutants = @(
        file = 'src/ui/change-wording.mjs'
        from = '        return { text: `${phrase} — page not reported`, jumpable: false };'
        to   = '        return { text: `${phrase} — page unknown, Word could not report it`, jumpable: false };' }
+
+    # --- the export's accessibility flag, which is positional ------------------
+
+    # ADR 0004's accessibility section rests on the export being tagged, and the
+    # flag that makes it so is `DocStructureTags` -- passed as the 12th of
+    # fourteen positional arguments, identified by a comment and by nothing else.
+    # These mutate `word-host.ps1`, which no other mutant touches.
+
+    # The flag itself. The three neighbouring `$true`s are why the anchor carries
+    # the line above it: `$true,` alone is not unique inside this call.
+    @{ name = 'the PDF export no longer asks Word for a tagged document'
+       file = 'src/word/word-host.ps1'
+       from = '        $WD_EXPORT_CREATE_HEADING_BOOKMARKS,
+        $true,'
+       to   = '        $WD_EXPORT_CREATE_HEADING_BOOKMARKS,
+        $false,' }
+
+    # The drift the value check cannot see. Dropping an argument *ahead* of the
+    # flag shifts every later position left, so slot 12 still reads `$true` --
+    # it is just `BitmapMissingFonts` now, and the export is silently untagged.
+    # Only the names-vs-arguments count catches this, which is the whole reason
+    # that assertion exists separately from the value one.
+    @{ name = 'an argument is dropped ahead of the tagging flag, shifting it'
+       file = 'src/word/word-host.ps1'
+       from = '        $WD_EXPORT_DOCUMENT_CONTENT,
+        $true,
+        $true,'
+       to   = '        $true,
+        $true,' }
+
+    # The premise. If the call ever goes named, deriving by index is meaningless.
+    @{ name = 'the export call is converted to named arguments'
+       file = 'src/word/word-host.ps1'
+       from = '        $WD_EXPORT_CREATE_HEADING_BOOKMARKS,'
+       to   = '        CreateBookmarks = $WD_EXPORT_CREATE_HEADING_BOOKMARKS,' }
 )
 
 $survived = @()

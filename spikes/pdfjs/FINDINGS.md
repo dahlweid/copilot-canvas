@@ -133,8 +133,10 @@ both. What follows is therefore absolute, not comparative.
 | DOM order vs extraction order | identical |
 | **spans carrying a marked-content id** | **0** |
 
-Word already exports with `DocStructureTags = $true`, which is why the tagging
-is there.
+The tagging is there because the export asks for it. The flag is passed
+positionally — 12th of fourteen arguments, named only in a comment above the
+call — so its value is not restated here; `test/unit/export-tagging.test.mjs`
+derives it from the source and guards the alignment it depends on.
 
 **The gap, named:** the structure exists in the file and pdf.js hands it over,
 but a bare `TextLayer` does not wire it into the DOM. A screen reader walking our
