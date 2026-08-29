@@ -201,11 +201,24 @@ Write-Host "=== cleanup ==="
 # never open one) and sidesteps the binding entirely, which is why the four
 # probes here that already used `$word.Quit()` never leaked.
 #
-# Honest limit on that explanation: the failure does *not* reproduce in a minimal
-# script -- `Quit(0)` on a function-returned, array-stored instance binds fine
-# there. So the trigger is something this file does that the reduction does not,
-# and it is unidentified. What is measured is that the `(0)` form threw here on
-# every instance of every run, and that the no-argument form reaps them.
+# The trigger was identified after this comment first claimed it was not: it is
+# the **interpreter**, not the argument form and not anything this file does.
+# Measured on one machine, same code, both runtimes:
+#
+#   Windows PowerShell 5.1   Quit(0) throws, Word survives
+#                            Quit($var) throws, Word survives   <- no literal/variable split
+#                            Quit() binds, Word exits
+#   PowerShell 7.6.5 (Core)  all three bind, Word exits
+#
+# `word-host.ps1` and every probe here run under `powershell.exe`, which is 5.1.
+# The earlier "does not reproduce in a minimal script" note was true and useless:
+# that reduction was run under 7.x, so it was the wrong instrument and cleared a
+# defect that reproduces every time under the shipping one. A null result is only
+# evidence once you have shown the instrument can produce a positive.
+#
+# Credit: isolated by the edit_document session, which checked the shape argument
+# instead of accepting it, and independently reproduced here before being written
+# down.
 $i = 0
 foreach ($a in $created) {
     $i++

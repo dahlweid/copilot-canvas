@@ -83,24 +83,29 @@ Write-Host "  same pid as the first: $($pid2 -eq $pidFromHwnd)"
 
 Write-Host ""
 Write-Host "=== cleanup ==="
-# Reporting catches, not swallowing ones. `Close(0)` was measured here and does
-# *not* throw -- `Close(0)`, `Close()` and `Close([ref]0)` all returned OK and
-# left `Documents.Count` at 0 -- so this is not a fix for a live leak, and saying
-# otherwise would be the overclaiming-comment defect in the commit that cites it.
-# It is the instrument: `Quit(0)` also bound cleanly in a minimal script while
-# throwing on every instance inside this probe family, so a minimal-script green
-# is weak evidence and the swallow is what converted that into a silent leak.
+# Reporting catches, not swallowing ones. `Close(0)` was measured **under 5.1**,
+# this file's actual runtime, and does *not* throw -- `Close(0)`, `Close()` and
+# `Close([ref]0)` all returned OK and left `Documents.Count` at 0. So this is not
+# a fix for a live leak, and saying otherwise would be the overclaiming-comment
+# defect in the commit that cites it. It is the instrument.
+#
+# That asymmetry is itself measured, not assumed: `Quit(0)` throws under 5.1 and
+# `Close(0)` does not, despite both taking by-value VARIANT arguments. Why they
+# differ is unknown; that they differ is why neither may be inferred from the
+# other.
 #
 # The argument is kept. Unlike `Quit`, `Document.Close()` with no argument
 # *prompts* when the document is dirty, and a modal prompt in a hidden Word is a
 # hang -- so `0` (wdDoNotSaveChanges) is load-bearing here rather than a default
 # spelled out, and swapping it for the argument-less form to dodge a binding
-# hazard would trade a hypothetical throw for a real deadlock.
+# hazard would trade a measured non-problem for a real deadlock.
 try { $doc.Close(0) } catch { Write-Host "  doc.Close threw -- $($_.Exception.Message.Split([char]10)[0])" }
 try { $doc2.Close(0) } catch { Write-Host "  doc2.Close threw -- $($_.Exception.Message.Split([char]10)[0])" }
-# `Quit()`, not `Quit(0)`: the argument form binds `VARIANT*` parameters and was
-# measured throwing "Argument 1 must be ... PSReference" in probe-word-ownership.ps1,
-# inside a `catch { }` that hid it while every instance leaked.
+# `Quit()`, not `Quit(0)`. Under Windows PowerShell 5.1 -- this file's runtime --
+# `Quit(0)` and `Quit($var)` both throw "Argument 1 must be ... PSReference" *and
+# leave the process alive*; only the no-argument form binds and reaps it. Under
+# PowerShell 7.6.5 all three forms work, which is exactly how this stayed hidden:
+# the reduction that "cleared" it was run under 7.x.
 try { $app.Quit() } catch { Write-Host "  Quit threw -- $($_.Exception.Message.Split([char]10)[0])" }
 try { [Runtime.InteropServices.Marshal]::ReleaseComObject($app) | Out-Null } catch { Write-Host "  ReleaseComObject threw -- $($_.Exception.Message.Split([char]10)[0])" }
 [System.GC]::Collect(); [System.GC]::WaitForPendingFinalizers()
