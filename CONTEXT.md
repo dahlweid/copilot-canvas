@@ -567,6 +567,50 @@ generates no exclusive lock, an idle machine generates no contended shutdown.
 That code is untested, not correct, and the suite disguises it. The tell is when
 a test's coverage depends on a property of the machine rather than on the test.
 
+**A green CI tick on this repo has never covered a single line of Word's
+behaviour, and cannot on a runner without Office.** This is structural, not an
+outage. `.github/workflows/validate.yml` runs `ubuntu-latest`, and its own
+header states the constraint:
+
+> Everything here must run without Office installed. The integration suite
+> drives Word through COM and cannot run on a hosted runner (see
+> docs/repo-restructure.md §1, constraint C5) — it stays a local gate until a
+> self-hosted Windows runner with an Office licence exists.
+
+Three validation steps run behind that tick, after a checkout and a Node setup:
+packaging invariants (`validate-extensions.mjs`), citation resolution
+(`check-citations.mjs`), and the **Office-free** unit tests.
+
+**Be exact about what the third one covers, because it is not nothing.** The
+unit suite checks our *policy*, and checks the part that was actually wrong:
+`word-pids.test.mjs` runs on the hosted runner under names like "the kill is
+name-checked, because pids are reused" and "a pid that merely appeared during the
+run is never killed". That file also states its own limit better than a summary
+can — process listing and killing are both injected, so what is asserted is
+"which pids are eligible to be killed — rather than any Windows behaviour".
+
+The line falls between **the decisions we make** and **what Word does when we act
+on them**. CI checks the first. It has never observed the second: whether
+`Quit()` releases the process, what a handle pins, whether a setting persists
+into the user's next session, what a save or a share mode does to a file on disk.
+Those rest on the **local** gate and the cited probes, and no tick has ever been
+evidence for one of them.
+
+**The billing outage makes this urgent, and not in the direction it looks.** Red
+is *not* handled carefully here — #36 re-ran a billing-blocked job and concluded
+the **tree** had broken it (above). What red earns is not care but
+*investigation*: it is conspicuous, so someone eventually asks. Green asks
+nothing of anyone. When billing resumes the ticks return meaning what they always
+meant, which was never Word's behaviour — and by then the merges that carried a
+documented red will look like the risky ones. **Documenting only the red leaves
+the more misleading half standing.**
+
+The general rule, which outlives this repo's outage: **a check's name is not its
+scope.** `validate` sounds total and is not. Read what the workflow runs before
+treating a tick as evidence for anything, and when a PR's behaviour is covered
+only locally, say so in the PR body — the reader six months out has the tick and
+no way to know what it excluded.
+
 **Assert through the boundary the caller actually sees, not one layer beneath
 it.** A test placed below a boundary will confirm a property no caller can
 observe. `edit_document`'s recovery path set `snapshot`, `rolledBack` and
