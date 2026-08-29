@@ -1356,3 +1356,88 @@ own during the same session. So a `+1` across a probe run is inside the noise
 floor and attributes to nothing. The evidence that a probe is clean is its own
 attributed pid reporting `exited on Quit()`, not the census — which is the same
 lesson as #25, reached from the other direction.
+
+### 20.2 Measured: `node --test "**/test/unit/*.test.mjs"` runs nothing and exits 0
+
+Verifying this PR needed the Office-free unit suite, and the obvious invocation
+silently ran no tests. Both forms, run here on Node v24.18.0:
+
+| form | output | exit |
+| --- | --- | --- |
+| `node --test "**/test/unit/*.test.mjs"` | a summary reading `tests 0 … pass 0 … fail 0` | **0** |
+| `node --test ".github/extensions/office-canvas/test/unit/*.test.mjs"` | full suite, 245 pass | 0 |
+
+`**` does not descend into a dot-directory, so the glob never reaches
+`.github/`, and Node reports success on having found nothing. Note what the
+first row is *not*: it is not silent, and an earlier report that it produced no
+output at all does not reproduce — Node does print `tests 0`. The signal exists,
+but it exists **only in the body**. The exit status is 0, and **a green exit
+code that means "I ran no tests" is indistinguishable from "everything passed"**
+to anything that reads exit codes: a shell `&&` chain, a CI step, or a person
+checking their work before pushing. The explicit path in
+`.github/workflows/validate.yml` is the form that works.
+
+The rule, and it is the positive-control rule this repo already applies to
+probes, now applied to the test runner itself: **a test command's exit code
+means nothing until you have confirmed it ran a nonzero number of tests.**
+
+### 20.3 Measured: the seed block in `probe-desktop.ps1` hangs, and hangs unattributably
+
+Exercising the one fixed line that the fixture normally skips — by moving
+`$env:TEMP\desktop-probe.docx` aside so the seed block at
+`probe-desktop.ps1:115-139` would run — the probe **blocked for over nine
+minutes** and never reached the `Quit()` on line 135. It stopped after
+`New-Object -ComObject Word.Application` returned and before `SaveAs2`
+completed (the fixture never appeared), so the unbounded call was
+`Documents.Add()` or `SaveAs2`. This is the unbounded-COM-call failure mode,
+observed rather than argued, and made likely by the machine's Word population.
+
+The consequence is the sharper half. The Word it created (`69544`, command line
+`/Automation -Embedding`, born 2 s after the script started) **was never
+printed by the probe**, because the seed block does all of its hangable work
+*before* it computes a pid — and the pid it eventually computes comes from a
+`$before` snapshot taken after `New-Object`, so it is unreliable anyway. A hang
+therefore produces a Word that cannot be attributed by any sound route: the
+hwnd route needs a COM call the hung instance will not service, and every
+`WINWORD.EXE` shares parent pid `1684` (the DCOM launcher), so parentage
+discriminates nothing. Killing the client did not reap it — it was still alive
+60 s later, which is the §20 leak again by a different path.
+
+This is the direct argument for the ordering `probe-quit0-leak.ps1` uses:
+**publish the owned pid before doing anything that can block.** An instrument
+that identifies what it owns only after the risky step has no answer in exactly
+the case where the answer matters. The seed block is deliberately *not*
+retrofitted here — see the comment at the site and #25 — but the census note in
+§20.1 has a named survivor because of it, and it is left alive rather than
+killed on a coincidence of timestamps.
+
+### 20.4 Measured: one deadline reused inside a per-pid loop starves every pid after the first
+
+Review of the §20.1 fix found that the replacement was itself unsound. The
+bounded poll computed `$deadline` once and then ran a per-pid `while` inside a
+`foreach`, so the first pid could spend the entire budget and every later pid
+inherited only the remainder — while the label still read "after 30 s".
+
+Measured with sleeper processes rather than Word, budget 6 s, both processes
+outliving it:
+
+| loop shape | pid 1 actually polled | pid 2 actually polled | label emitted |
+| --- | --- | --- | --- |
+| one deadline, per-pid `while` | 6011 ms | **1 ms** | "STILL ALIVE after 6 s, killed" — for both |
+| one deadline, set poll | 6309 ms | 6309 ms | "STILL ALIVE after 6309 ms, killed" |
+
+The second row of the first shape is a **fabricated measurement**: a process
+observed for one millisecond, killed, and reported as having survived a six
+second wait. In a probe that is the same defect class as an error message
+naming a cause the code never distinguished — and worse, because a probe's
+output becomes a row in a table someone later cites.
+
+This is not hypothetical here. `probe-caret.ps1` owns **two** Words in an
+ordinary run (`50312` and `58504`, exiting 4895 ms and 3193 ms after `Quit()`),
+so the starving branch is reachable on this repo's own probes.
+
+The repair keeps one wall-clock deadline for the whole set — a per-pid deadline
+would multiply an already generous budget by N — polls the set until every owned
+pid has gone or the deadline passes, and derives each label from the elapsed
+time that was actually measured. Reported outcomes are now `exited on Quit()
+pid <n> after <m> ms`, so the number in the label is one the probe observed.

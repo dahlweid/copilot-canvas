@@ -37,6 +37,15 @@ public static extern int GetWindowThreadProcessId(IntPtr hWnd, out int lpdwProce
 "@
 
 try {
+    # Publish a marker before COM activation. This cannot carry a pid -- attribution
+    # needs ActiveWindow, which needs a document, so the pid does not exist yet --
+    # but it lets the parent distinguish "hung before any Word existed" from "hung
+    # after creating one it can no longer name". Measured: this window is real. A
+    # seed block in probe-desktop.ps1 with the same ordering blocked in Documents.Add
+    # for over nine minutes and left a Word (/Automation -Embedding) that no sound
+    # route could attribute, and that outlived its client (PLAN.md 20.3).
+    [IO.File]::WriteAllText($OutFile, "START")
+
     $app = New-Object -ComObject Word.Application
     $app.Visible = $false
     $app.DisplayAlerts = 0
@@ -55,11 +64,13 @@ try {
         throw "attribution failed: hwnd resolved to pid $wordPid ($($proc.ProcessName))"
     }
 
-    # Publish the pid before doing anything that can hang, so that a worker which
-    # never reaches its end still leaves the parent able to attribute and clean up
-    # the Word it started. Word activation degrades badly with population
-    # (Documents.Add: 700 ms idle vs 9-11 s at 31 instances), so hanging here is a
-    # real mode, not a hypothetical one.
+    # Publish the pid at the first moment it can be known -- immediately after
+    # attribution and before the Quit arm under test -- so a worker that hangs in
+    # the measured section still leaves the parent able to name and clean up the
+    # Word it started. Note the limit of that guarantee: everything above this line
+    # can hang too, and a hang there is covered only by the START marker, not by a
+    # pid. An earlier version of this comment claimed the pid was published before
+    # anything that can hang, which the code above disproves.
     [IO.File]::WriteAllText($OutFile, "PID $wordPid")
     $threw = 'no'
     $why = ''
@@ -120,6 +131,14 @@ function Invoke-Arm {
     if (-not $p.HasExited) {
         $p.Kill()
         if ($head[0] -eq 'PID') { Stop-OwnedWord -WordPid ([int]$head[1]) -Why "$Mode worker hung" }
+        elseif ($head[0] -eq 'START') {
+            # Hung before attribution completed. A Word may exist and cannot be
+            # named, so it is reported and deliberately not killed -- pid-set
+            # differencing is unsound on a machine with a live external producer,
+            # and killing an unattributable WINWORD can destroy another session's
+            # work. Reporting an orphan beats guessing which one it is.
+            Write-Host "WARNING: $Mode worker hung before attribution. If it had activated Word, that instance cannot be named and was NOT killed."
+        }
         throw "$Mode worker did not exit within 120 s (last state: '$raw')"
     }
     if ($head[0] -eq 'ERR') { throw "$Mode worker failed: $raw" }

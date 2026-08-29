@@ -67,17 +67,40 @@ finally {
     # idle, longer under load -- ADR 0005), so a fixed 2 s sleep made this sweep
     # the actual reaper on every run and hid whether Quit() worked at all. Poll to
     # a generous deadline instead; on success that costs only the real exit time.
-    # The label states what was observed, never a cause the code cannot know.
+    #
+    # One deadline for the whole set, not one per pid. A per-pid deadline would
+    # multiply an already generous budget by N; reusing a single deadline *inside*
+    # a per-pid loop -- which is what this did first -- is worse, because every pid
+    # after the first inherits only what its predecessors did not spend and can be
+    # killed after a fraction of it while the label claims the full budget. Poll
+    # the set, record when each pid actually went, and derive every label from that
+    # record: a probe that prints a duration it did not measure has fabricated a
+    # measurement, which is the one thing an instrument may never do.
     $deadline = (Get-Date).AddSeconds(30)
+    $started = Get-Date
+    $exitedAfterMs = @{}
+    while ($true) {
+        foreach ($p in $owned) {
+            if (-not $exitedAfterMs.ContainsKey($p)) {
+                # Name-checked, so a recycled pid cannot read as a survivor.
+                $proc = Get-Process -Id $p -ErrorAction SilentlyContinue
+                if (-not $proc -or $proc.ProcessName -ne 'WINWORD') {
+                    $exitedAfterMs[$p] = [int]((Get-Date) - $started).TotalMilliseconds
+                }
+            }
+        }
+        if ($exitedAfterMs.Count -eq $owned.Count -or (Get-Date) -ge $deadline) { break }
+        Start-Sleep -Milliseconds 250
+    }
+    $waitedMs = [int]((Get-Date) - $started).TotalMilliseconds
     foreach ($p in $owned) {
-        while ((Get-Date) -lt $deadline -and (Get-Process -Id $p -ErrorAction SilentlyContinue).ProcessName -eq 'WINWORD') {
-            Start-Sleep -Milliseconds 250
+        if ($exitedAfterMs.ContainsKey($p)) {
+            Rep "exited on Quit()" ("pid {0} after {1} ms" -f $p, $exitedAfterMs[$p])
         }
-        if ((Get-Process -Id $p -ErrorAction SilentlyContinue).ProcessName -eq 'WINWORD') {
-            Stop-Process -Id $p -Force
-            Rep "STILL ALIVE after 30 s, killed" $p
+        else {
+            Stop-Process -Id $p -Force -ErrorAction SilentlyContinue
+            Rep ("STILL ALIVE after {0} ms, killed" -f $waitedMs) $p
         }
-        else { Rep "exited on Quit()" $p }
     }
 }
 
