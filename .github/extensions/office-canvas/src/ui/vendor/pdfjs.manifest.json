@@ -2,6 +2,14 @@
     "version": "6.2.108",
     "source": "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.2.108/build",
     "generatedBy": "tools/vendor-pdfjs.mjs",
+    "license": {
+        "name": "LICENSE",
+        "spdx": "Apache-2.0",
+        "holder": "Mozilla Foundation",
+        "source": "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.2.108/LICENSE",
+        "bytes": 10174,
+        "sha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594"
+    },
     "files": [
         {
             "name": "pdf.min.mjs",
@@ -10,8 +18,8 @@
         },
         {
             "name": "pdf-text-layer.css",
-            "bytes": 3394,
-            "sha256": "eb942b78bcf86b295cacc709c0748f8afc9d507857576abab392ee5908a54efd",
+            "bytes": 4058,
+            "sha256": "a8c41516c4c7ec31b12e940e88e682cbd6429e3725271718903b879d4724071c",
             "extractedFrom": "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.2.108/web/pdf_viewer.css",
             "rule": ".textLayer"
         }

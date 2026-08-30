@@ -86,6 +86,22 @@ $mutants = @(
        from = 'const TEXT_LAYER_CONTRACT = ["--font-height", "--scale-x", "--rotate", "--min-font-size", "--total-scale-factor"];'
        to   = 'const TEXT_LAYER_CONTRACT = [];' }
 
+    # --- attribution ----------------------------------------------------------
+
+    # The original defect: the rule is cut out and the notice above it is left
+    # behind. Both guards of "the emitted stylesheet carries Mozilla's notice"
+    # go at once -- reading it, and throwing when it is not there -- because a
+    # mutation of only one would confirm a half-live pair.
+    @{ name = 'the extracted stylesheet is emitted without the upstream notice'
+       file = 'tools/vendor-pdfjs.mjs'; at = 'repo'
+       from = '    const notice = extractLeadingNotice(viewerCss);'
+       to   = '    const notice = ""; void extractLeadingNotice;' }
+
+    @{ name = 'a source with no copyright notice is accepted silently'
+       file = 'tools/vendor-pdfjs.mjs'; at = 'repo'
+       from = '    if (!/copyright/i.test(notice)) {'
+       to   = '    if (false) {' }
+
     # --- reassembly -----------------------------------------------------------
 
     @{ name = 'parts concatenated in filename order, not manifest order'

@@ -33,8 +33,24 @@
 // fragment of a program and does not parse. The `.partN` suffix keeps them out
 // of that check, and out of the `console.*` and import-graph scans, none of
 // which can say anything meaningful about half an expression.
+//
+// ## Why the Apache-2.0 notices are emitted here rather than added to the files
+//
+// We redistribute pdf.js verbatim, so Apache-2.0 §4 applies to us. §4(a) wants
+// recipients to get a copy of the licence, and §4(c) wants the copyright and
+// attribution notices retained from the Source form. The two minified bundles
+// carry their own `@licstart` block and need nothing; the extracted stylesheet
+// is a cut out of `web/pdf_viewer.css`, and the first version of this script
+// dropped that file's notice on the floor.
+//
+// Patching the stylesheet by hand would not have fixed it: this script rewrites
+// the whole vendor directory on the next version bump and would have dropped it
+// again, silently. So the notice is *read out of the upstream file* and the
+// licence is *fetched from the same release*, which also means neither can go
+// stale relative to what was actually vendored.
 
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -46,6 +62,24 @@ const execFileAsync = promisify(execFile);
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const VENDOR_DIR = path.join(ROOT, ".github", "extensions", "office-canvas", "src", "ui", "vendor");
 const MANIFEST_NAME = "pdfjs.manifest.json";
+
+/** The vendored copy of Apache-2.0, discharging §4(a) for anyone given this folder. */
+const LICENSE_NAME = "LICENSE";
+
+/**
+ * Phrases that identify the fetched licence as Apache-2.0.
+ *
+ * Taken from the file actually served for 6.2.108, not from the canonical
+ * Apache text: pdf.js ships the licence without its "APPENDIX: How to apply"
+ * section, so asserting on the appendix would fail against a correct file. The
+ * point of the check is narrow — if a future release relicenses pdf.js, this
+ * script must stop rather than vendor new terms under a header claiming the old
+ * ones.
+ */
+const APACHE_LICENSE_MARKERS = ["Apache License", "Version 2.0, January 2004", "END OF TERMS AND CONDITIONS"];
+
+/** The one rule we keep out of the viewer stylesheet. */
+const TEXT_LAYER_RULE = ".textLayer";
 
 const DEFAULT_VERSION = "6.2.108";
 
@@ -131,6 +165,58 @@ function extractRule(css, selector) {
     throw new Error(`${selector} is not brace-balanced`);
 }
 
+/**
+ * The leading comment block of a stylesheet, when it carries a copyright notice.
+ *
+ * Apache-2.0 §4(c) asks that we retain "all copyright ... and attribution
+ * notices from the Source form of the Work". Reading the notice out of the file
+ * the rule is cut from is what makes that literally true: a notice typed out
+ * here would be our text *about* Mozilla's file, and it would go stale the
+ * first time upstream changed the year.
+ *
+ * An absent notice throws rather than quietly emitting nothing. Emitting
+ * nothing is precisely the regression this exists to stop, and a second silent
+ * drop would be indistinguishable from a clean run.
+ */
+function extractLeadingNotice(css) {
+    const start = css.indexOf("/*");
+    if (start < 0 || css.slice(0, start).trim() !== "") {
+        throw new Error("the upstream stylesheet does not open with a comment, so it carries no notice to retain");
+    }
+    const end = css.indexOf("*/", start + 2);
+    if (end < 0) throw new Error("the upstream stylesheet's leading comment is unterminated");
+    const notice = css.slice(start, end + 2);
+    if (!/copyright/i.test(notice)) {
+        throw new Error("the upstream stylesheet's leading comment carries no copyright notice");
+    }
+    return notice;
+}
+
+/**
+ * The stylesheet we commit: upstream's notice, our provenance line, the rule.
+ *
+ * Split out of `main` so a test can drive the exact bytes this writes without
+ * going near the network. The generator is the load-bearing half of the
+ * attribution fix — an artifact patched by hand is undone by the next version
+ * bump — so what it emits has to be testable on its own.
+ *
+ * The provenance paragraph is also what Apache-2.0 §4(b) asks for: a prominent
+ * notice that we changed the file. It says which file, which release and what
+ * was taken, so it states the modification rather than merely admitting one.
+ */
+function buildTextLayerCss(viewerCss, version) {
+    const notice = extractLeadingNotice(viewerCss);
+    const rule = extractRule(viewerCss, TEXT_LAYER_RULE);
+    return (
+        `${notice}\n\n` +
+        `/* Extracted from pdfjs-dist@${version} web/pdf_viewer.css by tools/vendor-pdfjs.mjs.\n` +
+        `   Only the ${TEXT_LAYER_RULE} rule: the other 160 KB style layers this viewer\n` +
+        `   never mounts. Do not edit — re-run the vendoring script.\n` +
+        `   The Apache-2.0 licence text is in ${LICENSE_NAME}, beside this file. */\n` +
+        `${rule}\n`
+    );
+}
+
 function assertUtf8(buffer, what) {
     try {
         new TextDecoder("utf-8", { fatal: true }).decode(buffer);
@@ -156,25 +242,42 @@ function parseArgs(argv) {
 
 async function main() {
     const { version } = parseArgs(process.argv.slice(2));
-    const base = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${version}/build`;
-    const web = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${version}/web`;
+    const pkg = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${version}`;
+    const base = `${pkg}/build`;
+    const web = `${pkg}/web`;
 
     process.stdout.write(`vendoring pdfjs-dist@${version}\n`);
 
-    const [main_, worker, viewerCss] = await Promise.all([
+    const [main_, worker, viewerCss, license] = await Promise.all([
         fetchBuffer(`${base}/pdf.min.mjs`),
         fetchBuffer(`${base}/pdf.worker.min.mjs`),
         fetchBuffer(`${web}/pdf_viewer.css`),
+        fetchBuffer(`${pkg}/LICENSE`),
     ]);
 
     assertUtf8(main_, "pdf.min.mjs");
     assertUtf8(worker, "pdf.worker.min.mjs");
+    assertUtf8(license, LICENSE_NAME);
+
+    // The licence is taken from the same release as the code, so the copy we
+    // ship cannot describe a different version than the one we vendored. The
+    // marker check is the stop: if pdf.js ever relicenses, this refuses rather
+    // than committing new terms under a stylesheet header naming the old ones.
+    const licenseText = license.toString("utf8");
+    for (const marker of APACHE_LICENSE_MARKERS) {
+        if (!licenseText.includes(marker)) {
+            throw new Error(
+                `${pkg}/LICENSE does not read as Apache-2.0 (no '${marker}') — ` +
+                    `check what pdfjs-dist@${version} is licensed under before vendoring it`,
+            );
+        }
+    }
 
     // The text layer is positioned entirely by these properties, so the CSS is
     // taken from the same release rather than written out here from what the
     // minified source appears to do. Asserting the contract in both directions
     // is what makes that safe across a version bump.
-    const textLayerCss = extractRule(viewerCss.toString("utf8"), ".textLayer");
+    const textLayerCss = buildTextLayerCss(viewerCss.toString("utf8"), version);
     const bundleText = main_.toString("utf8");
     for (const property of TEXT_LAYER_CONTRACT) {
         if (!bundleText.includes(property)) {
@@ -201,17 +304,9 @@ async function main() {
     await mkdir(VENDOR_DIR, { recursive: true });
 
     await writeFile(path.join(VENDOR_DIR, "pdf.min.mjs"), main_);
+    await writeFile(path.join(VENDOR_DIR, LICENSE_NAME), license);
 
-    const textLayerBuffer = Buffer.from(
-        "/* Extracted from pdfjs-dist@" +
-            version +
-            " web/pdf_viewer.css by tools/vendor-pdfjs.mjs.\n" +
-            "   Only the .textLayer rule: the other 160 KB style layers this viewer\n" +
-            "   never mounts. Do not edit — re-run the vendoring script. */\n" +
-            textLayerCss +
-            "\n",
-        "utf8",
-    );
+    const textLayerBuffer = Buffer.from(textLayerCss, "utf8");
     await writeFile(path.join(VENDOR_DIR, "pdf-text-layer.css"), textLayerBuffer);
 
     const partEntries = [];
@@ -229,6 +324,20 @@ async function main() {
         version,
         source: base,
         generatedBy: "tools/vendor-pdfjs.mjs",
+        // Deliberately its own key rather than an entry in `files`. `files` means
+        // "vendored asset the viewer fetches over /vendor/", and the integration
+        // suite asserts exactly that by walking `files` and expecting HTTP 200
+        // for each. The licence is shipped to be *read in the folder*, not
+        // served, so listing it there would assert a route that does not exist.
+        // It is still covered by a digest, in the unit suite, like everything else.
+        license: {
+            name: LICENSE_NAME,
+            spdx: "Apache-2.0",
+            holder: "Mozilla Foundation",
+            source: `${pkg}/LICENSE`,
+            bytes: license.byteLength,
+            sha256: sha256(license),
+        },
         files: [
             { name: "pdf.min.mjs", bytes: main_.byteLength, sha256: sha256(main_) },
             {
@@ -250,6 +359,8 @@ async function main() {
 
     process.stdout.write(
         `  pdf.min.mjs           ${main_.byteLength} bytes\n` +
+            `  pdf-text-layer.css    ${textLayerBuffer.byteLength} bytes (${TEXT_LAYER_RULE}, notice retained)\n` +
+            `  ${LICENSE_NAME}               ${license.byteLength} bytes (Apache-2.0, from ${pkg}/LICENSE)\n` +
             `  pdf.worker.min.mjs    ${worker.byteLength} bytes -> ${parts.length} parts ` +
             `(${partEntries.map((p) => p.bytes).join(" + ")})\n`,
     );
@@ -272,4 +383,15 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     }
 }
 
-export { PART_TARGET_BYTES, VENDOR_DIR, MANIFEST_NAME, TEXT_LAYER_CONTRACT, extractRule };
+export {
+    PART_TARGET_BYTES,
+    VENDOR_DIR,
+    MANIFEST_NAME,
+    LICENSE_NAME,
+    APACHE_LICENSE_MARKERS,
+    TEXT_LAYER_CONTRACT,
+    TEXT_LAYER_RULE,
+    extractRule,
+    extractLeadingNotice,
+    buildTextLayerCss,
+};
