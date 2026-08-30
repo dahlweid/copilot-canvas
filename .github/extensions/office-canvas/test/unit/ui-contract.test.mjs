@@ -402,7 +402,7 @@ test("the mark ships with no source, so a machine without Word draws nothing bro
     const markup = await read("index.html");
     const marks = [...markup.matchAll(/<img\b[^>]*class="word-mark"[^>]*>/g)].map((m) => m[0]);
 
-    assert.ok(marks.length >= 2, `expected the name and the button to carry a mark, found ${marks.length}`);
+    assert.ok(marks.length >= 1, `expected at least the name to carry a mark, found ${marks.length}`);
     for (const mark of marks) {
         assert.ok(!/\bsrc=/.test(mark), `a word-mark ships with a src: ${mark}`);
         assert.match(mark, /\bhidden\b/, `a word-mark is visible before it has loaded: ${mark}`);
@@ -423,7 +423,8 @@ test("app.js delegates the mark's fallback rather than deciding it inline", asyn
         "app.js no longer imports the mark loader",
     );
     assert.match(script, /showWordMark\s*\(/, "app.js imports the loader but never calls it");
-    // The button keeps a drawn glyph to fall back to; the name never had one.
-    assert.match(script, /fallback:\s*el\.openInWordGlyph/, "the button has no glyph to fall back to");
+    // The button no longer carries a fallback; this extension calls the loader for
+    // the document-name placement only.
+    assert.doesNotMatch(script, /fallback:\s*el\.openInWordGlyph/, "the button has a glyph fallback, which was intentionally removed");
 });
 

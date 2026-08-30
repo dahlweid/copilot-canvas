@@ -25,7 +25,6 @@ const el = {
     docMeta: $("docMeta"),
     copyPath: $("copyPath"),
     docNameMark: $("docNameMark"),
-    openInWordMark: $("openInWordMark"),
     openInWordGlyph: $("openInWordGlyph"),
     status: $("status"),
     sidebar: $("sidebar"),
@@ -461,7 +460,6 @@ el.searchInput.addEventListener("keydown", (event) => {
 // that is already drawn, so nothing here is allowed to delay or fail the
 // startup below.
 showWordMark({ img: el.docNameMark });
-showWordMark({ img: el.openInWordMark, fallback: el.openInWordGlyph });
 
 api("/api/state")
     .then((initial) => applyState(initial))

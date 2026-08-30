@@ -83,7 +83,11 @@ body {
     width: 16px;
     height: 16px;
     flex: 0 0 auto;
-    align-self: center;
+    /* Align the mark to the filename's baseline so it optical-aligns with the
+       filename text rather than with the taller meta line. `align-self: baseline`
+       expresses the intent directly (align to the text baseline) instead of
+       a hardcoded pixel shift which would break across fonts, zoom and themes. */
+    align-self: baseline;
     object-fit: contain;
 }
 
