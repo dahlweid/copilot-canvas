@@ -127,8 +127,50 @@ function requireDocument(instance) {
     return instance.doc;
 }
 
-/** Resolves a user- or agent-supplied path against the workspace. */
+const describePathArg = (value) => (typeof value === "string" ? "an empty string" : `a ${typeof value}`);
+
+/**
+ * Resolves a user- or agent-supplied path against the workspace.
+ *
+ * The guard is the whole point of this function's shape (#38). Every tool
+ * declares `required: ["path"]`, and measured in #28 this host enforces no
+ * schema keyword before dispatch -- not `required`, not `type` -- so the
+ * handler is the only defence there is. Without the guard the first thing a
+ * missing `path` met was `path.isAbsolute(undefined)`, and Node refused the
+ * call with its own `ERR_INVALID_ARG_TYPE`: measured, `ERR_INVALID_ARG_TYPE:
+ * The "path" argument must be of type string. Received undefined`, from all
+ * four tools. That is a refusal nobody chose, authored by Node about its own
+ * argument contract, so it cannot name the tool's parameter or say what to
+ * send instead.
+ *
+ * Empty and whitespace-only strings are refused here too, rather than left to
+ * `normalizeDocPath`. They never reached it: with a workspace set,
+ * `path.join(workspacePath, "")` is the workspace directory -- measured, and
+ * the same for `"   "` once `normalizeDocPath` trims -- so a blank `path`
+ * resolved to a *directory* and was only ever caught downstream, by a code
+ * naming something else. The canvas is unaffected: `open` tests
+ * `ctx.input?.path` for truthiness before calling this, so an omitted path
+ * still opens the document picker.
+ *
+ * `invalid_path` rather than a new code: it is already the extension-surface
+ * code for an unusable path, and it is what `normalizeDocPath` answers an
+ * empty string with today, so every spelling of "no usable path" now gives one
+ * answer.
+ */
 function resolveInputPath(input) {
+    if (input === undefined || input === null) {
+        throw new DocumentError(
+            "invalid_path",
+            "`path` is required: give an absolute path to the document, or one relative to the workspace.",
+        );
+    }
+    if (typeof input !== "string" || input.trim() === "") {
+        throw new DocumentError(
+            "invalid_path",
+            `\`path\` must be a non-empty string — an absolute path to the document, or one relative to the ` +
+                `workspace. Received ${describePathArg(input)}.`,
+        );
+    }
     if (path.isAbsolute(input) || !session?.workspacePath) return normalizeDocPath(input);
     return normalizeDocPath(path.join(session.workspacePath, input));
 }
