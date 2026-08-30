@@ -141,6 +141,31 @@ async function scanForDocuments(root, { limit = 200, maxDepth = 6 } = {}) {
     return found.sort((a, b) => a.relative.localeCompare(b.relative));
 }
 
+/**
+ * Auto-refresh failures that will not clear on their own.
+ *
+ * Everything else is retried, and the asymmetry is deliberate. This set can be
+ * stated from what the code knows: an ACL, an extension Word will not open, and
+ * our own state errors are all conditions that are exactly as true in five
+ * seconds as they are now — `document-reader.mjs` says so of `permission_denied`
+ * in as many words, beside the `file_locked` it contrasts with. The transient
+ * set cannot be stated that way, because the failing call reaches Word, the
+ * filesystem and a PowerShell host, and a code we have not enumerated is far
+ * likelier to be a passing condition than a permanent one. Retrying is bounded,
+ * so treating an unknown code as transient costs a few seconds before it is
+ * reported; treating a transient one as terminal cost the user their panel.
+ */
+const TERMINAL_REFRESH_CODES = new Set(["permission_denied", "unsupported_type", "invalid_path", "not_open"]);
+
+/**
+ * Waits between auto-refresh attempts. Four attempts across ~6s.
+ *
+ * Long enough to outlast the flush at the tail of a save, short enough that a
+ * document which really is gone is reported while the user still associates the
+ * message with what they did.
+ */
+const AUTO_REFRESH_DELAYS_MS = [500, 1500, 4000];
+
 export class ViewerInstance {
     #server = null;
     #clients = new Set();
@@ -156,7 +181,15 @@ export class ViewerInstance {
     // cannot be shown to contain it however recently it finished.
     #changeEpoch = 0;
 
-    constructor({ cache, instanceId, workspacePath, log = () => {}, spawnFn = spawn, vendorDir = VENDOR_DIR }) {
+    constructor({
+        cache,
+        instanceId,
+        workspacePath,
+        log = () => {},
+        spawnFn = spawn,
+        vendorDir = VENDOR_DIR,
+        autoRefreshDelaysMs = AUTO_REFRESH_DELAYS_MS,
+    }) {
         // A function, or a RenderCache directly. The function form is what the
         // extension passes, and it is not a convenience: a panel outlives Word
         // being shut down, and this instance used to keep the exact object it
@@ -171,6 +204,7 @@ export class ViewerInstance {
         this.log = log;
         this.spawnFn = spawnFn;
         this.vendorDir = vendorDir;
+        this.autoRefreshDelaysMs = autoRefreshDelaysMs;
         this.url = null;
 
         this.doc = null; // last known describe() payload
@@ -184,9 +218,12 @@ export class ViewerInstance {
 
         this.#watcher = new FileWatcher({
             log,
-            onChange: () => {
-                this.#autoRefresh().catch((err) => this.log(`auto-refresh failed: ${err.message}`));
-            },
+            // Deliberately not caught here. A rejection is how the watcher is
+            // told the change was not consumed, so it puts its fingerprint back
+            // and the next write reports the change again. Swallowing it -- what
+            // this did -- left the watcher believing the edit had been handled
+            // while the panel sat in `error` with nothing left to re-fire on.
+            onChange: () => this.#autoRefresh(),
         });
     }
 
@@ -406,6 +443,29 @@ export class ViewerInstance {
         }
     }
 
+    /**
+     * Re-renders because the file moved on disk. Retries a failure rather than
+     * latching one, and rethrows if it gives up.
+     *
+     * The failure this exists for is a race, not a fault: the watcher fires
+     * ~700 ms after the last write (300 ms debounce, then two 200 ms stable
+     * rounds), which can land inside the tail of a save while the writer still
+     * holds the file. One `refresh` at that instant throws, and the panel used
+     * to stop there — `status: "error"`, no retry, no re-arm — over a document
+     * that was readable again a moment later.
+     *
+     * **What actually failed in the reported case is not established.** The
+     * panel was observed serving `file_locked` minutes after the save, but three
+     * panels were watching the same document and contending on it, which is an
+     * alternative cause that was not excluded. So this does not encode a belief
+     * about which code Word's save produces: it retries anything not known to be
+     * permanent (see `TERMINAL_REFRESH_CODES`) and reports whatever is left.
+     *
+     * Rethrowing is the third part, and it is not error propagation — nothing
+     * above catches it. It is the signal to `FileWatcher` that this change was
+     * not consumed, which is what lets a *later* save re-report it and recover a
+     * panel this one gave up on.
+     */
     async #autoRefresh() {
         if (!this.doc) return;
         this.log(`document changed on disk: ${path.basename(this.doc.path)}`);
@@ -416,12 +476,31 @@ export class ViewerInstance {
         // silently lose the overlay. The render key can tell them apart: it
         // moves only if the file actually differs, so #changeIfCurrent drops the
         // record exactly when an external write really did land.
-        try {
-            await this.refresh();
-        } catch (err) {
-            this.status = "error";
-            this.error = { code: err.code ?? "refresh_failed", message: err.message };
-            this.#pushState();
+
+        // A panel already in `error` has to render for real to leave it.
+        // `refresh` clears the error only on the branch that re-renders, so an
+        // unforced call that short-circuited on `changed: false` -- which is
+        // exactly what a settle landing on an event that moved no bytes
+        // produces -- would return successfully and leave the panel reading
+        // `error` over a perfectly current image.
+        const force = this.status === "error";
+
+        for (let attempt = 0; ; attempt++) {
+            try {
+                await this.refresh({ force });
+                return;
+            } catch (err) {
+                const code = err.code ?? "refresh_failed";
+                const delay = TERMINAL_REFRESH_CODES.has(code) ? undefined : this.autoRefreshDelaysMs[attempt];
+                if (delay === undefined) {
+                    this.status = "error";
+                    this.error = { code, message: err.message };
+                    this.#pushState();
+                    throw err;
+                }
+                this.log(`auto-refresh failed (${code}); retrying in ${delay}ms`);
+                await new Promise((resolve) => setTimeout(resolve, delay));
+            }
         }
     }
 
