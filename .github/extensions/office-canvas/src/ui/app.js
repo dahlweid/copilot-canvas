@@ -4,6 +4,16 @@
 import { PdfView } from "./pdf-view.mjs";
 import { describeChangeBanner } from "./change-wording.mjs";
 
+/**
+ * What the viewer calls itself.
+ *
+ * The header bar names the open *document*, so this is the only name the
+ * product has while one is open. It is duplicated in `index.html` -- once in
+ * `<title>`, so a load with no script still says what this is, and once in the
+ * picker's `<h1>` -- and `ui-contract.test.mjs` requires all three to agree.
+ */
+const PRODUCT = "Word Document Viewer";
+
 const $ = (id) => document.getElementById(id);
 
 const el = {
@@ -30,7 +40,6 @@ const el = {
     toggleSidebar: $("toggleSidebar"),
     reload: $("reload"),
     openInWord: $("openInWord"),
-    changeDoc: $("changeDoc"),
     changeBar: $("changeBar"),
     changeText: $("changeText"),
     jumpToChange: $("jumpToChange"),
@@ -40,7 +49,6 @@ const el = {
 let state = null;
 let currentPage = 1;
 let outlineLoadedFor = null;
-let forcePicker = false;
 
 /**
  * The rendered document. Reporting the visible page back to the host is how a
@@ -158,7 +166,10 @@ function goToPage(page) {
 
 function render() {
     const hasDoc = Boolean(state?.doc && state.status !== "error");
-    const showPicker = forcePicker || !state?.doc;
+    // The picker is the no-document state and nothing else. There is no longer a
+    // control that asks for it while a document is open: the canvas is driven by
+    // the agent, which opens documents through `open_canvas` and `open_document`.
+    const showPicker = !state?.doc;
 
     el.bar.hidden = !state?.doc;
     el.picker.classList.toggle("visible", showPicker);
@@ -167,14 +178,24 @@ function render() {
 
     if (state?.doc) {
         const doc = state.doc;
-        el.docName.textContent = doc.title?.trim() ? `${doc.title}` : doc.name;
+        // The filename, not the docx `title` property. The bar identifies *this
+        // document*, and a metadata title is neither reliably present nor
+        // reliably about the file -- `demo.docx` carries "Word Canvas Fixture",
+        // which read as the product naming itself after an internal fixture.
+        // The title is still worth showing, so it goes to the meta line among
+        // the other document properties, where it reads as one.
+        el.docName.textContent = doc.name;
+        el.docName.title = doc.name;
         const bits = [`${doc.pageCount} ${doc.pageCount === 1 ? "page" : "pages"}`];
         if (doc.wordCount) bits.push(`${doc.wordCount.toLocaleString()} words`);
+        if (doc.title?.trim()) bits.push(doc.title.trim());
         if (doc.author?.trim()) bits.push(doc.author);
         el.docMeta.textContent = bits.join(" · ");
         el.docPath.textContent = doc.path;
         el.docPath.title = doc.path;
-        document.title = doc.name;
+        document.title = `${doc.name} — ${PRODUCT}`;
+    } else {
+        document.title = PRODUCT;
     }
 
     if (state?.status === "error" && state.error) {
@@ -350,7 +371,6 @@ async function open(docPath) {
             method: "POST",
             body: JSON.stringify({ path: docPath }),
         });
-        forcePicker = false;
         currentPage = 1;
         applyState(next, { forceReload: true });
     } catch (err) {
@@ -415,6 +435,7 @@ el.toggleSidebar.addEventListener("click", () => {
     const open = el.sidebar.dataset.open !== "true";
     el.sidebar.dataset.open = String(open);
     el.toggleSidebar.classList.toggle("active", open);
+    el.toggleSidebar.setAttribute("aria-pressed", String(open));
     render();
     if (open) {
         loadOutline();
@@ -443,13 +464,6 @@ el.openInWord.addEventListener("click", async () => {
     } catch (err) {
         setStatus(err.message, { error: true });
     }
-});
-
-el.changeDoc.addEventListener("click", () => {
-    forcePicker = true;
-    loadPicker();
-    render();
-    el.pathInput.focus();
 });
 
 el.jumpToChange.addEventListener("click", () => {

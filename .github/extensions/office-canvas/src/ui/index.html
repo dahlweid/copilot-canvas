@@ -3,7 +3,13 @@
     <head>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <title>Word document</title>
+        <!--
+            The product name. The header bar below names the *document*, so this
+            is the only place the viewer names itself while a document is open;
+            app.js keeps the two together as "<file> — <product>" and holds the
+            same string in PRODUCT, which ui-contract.test.mjs pins to this one.
+        -->
+        <title>Word Document Viewer</title>
         <link rel="stylesheet" href="/vendor/pdf-text-layer.css" />
         <link rel="stylesheet" href="/app.css" />
     </head>
@@ -14,15 +20,40 @@
                 <span class="doc-meta" id="docMeta"></span>
             </div>
             <div class="bar-actions">
-                <button type="button" id="toggleSidebar" class="btn" title="Outline and search">
+                <!--
+                    Icons are inline SVG, drawn in `currentColor` and marked
+                    aria-hidden: the visible text is the accessible name, and a
+                    decorative graphic must not get a second one. No icon font
+                    and no CDN -- the viewer is served by an ephemeral local
+                    server and fetches nothing off the machine.
+                -->
+                <button
+                    type="button"
+                    id="toggleSidebar"
+                    class="btn"
+                    title="Outline and search"
+                    aria-pressed="false"
+                >
+                    <svg class="icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                        <path d="M2.5 4h1.2M2.5 8h1.2M2.5 12h1.2" />
+                        <path d="M6.5 4h7M6.5 8h7M6.5 12h7" />
+                    </svg>
                     Contents
                 </button>
-                <button type="button" id="reload" class="btn" title="Re-render from disk">Reload</button>
-                <button type="button" id="openInWord" class="btn" title="Open in Microsoft Word">
-                    Open in Word
+                <button type="button" id="reload" class="btn" title="Re-render from disk">
+                    <svg class="icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                        <path d="M13.5 8A5.5 5.5 0 1 1 8 2.5" />
+                        <path d="M5.8 0.7 8 2.5 5.8 4.3" />
+                    </svg>
+                    Reload
                 </button>
-                <button type="button" id="changeDoc" class="btn" title="Open a different document">
-                    Change…
+                <button type="button" id="openInWord" class="btn" title="Open in Microsoft Word">
+                    <svg class="icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                        <path d="M13.5 9.5v3a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1h3" />
+                        <path d="M9.5 2.5h4v4" />
+                        <path d="M13.5 2.5 7.5 8.5" />
+                    </svg>
+                    Open in Word
                 </button>
             </div>
             <div class="bar-path" id="docPath" title=""></div>
@@ -38,8 +69,18 @@
         <div class="change-bar" id="changeBar" hidden>
             <span class="change-dot" aria-hidden="true"></span>
             <span class="change-text" id="changeText"></span>
-            <button type="button" id="jumpToChange" class="btn btn-quiet">Show me</button>
+            <button type="button" id="jumpToChange" class="btn btn-quiet">
+                <svg class="icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                    <path d="M8 2.5v7" />
+                    <path d="M5 6.8 8 9.8l3-3" />
+                    <path d="M3 13h10" />
+                </svg>
+                Show me
+            </button>
             <button type="button" id="dismissChange" class="btn btn-quiet" title="Hide this marker">
+                <svg class="icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                    <path d="M4 4l8 8M12 4l-8 8" />
+                </svg>
                 Dismiss
             </button>
         </div>
@@ -65,13 +106,21 @@
 
             <section class="picker" id="picker">
                 <div class="picker-inner">
-                    <h1>Open a Word document</h1>
+                    <!--
+                        The no-document state, and the only screen with room to
+                        say what this is. It is reachable on its own -- the
+                        canvas opens here when `open_canvas` carries no path --
+                        so the product name lives here rather than in the header
+                        bar, which names the open document instead.
+                    -->
+                    <h1 id="productName">Word Document Viewer</h1>
                     <p class="muted" id="engineNote">Rendered by Microsoft Word for page-accurate layout.</p>
 
                     <form class="path-form" id="pathForm">
                         <input
                             type="text"
                             id="pathInput"
+                            aria-label="Path to a Word document"
                             placeholder="C:\path\to\document.docx"
                             autocomplete="off"
                             spellcheck="false"
