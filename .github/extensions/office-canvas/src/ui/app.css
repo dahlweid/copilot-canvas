@@ -56,6 +56,28 @@ body {
     align-items: baseline;
     gap: 8px;
     min-width: 0;
+    /* Do not stretch to the grid row's height (#87). This is what aligns the
+       Word mark to the filename, and the property is here rather than on the
+       mark because the mark was never the thing that was wrong.
+
+       A grid item stretches by default, and this row is as tall as the action
+       buttons beside it. `.bar-main` is a *single-line* flex container, whose
+       line takes its cross size from the container -- so the line was 30px, the
+       height of the buttons in the other grid area, while the filename's own box
+       is 20px. `align-self: center` on the mark then centred it against the
+       buttons, and the eye compares it with the name.
+
+       Measured in headless Chromium against the shipped files, by
+       spikes/viewer-header/probes/probe-mark-alignment.mjs: line height 30px vs
+       `.bar-actions` 30px, mark centre 23px against the filename's optical
+       centre of 18px -- 5px low. With this rule the line is the 20px the name
+       occupies and the offset is 0.
+
+       It is not a nudge and there is no pixel in it: the same probe reports 0
+       for a 14px/20px theme and for a 16px/24px one, and with the meta line
+       empty. The issue's hypothesis -- that `.doc-meta`'s 12px font set the line
+       height -- is refuted by that last case, which is unchanged at 5px. */
+    align-self: center;
 }
 
 .bar-actions {
@@ -78,7 +100,13 @@ body {
 /* The Word mark, when this machine has one to give (#68). Sized to match the
    drawn glyphs it stands in for rather than to the 32px the extraction
    produces, so the bar's rhythm does not change with the machine. `hidden`
-   until it loads -- see index.html. */
+   until it loads -- see index.html.
+
+   `align-self: center` centres it on its flex line, and the line is the
+   filename's own box because `.bar-main` refuses to stretch -- see the comment
+   there, which is where #87 was actually fixed. Nothing here is allowed to carry
+   an offset: a margin or a translate tuned against one font stack, one zoom
+   level and one theme is wrong on the next. */
 .word-mark {
     width: 16px;
     height: 16px;

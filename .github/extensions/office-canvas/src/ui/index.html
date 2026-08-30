@@ -81,7 +81,25 @@
                     Reload
                 </button>
                 <button type="button" id="openInWord" class="btn" title="Open in Microsoft Word">
-                    <img class="word-mark" id="openInWordMark" alt="" width="16" height="16" hidden />
+                    <!--
+                        One icon, drawn, always (#87). This button carried the
+                        real Word mark too, swapped in over the glyph when the
+                        machine had one to extract -- which made its appearance
+                        depend on whether Word could be found here, so two users
+                        saw two different buttons for a reason that has nothing
+                        to do with what the button does. Measured, the button was
+                        136.34px wide with a mark and 115.34px without.
+
+                        The swap did not even work: `hidden` is an IDL attribute
+                        of HTMLElement, and an svg element is an SVGElement,
+                        which does not inherit it -- so setting it reflected to
+                        no attribute and hid nothing. Measured, a machine with
+                        Word drew the mark *and* the arrow.
+
+                        The arrow is the better symbol regardless: it leaves a
+                        box, which is what this does. The brand mark said "Word",
+                        which the label beside it already says.
+                    -->
                     <svg
                         class="icon"
                         id="openInWordGlyph"

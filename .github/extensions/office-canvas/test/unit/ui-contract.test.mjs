@@ -401,6 +401,16 @@ test("the Word mark is fetched at runtime, from a route the server actually has"
     assert.match(server, /"GET \/api\/word-icon"/, "the markup fetches a route the server does not serve");
 });
 
+/**
+ * The `hidden` content attribute, standing alone.
+ *
+ * `\bhidden\b` is the obvious spelling and it is wrong: `-` is not a word
+ * character, so it matches inside `aria-hidden="true"` and reports every
+ * decorative icon in this markup as hidden. Measured -- it is what made the
+ * first version of the Open in Word test below fail against correct markup.
+ */
+const HIDDEN_ATTR = /(?:^|\s)hidden(?=[\s=/>]|$)/;
+
 test("the mark ships with no source, so a machine without Word draws nothing broken", async () => {
     // The single most likely regression here: giving the <img> a `src` in the
     // markup. It looks tidier and it puts a broken-image box in the bar of
@@ -409,17 +419,44 @@ test("the mark ships with no source, so a machine without Word draws nothing bro
     const markup = await read("index.html");
     const marks = [...markup.matchAll(/<img\b[^>]*class="word-mark"[^>]*>/g)].map((m) => m[0]);
 
-    assert.ok(marks.length >= 2, `expected the name and the button to carry a mark, found ${marks.length}`);
+    // Exactly one, beside the document name (#87). It was two: the Open in Word
+    // button carried a second, which put the same brand mark twice in one bar
+    // and made that button's width depend on whether this machine had a Word to
+    // extract it from -- 136.34px against 115.34px, measured by
+    // spikes/viewer-header/probes/probe-mark-alignment.mjs.
+    assert.equal(marks.length, 1, `expected exactly one Word mark in the bar, found ${marks.length}`);
+    assert.match(marks[0], /id="docNameMark"/, "the one mark is not the one beside the document's name");
     for (const mark of marks) {
         assert.ok(!/\bsrc=/.test(mark), `a word-mark ships with a src: ${mark}`);
-        assert.match(mark, /\bhidden\b/, `a word-mark is visible before it has loaded: ${mark}`);
+        assert.match(mark, HIDDEN_ATTR, `a word-mark is visible before it has loaded: ${mark}`);
         // Decorative, exactly like the glyphs it replaces: the button's text is
         // its name and the document's name is beside it.
         assert.match(mark, /alt=""/, `a word-mark claims an accessible name: ${mark}`);
     }
 });
 
-test("app.js delegates the mark's fallback rather than deciding it inline", async () => {
+test("Open in Word draws its own glyph, whatever this machine has installed", async () => {
+    // #87. The button used to swap the drawn arrow for the brand mark once the
+    // mark loaded, so two users saw two different buttons for a reason that has
+    // nothing to do with what the button does. It now has one icon and no way to
+    // acquire another: no <img> inside it, and a glyph that ships visible.
+    const [markup, script] = await Promise.all([read("index.html"), read("app.js")]);
+
+    const button = markup.match(/<button[^>]*id="openInWord"[\s\S]*?<\/button>/)?.[0];
+    assert.ok(button, "index.html no longer has an Open in Word button");
+    assert.ok(!/<img\b/.test(button), `the Open in Word button carries an image again:\n${button}`);
+
+    const glyph = button.match(/<svg\b[\s\S]*?>/)?.[0];
+    assert.ok(glyph, "the Open in Word button has no icon at all");
+    assert.ok(!HIDDEN_ATTR.test(glyph), `the Open in Word glyph ships hidden: ${glyph}`);
+
+    // The other half: nothing in the script may reach for it. A markup-only
+    // check would pass on an app.js that hid the glyph by id at runtime.
+    assert.ok(!/openInWordMark/.test(script), "app.js still wires a mark into the Open in Word button");
+    assert.ok(!/openInWordGlyph/.test(script), "app.js still reaches for the Open in Word glyph");
+});
+
+test("app.js loads the mark through the module that handles its failure", async () => {
     // The failure path is the whole point of #68's "degrade gracefully", and it
     // has branches, so it lives where a test can execute it.
     const script = await read("app.js");
@@ -429,8 +466,46 @@ test("app.js delegates the mark's fallback rather than deciding it inline", asyn
         /import\s*\{[^}]*\bshowWordMark\b[^}]*\}\s*from\s*"\.\/word-mark\.mjs"/,
         "app.js no longer imports the mark loader",
     );
-    assert.match(script, /showWordMark\s*\(/, "app.js imports the loader but never calls it");
-    // The button keeps a drawn glyph to fall back to; the name never had one.
-    assert.match(script, /fallback:\s*el\.openInWordGlyph/, "the button has no glyph to fall back to");
+    // Exactly one placement (#87), and it is the document name's.
+    const calls = [...script.matchAll(/showWordMark\s*\(([^)]*)\)/g)].map((m) => m[1]);
+    assert.equal(calls.length, 1, `expected one mark placement, found ${calls.length}: ${calls.join(" | ")}`);
+    assert.match(calls[0], /img:\s*el\.docNameMark/, "the one placement is not the document name's mark");
+});
+
+test("the mark is aligned to the filename by the bar, not by an offset", async () => {
+    // #87. `align-self: center` on the mark centres it on its flex line, and
+    // `.bar-main` is a grid item: stretched, its single line took the row's
+    // height -- 30px, set by the action buttons in the *other* grid area -- so
+    // the mark was centred against the buttons while the eye compares it with
+    // the 20px filename. Measured 5px low, closing to 0 with this rule, by
+    // spikes/viewer-header/probes/probe-mark-alignment.mjs.
+    //
+    // This is a spelling check and cannot see a pixel; the geometry is the
+    // probe's job, and it needs a Chromium that CI does not have.
+    //
+    // Comments are stripped first, and that is not tidiness. Both rules below
+    // are documented at length, and both explain the fix by naming the
+    // declaration -- so a match against the raw text finds `align-self: center`
+    // in the prose whatever the rule does. Measured: deleting the declaration
+    // from `.bar-main` left this test green until the strip was added, which is
+    // a guard that reads as protection and is not.
+    const css = (await read("app.css")).replace(/\/\*[\s\S]*?\*\//g, "");
+
+    const rule = (selector) => css.match(new RegExp(`^\\${selector}\\s*\\{[\\s\\S]*?^\\}`, "m"))?.[0];
+
+    const barMain = rule(".bar-main");
+    assert.ok(barMain, "app.css no longer has a .bar-main rule");
+    assert.match(barMain, /align-self:\s*center/, "`.bar-main` stretches again, so the mark centres on the buttons");
+
+    const wordMark = rule(".word-mark");
+    assert.ok(wordMark, "app.css no longer has a .word-mark rule");
+    assert.match(wordMark, /align-self:\s*center/, "the mark no longer centres on its line");
+    // No magic pixel. A nudge is tuned to one font stack, one zoom and one
+    // theme, and is wrong on the next -- the issue asked for the property that
+    // expresses the intent instead.
+    assert.ok(
+        !/(?:margin|top|bottom|translate|transform|position|inset)\s*:/.test(wordMark),
+        `the mark is nudged into place rather than aligned:\n${wordMark}`,
+    );
 });
 
