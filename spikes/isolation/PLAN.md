@@ -1562,6 +1562,78 @@ change removes. Every site now swallows the *race* and then observes the
 *outcome*: poll the pid, and report `killed` or `STILL ALIVE after kill (leaked)`
 from what was seen rather than from having made the call.
 
+### 20.9 Measured: differencing is still wrong in the shipping init sequence, and the handle is still right
+
+§20.7 measured this in a probe. `probe-init-attribution.ps1` measures it in the
+sequence `Initialize-Word` actually runs, which is the arm that decides whether
+the repair is affordable rather than merely sound.
+
+Four arms, of which two could have sunk the design:
+
+**Arm B — `ActiveWindow` with no document.** This is why a scratch document has
+to exist. On a fresh instance with nothing open, `$app.ActiveWindow.Hwnd`
+returned **an empty value and did not throw**, resolving to no process at all.
+Worth stating precisely because the obvious expectation is an exception: a
+`try/catch` around it is not enough, the *result* has to be checked. Had this
+arm produced a handle, the scratch document would be pure cost and the sequence
+should read the handle straight after `New-Object`.
+
+**Arm D — the ambiguous condition, reproduced.** With a foreign Word created
+from a separate process, its activation still in flight alongside ours:
+
+```
+differencing new pids: 11964, 60012  (count 2)
+hwnd says ours is:     11964
+the foreign Word is:   60012
+```
+
+Two new pids for one instance created, again. The shipping code picked
+`$new[0]` = 11964 — **ours that run, by luck**. Nothing orders that list. The
+handle named ours exactly, and needed no comparison to do it.
+
+Arms A and C only price the thing: `Visible` is `$false` on a fresh automation
+instance (so the scratch document cannot flash on a user's screen), and the
+whole attribution costs **8.5 s** on top of `New-Object` — `Documents.Add`
+1407 ms, `ActiveWindow.Hwnd` 1488 ms, `Close(0)` 5516 ms, plus an 823 ms
+one-time `Add-Type` compile. That is comfortably inside `ping`'s 180 s budget.
+`Documents.Count` was 0 after the close, so the scratch leaves nothing open.
+
+**The negative census is the other half.** The handle says *which* pid; it does
+not say whether we created it. That question keeps the pre-creation snapshot,
+but strictly as a negative — a pid alive beforehand cannot be one we created.
+Used that way it is sound; used to pick a new pid it is the bug above. Because
+we never choose between candidates, the "several appeared" case has nowhere to
+go wrong.
+
+### 20.10 Mutation result: quitting by handle is what makes an attribution failure survivable
+
+Forcing `Get-AttributedWordPid` to return `$null` — the state where the host
+cannot tell which WINWORD it is driving — and running `host-smoke`:
+
+- the new attribution check went **red**, naming `unattributed`;
+- the diagnostic reached the extension log through stderr;
+- **`no new WINWORD.EXE is left behind` stayed green.**
+
+The third is the one worth recording. `Stop-Word` gates its `Quit()` on
+`$script:Attribution -ne 'attached'`, not on having a pid, so an unattributed
+instance is still torn down. Had the gate stayed `if ($null -ne $OwnedPid)` —
+the obvious shape, and the one the old code had — this arm would have leaked a
+Word every time attribution failed.
+
+It also corrected the diagnostic. The first version told the reader an
+unattributed Word would "never be quit", which this run disproves: it *is*
+quit. What is actually lost is the fallback — no proven pid means no verified
+kill if the quit does not take, and no ledger entry for a later host to reap.
+A message that names the wrong consequence is the same defect as one that names
+the wrong cause, and only running the arm surfaced it.
+
+The distinction generalises: **`Quit` is addressed to a handle, `Kill` to a
+coordinate.** Quit cannot reach a process we never bound to, so it is safe
+whenever we hold the RCW. A kill is only as good as the pid, which is exactly
+the thing an attribution failure leaves unproven. So they take different gates,
+and folding them into one flag is what made the old code either leak or
+over-kill depending on which way it was folded.
+
 ## 21. Facts we had measured and failed to join to the code they bore on
 
 Every entry below is a fact this repo had **already measured, written down and

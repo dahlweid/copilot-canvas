@@ -67,9 +67,43 @@ try {
     await check("ping starts Word and reports a version", async () => {
         const t0 = Date.now();
         const res = await host.ping();
-        process.stderr.write(`       word ${res.wordVersion}, owned=${res.owned}, ${Date.now() - t0}ms\n`);
+        process.stderr.write(
+            `       word ${res.wordVersion}, owned=${res.owned}, via ${res.attribution}, ${Date.now() - t0}ms\n`,
+        );
         assert.equal(res.ready, true);
         assert.ok(res.wordVersion, "expected a Word version");
+    });
+
+    // Ownership is asserted on *how* it was decided, not only on what came back.
+    // A pid alone cannot carry that: the differencing this replaced returned a
+    // plausible integer on every run, including the runs where it named a
+    // stranger's Word, so `assert.ok(ownedPid)` was green throughout the defect
+    // it was supposed to catch. `attribution` is the observable that separates a
+    // sound answer from a lucky one.
+    await check("ownership is attributed by window handle, not by inference", async () => {
+        const res = await host.ping();
+        assert.equal(
+            res.attribution,
+            "hwnd",
+            `expected ownership proven from our own window handle, got '${res.attribution}'. ` +
+                "'attached' means we found an existing Word (start this suite with no Word running); " +
+                "'unattributed' means attribution failed, so teardown loses its kill fallback.",
+        );
+        assert.ok(Number.isInteger(res.ownedPid) && res.ownedPid > 4, "expected a real pid");
+
+        // The census negative, checked from the outside: a pid that was already
+        // alive before this suite started cannot be one we created. This is the
+        // assertion that fails if attribution ever regresses to picking a
+        // stranger -- which is precisely what differencing did, measured, when a
+        // second Word was created concurrently.
+        assert.ok(
+            !pidsBefore.includes(res.ownedPid),
+            `the host claims to own pid ${res.ownedPid}, but that Word was already running before this suite started`,
+        );
+        assert.ok(
+            (await wordPids()).includes(res.ownedPid),
+            `the host reported owning pid ${res.ownedPid}, but no WINWORD is running there`,
+        );
     });
 
     await check("open returns metadata and a multi-page count", async () => {

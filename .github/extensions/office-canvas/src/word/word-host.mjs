@@ -69,7 +69,21 @@ export class WordHost {
         this.log = log;
         this.onOwnedPid = onOwnedPid;
         this.pidDir = pidDir;
+        /**
+         * The WINWORD process this host created, or null when it created none.
+         *
+         * Attributed by window handle, not by differencing the pid set around
+         * `New-Object` -- see `Get-AttributedWordPid` in word-host.ps1. The
+         * distinction is not academic: differencing was measured returning two
+         * new pids for one instance created, so the pid that used to land here
+         * was sometimes a stranger's Word, recorded in the reap ledger and
+         * eligible to be killed. A null here now means "we could not prove it",
+         * never "there probably isn't one" -- read `attribution` to tell those
+         * apart.
+         */
         this.ownedPid = null;
+        /** 'hwnd' | 'attached' | 'unattributed' | 'word_not_started' | null. */
+        this.attribution = null;
         this.wordVersion = null;
     }
 
@@ -303,6 +317,11 @@ export class WordHost {
     async ping() {
         const result = await this.#send("ping", {}, STARTUP_TIMEOUT_MS);
         this.ownedPid = result.ownedPid ?? null;
+        // How the host decided, not just what it decided. 'hwnd' is the sound
+        // outcome; 'unattributed' means a Word is being driven that this host
+        // will never end, which is a leak in waiting and worth surfacing rather
+        // than folding into a falsy ownedPid.
+        this.attribution = result.attribution ?? null;
         this.wordVersion = result.wordVersion ?? null;
         if (this.ownedPid) this.onOwnedPid(this.ownedPid);
         return result;

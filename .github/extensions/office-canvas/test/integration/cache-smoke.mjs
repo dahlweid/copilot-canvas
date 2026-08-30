@@ -10,7 +10,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { RenderCache, DocumentError, normalizeDocPath } from "../../src/render-cache.mjs";
-import { assertNoLeakedWord, wordPids } from "./word-pids.mjs";
+import { assertNoLeakedWord, ownedWordLedger, wordPids } from "./word-pids.mjs";
 
 const execFileAsync = promisify(execFile);
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -47,6 +47,12 @@ const cache = new RenderCache({
     cacheRoot: path.join(workRoot, "artifacts"),
     log: (m) => process.stderr.write(`[cache] ${m}\n`),
 });
+// A leak assertion without a ledger can say a Word survived but not whose it
+// was, and the two answers call for opposite responses -- our teardown versus
+// another session's Word. Now that the host attributes by window handle rather
+// than by differencing, what it reports here is provable, so the split in the
+// failure message is worth something.
+const ledger = ownedWordLedger().watch(cache.host);
 
 let firstKey = null;
 
@@ -201,7 +207,7 @@ try {
     await cache.dispose();
 }
 
-await check("no new WINWORD.EXE is left behind", () => assertNoLeakedWord(pidsBefore));
+await check("no new WINWORD.EXE is left behind", () => assertNoLeakedWord(pidsBefore, { ledger }));
 
 await rm(workRoot, { recursive: true, force: true }).catch(() => {});
 

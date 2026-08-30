@@ -113,6 +113,16 @@ $script:OwnedPid = $null
 # learned. A pid identifies a process only as long as that process lives; this
 # is what lets a later kill prove it is acting on the same one.
 $script:OwnedStart = $null
+# How $script:OwnedPid was arrived at, so a caller can assert soundness instead
+# of inferring it from a pid that merely looks plausible:
+#   'hwnd'          we read our own window handle and mapped it to a pid that was
+#                   not alive before our New-Object -- created by us, provably
+#   'attached'      the attributed pid predates our New-Object, so we did not
+#                   create it; it is someone's Word and we only borrow it
+#   'unattributed'  attribution failed. We own nothing, may not hide anything,
+#                   and may not kill anything.
+#   'word_not_started'  no instance yet
+$script:Attribution = 'word_not_started'
 $script:Docs = @{}
 # Whether autocorrect was switched off on the instance we are driving, and if not
 # why not. Reported on every authoring result so a caller can assert it rather
@@ -160,6 +170,81 @@ function Get-WordPids {
     return @(Get-Process -Name WINWORD -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)
 }
 
+# --- attribution -------------------------------------------------------------
+#
+# Which WINWORD is ours is a question the platform can answer exactly, and for a
+# long time this host asked a different question instead: it snapshotted the pid
+# set before `New-Object` and took the difference afterwards. That is unsound,
+# and not theoretically -- measured, twice. `probe-word-ownership.ps1` saw
+# differencing return 2 new pids for 1 instance created, and
+# `probe-init-attribution.ps1` reproduced it against this exact sequence: 2 new
+# pids, of which `$new[0]` happened to be ours that run *by luck*. There is no
+# ordering guarantee behind it. Half the time the old code adopted a stranger's
+# Word -- recorded it in the reap ledger, hid it, and later quit it.
+#
+# A window handle is not an inference. `ActiveWindow.Hwnd` comes off the RCW we
+# created, so it names our instance by construction, and
+# `GetWindowThreadProcessId` maps it to a pid the kernel owns. Concurrency
+# cannot perturb it because nothing is ever compared or chosen.
+#
+# The catch, measured in the same probe: `ActiveWindow` on an instance with no
+# document open yields nothing at all -- it does not even throw, it just returns
+# a value that resolves to no process. That is why `Initialize-Word` adds a
+# scratch document purely to have something to attribute through. The scratch
+# document is load-bearing, not scaffolding.
+$script:HwndTypeReady = $false
+
+function Initialize-HwndType {
+    if ($script:HwndTypeReady) { return $true }
+    try {
+        # ~800ms to compile on this machine, so it is done once, lazily, and only
+        # on the path that needs it.
+        Add-Type -Namespace WordCanvas -Name Win32 -MemberDefinition @'
+[DllImport("user32.dll", SetLastError = true)]
+public static extern uint GetWindowThreadProcessId(System.IntPtr hWnd, out uint lpdwProcessId);
+'@ -ErrorAction Stop
+        $script:HwndTypeReady = $true
+        return $true
+    } catch {
+        # Already-defined is the common case on a re-entry; anything else means
+        # attribution is unavailable and the caller must decline rather than guess.
+        if ($_.Exception.Message -match 'already exists') { $script:HwndTypeReady = $true; return $true }
+        return $false
+    }
+}
+
+# Returns the pid of the Word behind $app, or $null when it cannot be proven.
+#
+# Every rejection below returns $null rather than a best guess. A caller that
+# receives $null must treat the instance as unattributed and refuse to kill --
+# the whole point of this function is that "we could not tell" is a distinct,
+# reportable outcome from "it is ours". Requires a document to be open; see the
+# note above.
+function Get-AttributedWordPid($app) {
+    if ($null -eq $app) { return $null }
+    if (-not (Initialize-HwndType)) { return $null }
+
+    $hwnd = $null
+    try { $hwnd = $app.ActiveWindow.Hwnd } catch { return $null }
+    if ($null -eq $hwnd) { return $null }
+
+    $handle = [IntPtr]::Zero
+    try { $handle = [IntPtr][int64]$hwnd } catch { return $null }
+    if ($handle -eq [IntPtr]::Zero) { return $null }
+
+    $owner = [uint32]0
+    try { $null = [WordCanvas.Win32]::GetWindowThreadProcessId($handle, [ref]$owner) } catch { return $null }
+    $candidate = [int]$owner
+    # pids 0 and 4 are the idle process and the kernel; a window mapping to
+    # either means the call failed in a way that still returned.
+    if ($candidate -le 4) { return $null }
+    # A pid is only worth carrying if a WINWORD is actually behind it. This also
+    # rejects the case where the handle mapped to some other process entirely.
+    $p = Get-Process -Id $candidate -ErrorAction SilentlyContinue
+    if ($null -eq $p -or $p.ProcessName -ne 'WINWORD') { return $null }
+    return $candidate
+}
+
 # --- owned-process registry --------------------------------------------------
 #
 # Each host records the WINWORD process it created in $PidDir\<hostPid>.pid.
@@ -167,8 +252,8 @@ function Get-WordPids {
 # Word process behind; the next host to start finds the file, sees that the
 # recording host is gone, and ends the orphan. Without this, a crash leaks a
 # hidden Word that nothing will ever clean up -- and worse, a later CreateObject
-# can attach to that orphan, at which point ownership detection sees no new
-# process and (correctly, but unhelpfully) refuses to quit it.
+# can attach to that orphan, at which point the census below sees a pid that
+# predates us and (correctly, but unhelpfully) refuses to quit it.
 
 function Get-PidFilePath {
     if ([string]::IsNullOrWhiteSpace($PidDir)) { return $null }
@@ -631,7 +716,17 @@ $script:AC_SETTINGS = @(
 #                       its own finally. Production has no such net.
 function Disable-AutoCorrect {
     $script:AcPrior = @{}
-    if ($null -eq $script:OwnedPid) { return @{ suppressed = $false; reason = 'attached_instance'; prior = @{} } }
+    # The guard is "we did not create this instance", and until attribution
+    # became sound the only way to fail it was by attaching, so one reason
+    # covered it. It no longer does: an unattributed instance also lands here,
+    # and reporting 'attached_instance' for it would name a cause this code did
+    # not establish. Both outcomes are equally correct about the *action* --
+    # leave the user's settings alone -- and differ only in what we may claim,
+    # so the reason follows the attribution rather than restating the guard.
+    if ($null -eq $script:OwnedPid) {
+        $reason = if ($script:Attribution -eq 'attached') { 'attached_instance' } else { 'unattributed_instance' }
+        return @{ suppressed = $false; reason = $reason; prior = @{} }
+    }
 
     $prior = $script:AcPrior
     $unreadable = @()
@@ -733,9 +828,14 @@ function Initialize-Word {
         $script:App = $null
         $script:OwnedPid = $null
         $script:OwnedStart = $null
+        $script:Attribution = 'word_not_started'
         $script:Docs = @{}
     }
 
+    # Used ONLY as a negative. A pid that was already alive cannot have been
+    # created by the New-Object below, so this soundly rules a candidate out. It
+    # is never used to rule one *in* -- that is the differencing this replaced,
+    # and it is unsound: measured, 2 new pids appeared for 1 instance created.
     $before = Get-WordPids
     try {
         $script:App = New-Object -ComObject Word.Application
@@ -744,40 +844,85 @@ function Initialize-Word {
             "Microsoft Word could not be started. Word must be installed to use this canvas. ($($_.Exception.Message))")
     }
 
-    # Ownership detection: if a brand new WINWORD process appeared we created it
-    # and may hide and later quit it. If we merely attached to a Word the user
-    # already had running, leave its visibility alone and never quit it out from
-    # under them.
+    # Ownership detection asks two separate questions, each with its own sound
+    # answer, and never has to choose between candidates:
     #
-    # The process does not always show up in the process list by the time
-    # CreateObject returns -- especially right after a previous instance was
-    # killed -- so poll briefly rather than taking a single snapshot. Getting
-    # this wrong leaks a Word process, so the retry is worth the latency.
-    $new = @()
-    for ($attempt = 0; $attempt -lt 15; $attempt++) {
-        $new = @(Get-WordPids | Where-Object { $before -notcontains $_ })
-        if ($new.Count -ge 1) { break }
-        Start-Sleep -Milliseconds 100
-    }
-    if ($new.Count -ge 1) {
-        $script:OwnedPid = [int]$new[0]
-        # Captured here, at the moment ownership is learned, and never re-read at
-        # kill time: reading it just before the Kill would compare an impostor
-        # against itself and always match.
-        $script:OwnedStart = Get-WordStartTime $script:OwnedPid
-        Register-OwnedWord $script:OwnedPid $script:OwnedStart
-    } else {
-        $script:OwnedPid = $null
-        $script:OwnedStart = $null
-    }
+    #   which pid is this instance?  ->  our own window handle, mapped by the
+    #       kernel. Exact, and immune to what any other process is doing.
+    #   did we create it, or attach? ->  the pre-creation census, used only as a
+    #       negative: a pid that already existed cannot have been created by us.
+    #
+    # Getting this wrong is not a cosmetic error. Adopting a stranger's Word
+    # means hiding a window out from under someone and later quitting or killing
+    # their process; declining a Word we did in fact create leaks it.
 
-    if ($null -ne $script:OwnedPid) {
-        try { $script:App.Visible = $false } catch { }
-    }
+    # Set before anything can open a document, so no scratch document can raise a
+    # dialog on an instance that may be invisible -- a modal prompt on a hidden
+    # Word is an unrecoverable hang, not an error.
     try { $script:App.DisplayAlerts = $WD_ALERTS_NONE } catch { }
     # Force-disable macros before any document is opened. We render documents
     # the user may not have authored.
     try { $script:App.AutomationSecurity = $MSO_AUTOMATION_SECURITY_FORCE_DISABLE } catch { }
+
+    # A fresh automation instance is created hidden -- measured, `Visible` is
+    # $false straight out of New-Object. So a $true here is a strong sign we
+    # attached to a Word that someone is looking at, and the scratch document
+    # below would flash a window on their screen. Skip it and let the census
+    # settle ownership on its own. This is a courtesy guard, not the attribution
+    # test: `Visible` says nothing about who created the process, and nothing
+    # downstream trusts it.
+    $visible = $false
+    try { $visible = [bool]$script:App.Visible } catch { $visible = $false }
+
+    $attributed = $null
+    if (-not $visible) {
+        # `ActiveWindow` on an instance with no document yields nothing at all --
+        # measured; it does not throw, it returns something that resolves to no
+        # process. So there has to be a document to attribute through, and it is
+        # created and closed here rather than waiting for the first real one:
+        # ownership must be settled before any command runs, or a teardown that
+        # arrives first has nothing to go on.
+        $scratch = $null
+        try { $scratch = $script:App.Documents.Add() } catch { $scratch = $null }
+        if ($null -ne $scratch) {
+            $attributed = Get-AttributedWordPid $script:App
+            # Close(0) rather than Close(): argument-less Close prompts on a dirty
+            # document, and a prompt on a hidden instance is a hang.
+            try { $scratch.Close($WD_DO_NOT_SAVE_CHANGES) } catch { }
+            try { [Runtime.InteropServices.Marshal]::ReleaseComObject($scratch) | Out-Null } catch { }
+        }
+    }
+
+    if ($null -eq $attributed) {
+        # We could not prove which process we are driving. That is a real state,
+        # not an error: everything still works, and the instance is still quit at
+        # teardown because Quit goes through the handle we hold. What is lost is
+        # the fallback -- if that Quit does not take, there is no pid to verify
+        # and kill, and nothing here may guess one. Say so where it can be seen,
+        # because that gap is invisible until someone counts processes.
+        $script:OwnedPid = $null
+        $script:OwnedStart = $null
+        $script:Attribution = 'unattributed'
+        Write-HostDiagnostic '[word-host] could not attribute this Word instance to a process id. It will still be quit at teardown through the handle we hold, but it will not be hidden, it is not recorded for orphan reaping, and if the quit fails there is no proven pid to fall back on -- nothing may be killed on a guess. A Word that outlives this host must then be ended by hand.'
+    }
+    elseif ($before -contains $attributed) {
+        # The census negative fires: this pid predates our New-Object, so we
+        # attached. Leave its visibility alone and never end it.
+        $script:OwnedPid = $null
+        $script:OwnedStart = $null
+        $script:Attribution = 'attached'
+    }
+    else {
+        $script:OwnedPid = $attributed
+        # Captured here, at the moment ownership is learned, and never re-read at
+        # kill time: reading it just before the Kill would compare an impostor
+        # against itself and always match.
+        $script:OwnedStart = Get-WordStartTime $script:OwnedPid
+        $script:Attribution = 'hwnd'
+        Register-OwnedWord $script:OwnedPid $script:OwnedStart
+        try { $script:App.Visible = $false } catch { }
+    }
+
     # Autocorrect is deliberately NOT touched here. It used to be, and because
     # the settings persist for the user that left their Word altered for the
     # whole life of this host. It is now disabled and restored around each
@@ -797,7 +942,16 @@ function Stop-Word {
     foreach ($docId in @($script:Docs.Keys)) { Close-Doc $docId }
     $script:DocArgs = @{}
     if ($null -ne $script:App) {
-        if ($null -ne $script:OwnedPid) {
+        # Quit is addressed to the RCW we created, not to a pid, so it can only
+        # ever end the instance this host is bound to -- it is incapable of
+        # touching a process we never attached to. That is why the gate here is
+        # narrower than the one on the kill below: the only case that must be
+        # excluded is 'attached', where the instance provably predates us and
+        # belongs to someone else. 'unattributed' means we do not know *which*
+        # process we are driving, but we do know we are driving it through this
+        # handle, and letting it go unquit is how a Word gets stranded. Destroy
+        # by handle is safe where destroy by coordinate is not.
+        if ($script:Attribution -ne 'attached') {
             # No argument, deliberately. `Application.Quit` takes its parameters
             # as `VARIANT*`, and Windows PowerShell 5.1 -- which is what
             # `powershell.exe` gives, and what this host runs under -- refuses to
@@ -927,6 +1081,12 @@ function Stop-Word {
     # The two numbers are coupled and nothing enforces the coupling, so the
     # 20 s in word-host.mjs carries the reciprocal note. Raising either alone
     # is a silent change to the other's meaning.
+    # $script:OwnedPid is set only when attribution succeeded *and* the census
+    # ruled out attaching -- so reaching this branch is itself the proof the kill
+    # needs a pid for. An unattributed instance arrives here with $null and is
+    # never killed, which is deliberate: a kill is addressed to a coordinate, and
+    # an unattributed coordinate is precisely the thing that might be a stranger's
+    # Word. It got the Quit above instead, which could only have hit ours.
     if ($null -ne $script:OwnedPid) {
         try {
             $p = $null
@@ -961,6 +1121,7 @@ function Stop-Word {
         $script:OwnedPid = $null
         $script:OwnedStart = $null
     }
+    $script:Attribution = 'word_not_started'
     Unregister-OwnedWord
 }
 
@@ -973,6 +1134,11 @@ function Cmd-Ping($a) {
         wordVersion = [string]$script:App.Version
         ownedPid    = $script:OwnedPid
         owned       = ($null -ne $script:OwnedPid)
+        # How ownership was decided, not merely what it decided. Without this a
+        # caller cannot tell a sound attribution from a lucky one -- a plausible
+        # pid looks identical either way -- so a test asserting `owned` proves
+        # only that something was picked. 'hwnd' is the sound outcome.
+        attribution = $script:Attribution
     }
 }
 

@@ -26,13 +26,27 @@
 // bridge ever holding a handle to it. Killing goes through a ledger of pids the
 // *host itself* reported as owned, and touches nothing else however suspicious.
 //
-// Attribution is not yet perfect at its source: `Initialize-Word` in
-// `word-host.ps1` derives `ownedPid` by this same differencing, so a ledger
-// entry inherits that. A sound route exists and is measured in
-// `spikes/isolation/probes/probe-word-ownership-hwnd.ps1` -- once a document is
-// open, `Application.ActiveWindow.Hwnd` plus `GetWindowThreadProcessId` yields a
-// pid that is ours by construction. Wiring it into the host is issue #25's
-// second half; that file belongs to an open PR and is not this one's to change.
+// Attribution is now sound at its source. `Initialize-Word` no longer differences
+// the pid set; it opens a scratch document, reads `Application.ActiveWindow.Hwnd`
+// off the RCW it created, and maps that to a pid with
+// `GetWindowThreadProcessId`. The handle names our instance by construction, so
+// concurrency cannot perturb it -- and the pre-creation census survives only as a
+// *negative*, ruling out a pid that already existed rather than picking one that
+// did not. Measured against the shipping sequence in
+// `spikes/isolation/probes/probe-init-attribution.ps1`: with a foreign Word
+// created concurrently, differencing saw 2 new pids and its `$new[0]` was ours
+// only by luck, while the handle named ours exactly.
+//
+// So a ledger entry now means what it says, and `killOwnedWord` acts on a pid the
+// host *proved* rather than one it guessed. What has not changed is the division
+// of labour above: the assertion still differences, because it must catch leaks
+// attribution cannot see -- the second WINWORD that L2 measured
+// `ProtectedViewWindows.Open` spawning, which the bridge never holds a handle to
+// and therefore can never attribute.
+//
+// Note also `ping().attribution`, which reports *how* ownership was decided.
+// A test that asserts only on `ownedPid` cannot distinguish a sound attribution
+// from a lucky one, because both produce a plausible-looking pid.
 
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
@@ -74,6 +88,26 @@ export function ownedWordLedger() {
     return {
         record(pid) {
             if (Number.isInteger(pid) && pid > 0) owned.add(pid);
+        },
+        /**
+         * Records every pid `host` reports owning, from now on.
+         *
+         * Chains onto whatever callback the host already had rather than
+         * replacing it: `WordHost` defaults it to a no-op, but a caller that set
+         * one would otherwise lose it silently here, and the loss would only
+         * show up as a Word nobody reaps.
+         *
+         * Attaching after construction is sound because `RenderCache` builds its
+         * host eagerly, in its own constructor, and nothing pings before a test
+         * asks it to -- so no ownership can have been reported yet.
+         */
+        watch(host) {
+            const prior = host.onOwnedPid;
+            host.onOwnedPid = (pid) => {
+                this.record(pid);
+                if (typeof prior === "function") prior(pid);
+            };
+            return this;
         },
         pids() {
             return [...owned];
