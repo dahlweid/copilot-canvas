@@ -153,8 +153,20 @@ async function run(fn) {
 const wordCanvas = createCanvas({
     id: "word-doc",
     displayName: "Word document",
-    description:
-        "Displays a Word (.docx) document with page-accurate rendering, plus outline, search and text extraction. Read-only.",
+    // "Read-only" used to close this sentence, and it was the one string every
+    // agent saw before deciding what to do with a .docx. It described the panel
+    // and was read as the extension: the product that ships create_document,
+    // read_document, edit_document and revert_document announced itself as
+    // incapable of editing. The surface really is display-only (ADR 0002), so
+    // the fix is to say who edits rather than to drop the fact.
+    description: [
+        "Displays a Word (.docx) document with page-accurate rendering, plus outline, search and text extraction.",
+        "The document is read and changed by the agent through this extension's tools — read_document,",
+        "create_document, edit_document and revert_document — which drive the installed Word, and the canvas",
+        "re-renders after an edit and states what changed: the operation, the page when one was reported, and a",
+        "highlight on the changed text where there is text left to highlight. The panel itself is display only —",
+        "the user does not type into it, they ask Copilot for the change.",
+    ].join(" "),
     inputSchema: {
         type: "object",
         properties: {
@@ -376,6 +388,14 @@ const wordCanvas = createCanvas({
 const readDocumentTool = {
     name: "read_document",
     description: [
+        "Use this whenever a Word document has to be read — to answer a question about it, summarize, quote or",
+        "review it, or find the paragraph to change — and always before edit_document, which cannot run without",
+        "the address and the revision token this call mints. Do not convert the file to another format first,",
+        "and do not parse its OOXML or reach for a document library: this opens the document in the installed",
+        "Word and reports what the file itself stores — each paragraph's style id and name, its heading level and",
+        "the heading path it sits under, whether it is inside a table, and its list id and level. A conversion to",
+        "text or Markdown flattens most of that away, and none of it gives you an address to edit against. Word",
+        "is only ever handed a copy, never the original, so a document already open in Word can still be read.",
         "Reads a Word document and returns its structure map — every paragraph with its text,",
         "resolved style, heading path and a stable address — together with a revision token for",
         "the file. Cite an address to say which paragraph an edit applies to, and present the",
@@ -508,6 +528,10 @@ const createBlockSchema = {
 const createDocumentTool = {
     name: "create_document",
     description: [
+        "Use this when a new Word document is wanted — a report, a letter, minutes, notes — rather than writing",
+        "OOXML, zipping a package by hand, or using a document library. Word itself authors the file, so its",
+        "headings, list numbering and tables are Word's own rather than markup approximating them, and no part",
+        "of the package has to be modelled by hand.",
         "Creates a new Word document from an ordered list of blocks — headings, paragraphs, bulleted or",
         "numbered lists and tables — and returns its structure map and revision token, the same ones",
         "read_document would give, so it can be edited straight away without reading it first.",
@@ -580,6 +604,12 @@ const createDocumentTool = {
 const editDocumentTool = {
     name: "edit_document",
     description: [
+        "Use this to change an existing Word document — reword a paragraph, insert one, delete one, or make a",
+        "paragraph a heading or body text — including when the user asks for the change in prose. Read the",
+        "document with read_document first, then edit it here. Do not rewrite the file with a document library",
+        "or hand-edited OOXML: Word applies the change to the document itself, so whatever the edit does not",
+        "touch is left to Word rather than to someone's model of the file format, and the revision token below",
+        "means an edit built on a stale read is refused rather than applied over someone else's change.",
         "Applies one change to a Word document, in place, and returns the document as it stands",
         "afterwards. Requires the address of the paragraph to change and the revision token from",
         "read_document; the edit is refused if the file changed since that read. A snapshot is taken",
@@ -645,6 +675,10 @@ const editDocumentTool = {
 const revertDocumentTool = {
     name: "revert_document",
     description: [
+        "Use this when an edit turned out wrong or the user asks to undo it or put the document back. Prefer it",
+        "to editing the old text back in: the snapshot is a byte copy of the file taken before that edit and it",
+        "is put back whole, by rename rather than by rewriting the document, so what returns is the document",
+        "exactly as it was — whereas a compensating edit is a further edit and restores only the text it retypes.",
         "Undoes the most recent edit_document change to a Word document by restoring the snapshot taken",
         "before it, and returns the document as it stands afterwards. Repeated calls step further back",
         "through the edit history; each restored snapshot is consumed, so this only moves backwards.",
