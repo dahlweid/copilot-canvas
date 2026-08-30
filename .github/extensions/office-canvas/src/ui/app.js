@@ -5,6 +5,7 @@ import { PdfView } from "./pdf-view.mjs";
 import { describeChangeBanner } from "./change-wording.mjs";
 import { monitorConnection } from "./connection-status.mjs";
 import { copyOutcome, describeDocument } from "./doc-identity.mjs";
+import { showWordMark } from "./word-mark.mjs";
 
 /**
  * What the viewer calls itself.
@@ -23,6 +24,9 @@ const el = {
     docName: $("docName"),
     docMeta: $("docMeta"),
     copyPath: $("copyPath"),
+    docNameMark: $("docNameMark"),
+    openInWordMark: $("openInWordMark"),
+    openInWordGlyph: $("openInWordGlyph"),
     status: $("status"),
     sidebar: $("sidebar"),
     outline: $("outline"),
@@ -438,6 +442,16 @@ el.searchInput.addEventListener("keydown", (event) => {
         runSearch();
     }
 });
+
+// The real Word mark, if this machine has one (#68). Wired at load and never
+// again: the answer cannot change while the panel lives, and both placements
+// share one request -- the second resolves from the browser's cache.
+//
+// Deliberately not awaited and deliberately not reported. It decorates a bar
+// that is already drawn, so nothing here is allowed to delay or fail the
+// startup below.
+showWordMark({ img: el.docNameMark });
+showWordMark({ img: el.openInWordMark, fallback: el.openInWordGlyph });
 
 api("/api/state")
     .then((initial) => applyState(initial))

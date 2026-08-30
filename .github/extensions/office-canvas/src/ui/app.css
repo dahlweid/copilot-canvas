@@ -75,6 +75,18 @@ body {
     margin: 0;
 }
 
+/* The Word mark, when this machine has one to give (#68). Sized to match the
+   drawn glyphs it stands in for rather than to the 32px the extraction
+   produces, so the bar's rhythm does not change with the machine. `hidden`
+   until it loads -- see index.html. */
+.word-mark {
+    width: 16px;
+    height: 16px;
+    flex: 0 0 auto;
+    align-self: center;
+    object-fit: contain;
+}
+
 /* Does not shrink while the meta line still has space to give: measured at
    560px, proportional shrink clipped `report.docx` by a single sub-pixel and
    the ellipsis fired anyway, turning a short filename into "report.do...".

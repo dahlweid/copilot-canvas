@@ -15,7 +15,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -356,5 +356,72 @@ test("app.js delegates what the bar says about a document rather than deciding i
         "app.js no longer imports the document description",
     );
     assert.match(script, /describeDocument\s*\(\s*doc\s*\)/, "app.js imports the description but never calls it");
+});
+
+// --- The Word mark (#68) -----------------------------------------------------
+//
+// The hard constraint is what is *absent*: no icon file may be committed. The
+// repo is public, so shipping Microsoft's mark would be redistributing it, and
+// the open icon sets have dropped the family for trademark reasons. The bytes
+// come from the user's own Word at runtime or they do not come at all.
+
+test("no icon is committed anywhere in the extension", async () => {
+    // Stated as a property of the tree rather than of the files this change
+    // happened to add: the constraint is "never a resource in the sources", so
+    // it has to fail on a .png or .ico appearing anywhere, by any later change.
+    const root = path.join(EXTENSION, "..");
+    const found = [];
+    const walk = async (dir) => {
+        for (const entry of await readdir(dir, { withFileTypes: true })) {
+            if (entry.name === "node_modules" || entry.name === ".git") continue;
+            const full = path.join(dir, entry.name);
+            if (entry.isDirectory()) await walk(full);
+            else if (/\.(png|ico)$/i.test(entry.name)) found.push(path.relative(root, full));
+        }
+    };
+    await walk(root);
+
+    assert.deepEqual(found, [], `an icon was committed: ${found.join(", ")}`);
+});
+
+test("the Word mark is fetched at runtime, from a route the server actually has", async () => {
+    const [markup, css, server] = await Promise.all([read("index.html"), read("app.css"), readSrc("server.mjs")]);
+
+    assert.match(markup, /class="word-mark"/, "the markup has nowhere to put the mark");
+    assert.match(css, /\.word-mark\s*\{/, "the mark is unsized, so it would draw at whatever the extraction produced");
+    assert.match(server, /"GET \/api\/word-icon"/, "the markup fetches a route the server does not serve");
+});
+
+test("the mark ships with no source, so a machine without Word draws nothing broken", async () => {
+    // The single most likely regression here: giving the <img> a `src` in the
+    // markup. It looks tidier and it puts a broken-image box in the bar of
+    // every machine that has no Word, which is most of them. The source is set
+    // by `word-mark.mjs`, after which a successful load reveals the image.
+    const markup = await read("index.html");
+    const marks = [...markup.matchAll(/<img\b[^>]*class="word-mark"[^>]*>/g)].map((m) => m[0]);
+
+    assert.ok(marks.length >= 2, `expected the name and the button to carry a mark, found ${marks.length}`);
+    for (const mark of marks) {
+        assert.ok(!/\bsrc=/.test(mark), `a word-mark ships with a src: ${mark}`);
+        assert.match(mark, /\bhidden\b/, `a word-mark is visible before it has loaded: ${mark}`);
+        // Decorative, exactly like the glyphs it replaces: the button's text is
+        // its name and the document's name is beside it.
+        assert.match(mark, /alt=""/, `a word-mark claims an accessible name: ${mark}`);
+    }
+});
+
+test("app.js delegates the mark's fallback rather than deciding it inline", async () => {
+    // The failure path is the whole point of #68's "degrade gracefully", and it
+    // has branches, so it lives where a test can execute it.
+    const script = await read("app.js");
+
+    assert.match(
+        script,
+        /import\s*\{[^}]*\bshowWordMark\b[^}]*\}\s*from\s*"\.\/word-mark\.mjs"/,
+        "app.js no longer imports the mark loader",
+    );
+    assert.match(script, /showWordMark\s*\(/, "app.js imports the loader but never calls it");
+    // The button keeps a drawn glyph to fall back to; the name never had one.
+    assert.match(script, /fallback:\s*el\.openInWordGlyph/, "the button has no glyph to fall back to");
 });
 

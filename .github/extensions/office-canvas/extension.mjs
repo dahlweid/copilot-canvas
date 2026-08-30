@@ -195,6 +195,26 @@ async function run(fn) {
 
 // --- canvas ----------------------------------------------------------------
 
+/*
+ * No `icon` here, and its absence is a measurement rather than an oversight
+ * (#68). The Word mark reached the document name and the Open in Word button;
+ * the canvas *tab* was the third placement asked for and it is not reachable
+ * from a Node extension.
+ *
+ * `spikes/word-icon/probes/probe-icon-sources.mjs` measures why, on the SDK
+ * bundled with CLI 1.0.80: `Canvas` builds `this.declaration` from an explicit
+ * five-field literal -- `id, displayName, description, inputSchema, actions` --
+ * with no spread, so an `icon` option is dropped before the declaration exists,
+ * whatever its value. The string `icon` appears nowhere in the SDK's runtime
+ * JavaScript; the only occurrences are in the generated wire typings, where
+ * `DiscoveredCanvas.icon` is documented as a host-local PNG path that nothing on
+ * this side populates.
+ *
+ * The one route that might work -- committing a PNG for the host to find -- is
+ * the one the issue forbids. Re-run arm 3 of that probe against a newer SDK
+ * before concluding this is still closed.
+ */
+
 const wordCanvas = createCanvas({
     id: "word-doc",
     displayName: "Word document",

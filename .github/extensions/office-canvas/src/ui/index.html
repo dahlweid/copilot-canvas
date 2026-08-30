@@ -16,6 +16,16 @@
     <body>
         <header class="bar" id="bar" hidden>
             <div class="bar-main">
+                <!--
+                    The real Word mark, when this machine has one (#68). It is
+                    fetched from the user's own installation at runtime and is
+                    not a file in this repository -- the repo is public, and the
+                    open icon sets have dropped the Microsoft family for
+                    trademark reasons. `hidden` until it loads: an <img> whose
+                    source 404s draws the browser's broken-image affordance, and
+                    a machine without Word must simply show no decoration.
+                -->
+                <img class="word-mark" id="docNameMark" alt="" width="16" height="16" hidden />
                 <span class="doc-name" id="docName">&nbsp;</span>
                 <span class="doc-meta" id="docMeta"></span>
             </div>
@@ -71,7 +81,14 @@
                     Reload
                 </button>
                 <button type="button" id="openInWord" class="btn" title="Open in Microsoft Word">
-                    <svg class="icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                    <img class="word-mark" id="openInWordMark" alt="" width="16" height="16" hidden />
+                    <svg
+                        class="icon"
+                        id="openInWordGlyph"
+                        viewBox="0 0 16 16"
+                        aria-hidden="true"
+                        focusable="false"
+                    >
                         <path d="M13.5 9.5v3a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1h3" />
                         <path d="M9.5 2.5h4v4" />
                         <path d="M13.5 2.5 7.5 8.5" />

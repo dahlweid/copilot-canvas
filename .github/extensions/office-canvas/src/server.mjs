@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import { DocumentError, normalizeDocPath } from "./render-cache.mjs";
 import { FileWatcher } from "./watcher.mjs";
 import { loadWorker, VENDOR_DIR } from "./vendor-assets.mjs";
+import { wordIcon } from "./word/word-icon.mjs";
 
 const UI_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "ui");
 
@@ -22,6 +23,7 @@ const MIME = {
     ".js": "text/javascript; charset=utf-8",
     ".mjs": "text/javascript; charset=utf-8",
     ".svg": "image/svg+xml",
+    ".png": "image/png",
 };
 
 /**
@@ -152,6 +154,7 @@ export class ViewerInstance {
         spawnFn = spawn,
         vendorDir = VENDOR_DIR,
         autoRefreshDelaysMs = AUTO_REFRESH_DELAYS_MS,
+        wordIcon: iconSource = wordIcon,
     }) {
         // A function, or a RenderCache directly. The function form is what the
         // extension passes, and it is not a convenience: a panel outlives Word
@@ -168,6 +171,11 @@ export class ViewerInstance {
         this.spawnFn = spawnFn;
         this.vendorDir = vendorDir;
         this.autoRefreshDelaysMs = autoRefreshDelaysMs;
+        // Shared across instances by default, so the extraction happens once per
+        // process rather than once per panel. Injectable because CI has neither
+        // Word nor PowerShell, and the caching and the 404 are the parts with
+        // branches.
+        this.wordIcon = iconSource;
         this.url = null;
 
         this.doc = null; // last known describe() payload
@@ -672,11 +680,45 @@ export class ViewerInstance {
         return createReadStream(file).pipe(res);
     }
 
+    /**
+     * The Word application icon, extracted from this machine's own Word.
+     *
+     * 404 when there is none, and that is an ordinary answer rather than an
+     * error: it decorates a bar that is already drawn, so a machine without
+     * Word simply keeps the glyph the markup ships with. Nothing is logged at
+     * request level and nothing reaches the user -- a missing decoration that
+     * announced itself would be worse than the missing decoration.
+     *
+     * ETag rather than a long `max-age`, following the vendored worker: the URL
+     * carries no version, so a far-future expiry would pin a browser to the
+     * icon of whichever Word was installed when it first asked.
+     */
+    async #serveWordIcon(req, res) {
+        const icon = await this.wordIcon.get();
+        if (!icon) return json(res, 404, { error: { code: "not_found", message: "No Word icon on this machine." } });
+
+        if (req.headers["if-none-match"] === icon.etag) {
+            res.writeHead(304, { ETag: icon.etag, "Cache-Control": "private, must-revalidate" });
+            return res.end();
+        }
+        res.writeHead(200, {
+            "Content-Type": MIME[".png"],
+            "Content-Length": icon.buffer.byteLength,
+            "Cache-Control": "private, must-revalidate",
+            ETag: icon.etag,
+        });
+        if (req.method === "HEAD") return res.end();
+        return res.end(icon.buffer);
+    }
+
     async #serveApi(req, res, route, url) {
         try {
             switch (`${req.method} ${route}`) {
                 case "GET /api/state":
                     return json(res, 200, this.state);
+
+                case "GET /api/word-icon":
+                    return await this.#serveWordIcon(req, res);
 
                 case "POST /api/open": {
                     const body = await readBody(req);
