@@ -63,6 +63,7 @@ test("nothing is committed under src/ui/vendor that the manifest does not name",
     const manifest = await readManifest();
     const named = new Set([
         "pdfjs.manifest.json",
+        manifest.license.name,
         ...manifest.files.map((f) => f.name),
         ...manifest.worker.parts.map((p) => p.name),
     ]);
@@ -325,6 +326,103 @@ test("the page CSS defines the rounding steps pdf.js divides the layer by", asyn
         assert.ok(bundle.includes(property), `pdf.min.mjs should read ${property}`);
         assert.match(appCss, new RegExp(`${property}\\s*:`), `app.css should define ${property}`);
     }
+});
+
+// --- attribution (Apache-2.0 §4) --------------------------------------------
+
+test("the vendored tree ships the Apache-2.0 licence its notices point at", async () => {
+    // §4(a): recipients of the Work get a copy of the licence. The extension is
+    // delivered by copying one folder, so "recipient" means whoever has that
+    // folder -- which is why the licence lives inside it and not only at the
+    // repo root. Digest-checked like everything else here, because a truncated
+    // or half-written licence file would still satisfy a mere existence check.
+    const manifest = await readManifest();
+    assert.equal(manifest.license.spdx, "Apache-2.0");
+    const body = await readFile(path.join(VENDOR_DIR, manifest.license.name));
+    assert.equal(body.byteLength, manifest.license.bytes, "licence byte count");
+    assert.equal(sha256(body), manifest.license.sha256, "licence digest");
+
+    const markers = await readToolValue(VENDOR_TOOL, "APACHE_LICENSE_MARKERS");
+    const text = body.toString("utf8");
+    for (const marker of markers) {
+        assert.ok(text.includes(marker), `the vendored licence should contain '${marker}'`);
+    }
+});
+
+test("the extracted stylesheet retains Mozilla's copyright and licence notice", async () => {
+    // §4(c): retain the copyright and attribution notices from the Source form.
+    // Upstream web/pdf_viewer.css opens with one, and the first version of the
+    // vendoring script cut the .textLayer rule out from underneath it -- so the
+    // committed file carried no attribution at all. Asserting on the committed
+    // artifact is what makes that visible; the generator test below is what
+    // stops the next version bump undoing it.
+    const css = await readFile(path.join(VENDOR_DIR, "pdf-text-layer.css"), "utf8");
+    assert.match(css, /Copyright \d{4} Mozilla Foundation/);
+    assert.match(css, /Licensed under the Apache License, Version 2\.0/);
+
+    // The pointer has to resolve, or it is decoration. Read from the CSS rather
+    // than restated, so renaming the licence file fails here instead of leaving
+    // a header naming a file nobody ships.
+    const named = css.match(/licence text is in (\S+),/)?.[1];
+    assert.ok(named, "the header should name the licence file");
+    assert.ok(
+        (await readdir(VENDOR_DIR)).includes(named),
+        `pdf-text-layer.css points at ${named}, which is not in the vendor directory`,
+    );
+});
+
+test("the generator emits the upstream notice ahead of the rule it extracts", async () => {
+    // The load-bearing half. `tools/vendor-pdfjs.mjs` rewrites this whole
+    // directory on a version bump, so a stylesheet fixed by hand is undone the
+    // next time pdf.js moves. This drives the generator's own emitter, with no
+    // network, and fails if the notice stops coming out the other side.
+    const notice = "/* Copyright 2031 Example Foundation\n * Licensed under the Apache License, Version 2.0\n */";
+    const source = `${notice}\n.messageBar{a:1}\n.textLayer{b:2}\n`;
+
+    const css = await callTool(VENDOR_TOOL, "buildTextLayerCss", [source, "9.9.9"]);
+    assert.ok(css.startsWith(notice), "the upstream notice must lead the file");
+    assert.ok(css.includes(".textLayer{b:2}"), "the rule must still be extracted");
+    assert.ok(!css.includes(".messageBar"), "only the .textLayer rule is taken");
+    assert.ok(css.includes("pdfjs-dist@9.9.9"), "§4(b): the file must state what was changed, and from where");
+});
+
+test("the generator refuses to emit a stylesheet whose source carries no notice", async () => {
+    // Without this the emitter degrades quietly: an upstream file with no
+    // leading comment would produce exactly the unattributed stylesheet this
+    // whole section exists to prevent, and nothing would say so.
+    for (const source of [".textLayer{b:2}\n", "/* just a note, no attribution */\n.textLayer{b:2}\n"]) {
+        await assert.rejects(
+            callTool(VENDOR_TOOL, "buildTextLayerCss", [source, "9.9.9"]),
+            (err) => {
+                // On the error, not merely on rejection: the bridge rejects for
+                // any non-zero exit, so a typo in the tool name would otherwise
+                // pass this test while proving nothing.
+                assert.match(`${err.stderr ?? ""}`, /notice|copyright/i);
+                return true;
+            },
+            JSON.stringify(source),
+        );
+    }
+});
+
+test("no other tracked vendored or generated artifact is missing its notice", async () => {
+    // Verified against the tree rather than by eye. Every file under the vendor
+    // directory must either be one of ours (the manifest), or carry an Apache
+    // notice, or be a continuation part of a file that does. The worker split is
+    // the reason for that last clause: parts 1 and 2 are the middle of one file
+    // whose notice is in part 0, and demanding a notice in each would be asking
+    // for something that would corrupt them.
+    const manifest = await readManifest();
+    const ours = new Set(["pdfjs.manifest.json", manifest.license.name]);
+    const continuation = new Set(manifest.worker.parts.slice(1).map((p) => p.name));
+
+    const missing = [];
+    for (const name of await readdir(VENDOR_DIR)) {
+        if (ours.has(name) || continuation.has(name)) continue;
+        const text = await readFile(path.join(VENDOR_DIR, name), "utf8");
+        if (!/Apache License, Version 2\.0/.test(text) || !/Mozilla Foundation/.test(text)) missing.push(name);
+    }
+    assert.deepEqual(missing, [], "every vendored file must carry its Apache-2.0 attribution");
 });
 
 // --- the gate itself --------------------------------------------------------
