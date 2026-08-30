@@ -190,12 +190,15 @@ try {
         assert.equal(body.error.code, "not_open");
     });
 
-    await check("browse finds the fixture in the workspace", async () => {
-        const body = await (await get("/api/browse")).json();
-        assert.equal(body.workspacePath, workRoot);
-        const hit = body.workspaceDocs.find((d) => d.name === "report.docx");
-        assert.ok(hit, `report.docx not in ${JSON.stringify(body.workspaceDocs)}`);
-        assert.equal(hit.relative, path.join("docs", "report.docx"));
+    await check("the browse route is gone", async () => {
+        // #69 retired the picker, and `/api/browse` existed only to fill it.
+        // Asserted end-to-end rather than by reading the source: a route left
+        // registered would answer here, whatever the switch statement looks
+        // like to a reader.
+        const res = await get("/api/browse");
+        assert.equal(res.status, 404);
+        const body = await res.json();
+        assert.equal(body.error.code, "not_found");
     });
 
     await check("open a document over the API", async () => {
@@ -396,14 +399,6 @@ try {
         const buf = Buffer.from(await res.arrayBuffer());
         assert.equal(buf.subarray(0, 5).toString("latin1"), "%PDF-");
         assert.notEqual(buf.length, pdfSize, "expected a different render");
-    });
-
-    await check("recents include the opened document", async () => {
-        const body = await (await get("/api/browse")).json();
-        assert.ok(
-            body.recents.some((r) => normalizeDocPath(r.path) === normalizeDocPath(fixture)),
-            "fixture missing from recents",
-        );
     });
 
     await check("close shuts the server down", async () => {

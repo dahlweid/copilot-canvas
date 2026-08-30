@@ -104,40 +104,33 @@
                 <div class="pages" id="pages"></div>
             </section>
 
-            <section class="picker" id="picker">
-                <div class="picker-inner">
-                    <!--
-                        The no-document state, and the only screen with room to
-                        say what this is. It is reachable on its own -- the
-                        canvas opens here when `open_canvas` carries no path --
-                        so the product name lives here rather than in the header
-                        bar, which names the open document instead.
-                    -->
+            <!--
+                The no-document state, and the only screen with room to say what
+                this is. It is reachable on its own -- the canvas opens here when
+                `open_canvas` carries no path -- so the product name lives here
+                rather than in the header bar, which names the open document.
+
+                It instructs and offers nothing to operate. A path box and a
+                click-to-open list were both here until #69; both asked the user
+                to drive document selection, which is the one job this panel
+                gives to Copilot ("display only -- the user does not type into
+                it, they ask Copilot for the change"). Deleting them without
+                putting words in their place would have made a canvas opened with
+                no path a dead panel, so what replaces them names the thing the
+                user has to say, and the action that carries it out.
+            -->
+            <section class="empty" id="emptyState">
+                <div class="empty-inner">
                     <h1 id="productName">Word Document Viewer</h1>
                     <p class="muted" id="engineNote">Rendered by Microsoft Word for page-accurate layout.</p>
 
-                    <form class="path-form" id="pathForm">
-                        <input
-                            type="text"
-                            id="pathInput"
-                            aria-label="Path to a Word document"
-                            placeholder="C:\path\to\document.docx"
-                            autocomplete="off"
-                            spellcheck="false"
-                        />
-                        <button type="submit" class="btn primary">Open</button>
-                    </form>
-                    <p class="error" id="pickerError" hidden></p>
-
-                    <div class="list-block" id="recentsBlock" hidden>
-                        <h2>Recent</h2>
-                        <ul class="list" id="recents"></ul>
-                    </div>
-
-                    <div class="list-block" id="workspaceBlock" hidden>
-                        <h2>In this workspace</h2>
-                        <ul class="list" id="workspaceDocs"></ul>
-                    </div>
+                    <p class="empty-lead">No document is open in this panel.</p>
+                    <p class="empty-how">
+                        Ask Copilot for the one you want — for example
+                        <span class="sample">“Show me docs\report.docx in the Word canvas”</span> — and it
+                        appears here. Copilot opens it with this canvas's
+                        <code>open_document</code> action; there is nothing to fill in on this screen.
+                    </p>
                 </div>
             </section>
         </main>

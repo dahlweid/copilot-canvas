@@ -150,7 +150,7 @@ const describePathArg = (value) => (typeof value === "string" ? "an empty string
  * resolved to a *directory* and was only ever caught downstream, by a code
  * naming something else. The canvas is unaffected: `open` tests
  * `ctx.input?.path` for truthiness before calling this, so an omitted path
- * still opens the document picker.
+ * still opens the canvas on its empty state.
  *
  * `invalid_path` rather than a new code: it is already the extension-surface
  * code for an unusable path, and it is what `normalizeDocPath` answers an
@@ -219,7 +219,8 @@ const wordCanvas = createCanvas({
                 type: "string",
                 description:
                     `Absolute or workspace-relative path to a Word document (${supportedList()}). ` +
-                    `Omit to open the canvas on its document picker.`,
+                    `Omit to open the canvas empty; it then tells the user to ask for a document, ` +
+                    `and this canvas's open_document action puts one in it.`,
             },
         },
         additionalProperties: false,

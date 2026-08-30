@@ -29,14 +29,7 @@ const el = {
     searchResults: $("searchResults"),
     viewer: $("viewer"),
     pages: $("pages"),
-    picker: $("picker"),
-    pathForm: $("pathForm"),
-    pathInput: $("pathInput"),
-    pickerError: $("pickerError"),
-    recents: $("recents"),
-    recentsBlock: $("recentsBlock"),
-    workspaceDocs: $("workspaceDocs"),
-    workspaceBlock: $("workspaceBlock"),
+    emptyState: $("emptyState"),
     engineNote: $("engineNote"),
     toggleSidebar: $("toggleSidebar"),
     reload: $("reload"),
@@ -167,15 +160,16 @@ function goToPage(page) {
 
 function render() {
     const hasDoc = Boolean(state?.doc && state.status !== "error");
-    // The picker is the no-document state and nothing else. There is no longer a
-    // control that asks for it while a document is open: the canvas is driven by
-    // the agent, which opens documents through `open_canvas` and `open_document`.
-    const showPicker = !state?.doc;
+    // The empty state is the no-document state and nothing else. It offers no
+    // control: the canvas is driven by the agent, which opens documents through
+    // `open_canvas` and the `open_document` action, so the screen names that
+    // rather than asking the user to select a file (#69).
+    const showEmpty = !state?.doc;
 
     el.bar.hidden = !state?.doc;
-    el.picker.classList.toggle("visible", showPicker);
-    el.viewer.classList.toggle("visible", !showPicker && hasDoc);
-    el.sidebar.hidden = showPicker || el.sidebar.dataset.open !== "true";
+    el.emptyState.classList.toggle("visible", showEmpty);
+    el.viewer.classList.toggle("visible", !showEmpty && hasDoc);
+    el.sidebar.hidden = showEmpty || el.sidebar.dataset.open !== "true";
 
     if (state?.doc) {
         const doc = state.doc;
@@ -207,10 +201,10 @@ function render() {
         setStatus(null);
     }
 
-    if (!showPicker && hasDoc) showPdf(currentPage);
+    if (!showEmpty && hasDoc) showPdf(currentPage);
 }
 
-function entryButton({ label, page, snippet, level, onClick }) {
+function entryButton({ label, page, level, onClick }) {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "entry";
@@ -219,12 +213,6 @@ function entryButton({ label, page, snippet, level, onClick }) {
     const labelSpan = document.createElement("span");
     labelSpan.className = "label";
     labelSpan.textContent = label;
-    if (snippet) {
-        const s = document.createElement("span");
-        s.className = "snippet";
-        s.textContent = snippet;
-        labelSpan.append(s);
-    }
     button.append(labelSpan);
 
     if (page) {
@@ -324,63 +312,6 @@ async function runSearch() {
     }
 }
 
-async function loadPicker() {
-    try {
-        const { workspaceDocs = [], recents = [], workspacePath } = await api("/api/browse");
-
-        el.recentsBlock.hidden = recents.length === 0;
-        el.recents.innerHTML = "";
-        for (const entry of recents) {
-            const li = document.createElement("li");
-            li.append(
-                entryButton({
-                    label: entry.name,
-                    snippet: entry.path,
-                    onClick: () => open(entry.path),
-                }),
-            );
-            el.recents.append(li);
-        }
-
-        el.workspaceBlock.hidden = workspaceDocs.length === 0;
-        if (workspacePath) {
-            el.workspaceBlock.querySelector("h2").textContent = `In ${workspacePath}`;
-        }
-        el.workspaceDocs.innerHTML = "";
-        for (const doc of workspaceDocs) {
-            const li = document.createElement("li");
-            li.append(
-                entryButton({
-                    label: doc.name,
-                    snippet: doc.relative,
-                    onClick: () => open(doc.path),
-                }),
-            );
-            el.workspaceDocs.append(li);
-        }
-    } catch (err) {
-        el.pickerError.hidden = false;
-        el.pickerError.textContent = err.message;
-    }
-}
-
-async function open(docPath) {
-    el.pickerError.hidden = true;
-    setStatus("Opening in Word…", { busy: true });
-    try {
-        const { state: next } = await api("/api/open", {
-            method: "POST",
-            body: JSON.stringify({ path: docPath }),
-        });
-        currentPage = 1;
-        applyState(next, { forceReload: true });
-    } catch (err) {
-        el.pickerError.hidden = false;
-        el.pickerError.textContent = err.message;
-        setStatus(err.message, { error: true });
-    }
-}
-
 function applyState(next, { forceReload = false } = {}) {
     const previousKey = state?.doc?.key ?? null;
     state = next;
@@ -424,12 +355,6 @@ function connect() {
     // was CONNECTING, which `EventSource` keeps it at forever.
     monitorConnection(source, { setStatus });
 }
-
-el.pathForm.addEventListener("submit", (event) => {
-    event.preventDefault();
-    const value = el.pathInput.value.trim();
-    if (value) open(value);
-});
 
 el.toggleSidebar.addEventListener("click", () => {
     const open = el.sidebar.dataset.open !== "true";
@@ -486,9 +411,6 @@ el.searchInput.addEventListener("keydown", (event) => {
 });
 
 api("/api/state")
-    .then((initial) => {
-        applyState(initial);
-        if (!initial.doc) loadPicker();
-    })
+    .then((initial) => applyState(initial))
     .catch((err) => setStatus(err.message, { error: true }))
     .finally(connect);

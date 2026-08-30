@@ -21,8 +21,12 @@ import { fileURLToPath } from "node:url";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const UI = path.resolve(HERE, "..", "..", "src", "ui");
+const SRC = path.resolve(HERE, "..", "..", "src");
+const EXTENSION = path.resolve(HERE, "..", "..", "extension.mjs");
 
 const read = (name) => readFile(path.join(UI, name), "utf8");
+const readSrc = (name) => readFile(path.join(SRC, name), "utf8");
+const readExtension = () => readFile(EXTENSION, "utf8");
 
 test("every id app.js looks up exists in index.html", async () => {
     const [script, markup] = await Promise.all([read("app.js"), read("index.html")]);
@@ -136,8 +140,9 @@ test("every button has an accessible name", async () => {
     const buttons = buttonsIn(markup);
 
     // A guard against the extraction matching nothing: an empty set would pass
-    // every assertion below while measuring no button at all.
-    assert.ok(buttons.length >= 6, `expected the markup to define buttons, found ${buttons.length}`);
+    // every assertion below while measuring no button at all. Five, since #69
+    // retired the picker's Open button along with the rest of that screen.
+    assert.ok(buttons.length >= 5, `expected the markup to define buttons, found ${buttons.length}`);
 
     for (const b of buttons) {
         const named = b.text || b.ariaLabel;
@@ -228,5 +233,71 @@ test("app.js carries no connection status of its own", async () => {
     // whichever one it names -- the monitor would still be wired and simply
     // never called.
     assert.doesNotMatch(script, /source\s*\.\s*on(error|open)\s*=/, "app.js overwrites a handler the monitor owns");
+});
+
+// --- The no-document state (#69) ---------------------------------------------
+//
+// The picker was the last screen that asked the user to choose a document, which
+// is the one job the canvas gives to Copilot. Deleting it is only half the
+// change: the state it occupied is reachable (`path` is optional in the canvas
+// input schema), so what stands there now has to tell a first-time reader what
+// to do instead.
+
+test("the document picker is gone from the markup, the wiring and the API", async () => {
+    // Same shape as the Change... removal above: markup alone is not enough,
+    // because a leftover `$("pathForm")` returns null and the listener attach
+    // throws on load, taking the whole UI with it.
+    const [script, markup, server] = await Promise.all([read("app.js"), read("index.html"), readSrc("server.mjs")]);
+
+    for (const id of ["pathForm", "pathInput", "pickerError", "recents", "recentsBlock", "workspaceDocs"]) {
+        assert.ok(!markup.includes(id), `index.html still carries the picker's ${id}`);
+        assert.ok(!script.includes(id), `app.js still references ${id}, which is now null`);
+    }
+    assert.ok(!script.includes("/api/browse"), "app.js still fetches the picker's browse endpoint");
+    assert.ok(!server.includes("/api/browse"), "server.mjs still routes the picker's browse endpoint");
+});
+
+test("the no-document state invites no input", async () => {
+    // The property, not the current markup: any form control on this screen is
+    // the picker returning under another name. `<input>`, `<textarea>` and
+    // `<select>` are the three ways a user types or picks, and a `<form>` is the
+    // thing that would submit one.
+    const markup = await read("index.html");
+    const empty = markup.match(/<section class="empty"[\s\S]*?<\/section>/)?.[0];
+
+    assert.ok(empty, "index.html has no empty state, so a canvas opened with no path shows nothing");
+    for (const tag of ["<form", "<input", "<textarea", "<select"]) {
+        assert.ok(!empty.includes(tag), `the no-document state offers a ${tag}> to operate`);
+    }
+});
+
+test("the no-document state says who opens a document and how", async () => {
+    // What replaces the picker has one job: a reader who opens a fresh canvas
+    // must learn that they ask Copilot, and what Copilot will use. Both halves
+    // are asserted, because either alone leaves the screen a dead end -- "ask
+    // Copilot" with no verb, or an action name with nobody to address.
+    const markup = await read("index.html");
+    const empty = markup.match(/<section class="empty"[\s\S]*?<\/section>/)?.[0] ?? "";
+
+    assert.match(empty, /\bCopilot\b/, "the no-document state never names Copilot");
+    assert.match(empty, /open_document/, "the no-document state never names the action that opens a document");
+    assert.match(
+        empty,
+        /No document is open/i,
+        "the no-document state never says that no document is open",
+    );
+});
+
+test("the canvas description no longer promises a document picker", async () => {
+    // The schema still makes `path` optional, and should: the panel must be
+    // able to exist empty. What had to change is the sentence that told the
+    // agent -- and through it the user -- to expect a picker there.
+    const extension = await readExtension();
+    assert.ok(!/document picker/i.test(extension), "extension.mjs still promises a document picker");
+    assert.match(
+        extension,
+        /Omit to open the canvas empty/,
+        "the optional `path` no longer says what omitting it does",
+    );
 });
 
