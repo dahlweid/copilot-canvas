@@ -461,10 +461,16 @@ export class ViewerInstance {
      * about which code Word's save produces: it retries anything not known to be
      * permanent (see `TERMINAL_REFRESH_CODES`) and reports whatever is left.
      *
-     * Rethrowing is the third part, and it is not error propagation — nothing
-     * above catches it. It is the signal to `FileWatcher` that this change was
-     * not consumed, which is what lets a *later* save re-report it and recover a
-     * panel this one gave up on.
+     * Rethrowing is the third part. It is not error propagation in the usual
+     * sense -- it is the signal to `FileWatcher` that this change was not
+     * consumed, which is what lets a *later* save re-report it and recover a
+     * viewer this one gave up on.
+     *
+     * That makes this a **throwing method with exactly one intended caller**:
+     * the watcher's `onChange`, whose `#deliver` catches it and rolls its
+     * fingerprint back. It is currently the only call site. A second caller --
+     * a tool handler, an HTTP route -- inherits the throw and must catch it, or
+     * it becomes an unhandled rejection rather than a refusal anyone acts on.
      */
     async #autoRefresh() {
         if (!this.doc) return;
