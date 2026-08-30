@@ -32,7 +32,7 @@ import { RenderCache } from "../../src/render-cache.mjs";
 import { fileRevisionToken, tokensMatch } from "../../src/revision-token.mjs";
 import { asToolError } from "../../src/tool-error.mjs";
 import { codepoints, documentPlainText, documentXml } from "./docx-zip.mjs";
-import { assertNoLeakedWord, wordPids } from "./word-pids.mjs";
+import { assertNoLeakedWord, ownedWordLedger, wordPids } from "./word-pids.mjs";
 
 const execFileAsync = promisify(execFile);
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -180,6 +180,9 @@ const cache = new RenderCache({
     cacheRoot: path.join(workRoot, "artifacts"),
     log: (m) => process.stderr.write(`[cache] ${m}\n`),
 });
+// See cache-smoke.mjs: the ledger is what lets a red run say whether the
+// surviving Word was one this host owned or someone else's.
+const ledger = ownedWordLedger().watch(cache.host);
 
 /** Re-reads and returns the paragraph at an address, or null. */
 const paragraphAt = async (docPath, address) => {
@@ -798,7 +801,7 @@ try {
     await cache.dispose().catch(() => {});
 }
 
-await check("no new WINWORD.EXE is left behind", () => assertNoLeakedWord(pidsBefore));
+await check("no new WINWORD.EXE is left behind", () => assertNoLeakedWord(pidsBefore, { ledger }));
 
 await rm(workRoot, { recursive: true, force: true }).catch(() => {});
 

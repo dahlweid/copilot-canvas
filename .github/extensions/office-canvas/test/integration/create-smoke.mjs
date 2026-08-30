@@ -31,7 +31,7 @@ import { promisify } from "node:util";
 
 import { RenderCache } from "../../src/render-cache.mjs";
 import { WordHost } from "../../src/word/word-host.mjs";
-import { assertNoLeakedWord, wordPids } from "./word-pids.mjs";
+import { assertNoLeakedWord, ownedWordLedger, wordPids } from "./word-pids.mjs";
 
 const execFileAsync = promisify(execFile);
 const results = [];
@@ -201,6 +201,10 @@ const cache = new RenderCache({
     cacheRoot: path.join(workRoot, "artifacts"),
     log: (m) => process.stderr.write(`[cache] ${m}\n`),
 });
+// See cache-smoke.mjs. This suite also builds bare WordHosts of its own below;
+// each is watched at its own construction site, so a Word any of them owns is
+// attributable here too.
+const ledger = ownedWordLedger().watch(cache.host);
 
 // Paths reach PowerShell as discrete argv elements or through the environment,
 // never interpolated into a command string. See the same note in edit-smoke.mjs:
@@ -477,6 +481,7 @@ try {
         // mutation result, recorded here because it is not something this
         // assertion can show on its own.
         const host = new WordHost({ log: () => {} });
+        ledger.watch(host);
         try {
             const before = await readFile(target);
             const out = await host.create({ path: target, blocks: [{ kind: "paragraph", text: "Overwrite." }] });
@@ -524,6 +529,7 @@ try {
         // caller back to reading the message. And the message is why the field
         // exists at all: this failure's detail arrives in German.
         const host = new WordHost({ log: () => {} });
+        ledger.watch(host);
         try {
             const out = await host.create({
                 path: path.join(docs, "never-written.docx"),
@@ -563,18 +569,32 @@ try {
         // The assertion is only possible because the catch reports instead of
         // swallowing. That was the actual fix; the `[ref]` was the easy part.
         //
-        // The `owned` guard below is not decoration. `Initialize-Word` attaches
-        // to a Word the user already had running when one is available, and
-        // `Stop-Word` never quits an instance it did not start -- so on an
-        // attached instance `Quit` is skipped and `quitError` is null for a
-        // reason that has nothing to do with the binding. Without the guard this
-        // check would pass vacuously, on a machine where 8-18 WINWORD.EXE are
-        // routinely alive from other sessions. It fails loudly instead, because
-        // "could not measure" and "the defect is gone" must not look alike.
+        // The guard below is not decoration, but the reason it used to give was
+        // wrong. It said `Initialize-Word` "attaches to a Word the user already
+        // had running when one is available" -- and that is contradicted by two
+        // measurements: probe-newobject-attach.ps1 (6 instances over 2 runs,
+        // never once attached) and probe-init-attribution.ps1, which created a
+        // fresh instance with 15 WINWORDs already alive. `New-Object` on Word
+        // creates; it is PowerPoint that always attaches. So attaching is not
+        // the likely case here -- but it is still a *possible* one, and a
+        // vacuous pass must not be indistinguishable from a fix.
+        //
+        // What actually decides whether the Quit runs is the attribution, and
+        // that is now readable rather than inferable: `Stop-Word` skips `Quit`
+        // only on 'attached'. Asserting 'hwnd' says exactly "the call under test
+        // will be made", which is the precondition this check needs, instead of
+        // approximating it through `owned`.
         const host = new WordHost({ log: () => {} });
+        ledger.watch(host);
         try {
             const ready = await host.request("ping", {});
-            assert.equal(ready.owned, true, "attached to an existing Word, so the Quit below is skipped and this check cannot measure anything");
+            assert.equal(
+                ready.attribution,
+                "hwnd",
+                `ownership was decided by '${ready.attribution}', not by our own window handle; ` +
+                    "on 'attached' the Quit below is skipped and this check measures nothing",
+            );
+            assert.equal(ready.owned, true, "no owned pid, so there is no instance for the Quit to act on");
             const out = await host.request("quit", {});
             assert.equal(out.stopped, true, "the host did not report a stop");
             assert.equal(out.quitError, null, `Application.Quit threw and was swallowed: ${out.quitError}`);
@@ -600,7 +620,7 @@ try {
     await cache.dispose().catch(() => {});
 }
 
-await check("no new WINWORD.EXE is left behind", () => assertNoLeakedWord(pidsBefore));
+await check("no new WINWORD.EXE is left behind", () => assertNoLeakedWord(pidsBefore, { ledger }));
 
 await rm(workRoot, { recursive: true, force: true }).catch(() => {});
 

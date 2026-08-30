@@ -1270,6 +1270,16 @@ with no ownership predicate; the `ledger` only splits the failure *message* into
 owned versus unattributed, as its own docstring says: *"Both still fail."* The
 text even names "another session's" as a possible cause of a red.
 
+Issue #25 later made attribution sound **at its source** — `Initialize-Word`
+reads its own window handle instead of differencing pids — and it is worth being
+explicit that this does **not** revive the claim above. What changed is the
+meaning of a ledger entry, and therefore what `killOwnedWord` is entitled to
+kill. `assertNoLeakedWord` still differences, deliberately: it has to catch the
+leaks attribution *cannot* see, such as the second WINWORD that
+`ProtectedViewWindows.Open` spawns without the bridge ever holding a handle to
+it. So the mechanism below is unchanged, and the corrected sentence stays
+corrected.
+
 What actually does the work is `timeoutMs = 90000` at `word-pids.mjs:110-119`:
 it polls and fails only if a pid is **still alive at the deadline**, so a
 foreign Word that exits during the poll cannot fail it, whereas a single-sample
