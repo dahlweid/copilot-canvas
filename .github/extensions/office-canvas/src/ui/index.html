@@ -27,6 +27,29 @@
                     and no CDN -- the viewer is served by an ephemeral local
                     server and fetches nothing off the machine.
                 -->
+                <!--
+                    Where the absolute path went (#71). The old full-width row
+                    spent a line of a narrow panel restating what its own
+                    tooltip said. The path is now the name's tooltip *and* this
+                    control's accessible name, so it survives without a pointer:
+                    a `title` alone is not keyboard-reachable and is read
+                    inconsistently, but a button is a tab stop that announces its
+                    name on focus. Both attributes are rewritten in `render()`
+                    with the open document's path; the static values are what a
+                    reader of the markup and the accessible-name test see.
+                -->
+                <button
+                    type="button"
+                    id="copyPath"
+                    class="btn icon-only"
+                    title="Copy full path"
+                    aria-label="Copy full path"
+                >
+                    <svg class="icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                        <rect x="5.5" y="5.5" width="8" height="8" rx="1" />
+                        <path d="M10.5 3.5v-1a1 1 0 0 0-1-1h-7a1 1 0 0 0-1 1v7a1 1 0 0 0 1 1h1" />
+                    </svg>
+                </button>
                 <button
                     type="button"
                     id="toggleSidebar"
@@ -56,7 +79,6 @@
                     Open in Word
                 </button>
             </div>
-            <div class="bar-path" id="docPath" title=""></div>
         </header>
 
         <div class="status" id="status" hidden></div>

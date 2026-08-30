@@ -301,3 +301,60 @@ test("the canvas description no longer promises a document picker", async () => 
     );
 });
 
+// --- Where the absolute path went (#71) --------------------------------------
+//
+// The path had a full-width row of its own whose tooltip repeated its text
+// verbatim. Removing the row is the easy half; the hard half is that the path
+// must not become pointer-only, which is what a bare `title` would make it.
+
+test("the absolute-path row is gone from the markup, the wiring and the layout", async () => {
+    // Three files, because a leftover in any one of them is a different bug: a
+    // stale `$("docPath")` returns null and the assignment in `render()` throws,
+    // taking the UI down; a stale grid area leaves a blank strip under the bar.
+    const [script, markup, css] = await Promise.all([read("app.js"), read("index.html"), read("app.css")]);
+
+    assert.ok(!markup.includes("docPath"), "index.html still carries the absolute-path row");
+    assert.ok(!script.includes("docPath"), "app.js still references docPath, which is now null");
+    assert.ok(!css.includes(".bar-path"), "app.css still styles the row that no longer exists");
+
+    const bar = css.match(/\.bar\s*\{([^}]*)\}/);
+    assert.ok(bar, "app.css defines no .bar rule");
+    assert.ok(!/\bpath\b/.test(bar[1]), ".bar still reserves a grid area for the path row");
+});
+
+test("the path is reachable without a pointer", async () => {
+    // The accessibility half of #71, and the reason a tooltip alone was not the
+    // answer: `title` is not keyboard-reachable and is announced inconsistently.
+    // What replaces the row has to be a control -- a tab stop with a name --
+    // and `app.js` has to put the real path into that name rather than leaving
+    // the static placeholder standing.
+    const [script, markup] = await Promise.all([read("app.js"), read("index.html")]);
+    const copy = buttonsIn(markup).find((b) => b.id === "copyPath");
+
+    assert.ok(copy, "the markup defines no control carrying the path");
+    assert.ok(copy.ariaLabel, "the path control has no accessible name");
+    assert.ok(copy.title, "the path control has no tooltip for a pointer user");
+    assert.match(
+        script,
+        /el\.copyPath\.setAttribute\("aria-label"/,
+        "app.js never puts the path into the control's name",
+    );
+    assert.match(script, /el\.docName\.title\s*=/, "app.js never puts the path into the name's tooltip");
+});
+
+test("app.js delegates what the bar says about a document rather than deciding it inline", async () => {
+    // Same reasoning as the connection status above: `app.js` cannot be
+    // imported under Node, so a decision left in it has no reachable test. This
+    // fails on a delegation that was removed and on the old inline assignment
+    // coming back. It *cannot* fail on a wrong answer from the module -- that is
+    // `doc-identity.test.mjs`'s job, and it executes the code.
+    const script = await read("app.js");
+
+    assert.match(
+        script,
+        /import\s*\{[^}]*\bdescribeDocument\b[^}]*\}\s*from\s*"\.\/doc-identity\.mjs"/,
+        "app.js no longer imports the document description",
+    );
+    assert.match(script, /describeDocument\s*\(\s*doc\s*\)/, "app.js imports the description but never calls it");
+});
+

@@ -4,6 +4,7 @@
 import { PdfView } from "./pdf-view.mjs";
 import { describeChangeBanner } from "./change-wording.mjs";
 import { monitorConnection } from "./connection-status.mjs";
+import { copyOutcome, describeDocument } from "./doc-identity.mjs";
 
 /**
  * What the viewer calls itself.
@@ -21,7 +22,7 @@ const el = {
     bar: $("bar"),
     docName: $("docName"),
     docMeta: $("docMeta"),
-    docPath: $("docPath"),
+    copyPath: $("copyPath"),
     status: $("status"),
     sidebar: $("sidebar"),
     outline: $("outline"),
@@ -180,14 +181,24 @@ function render() {
         // The title is still worth showing, so it goes to the meta line among
         // the other document properties, where it reads as one.
         el.docName.textContent = doc.name;
-        el.docName.title = doc.name;
+
+        // The absolute path, which used to have a row of its own (#71). Its
+        // tooltip repeated its text verbatim, so the tooltip bought nothing and
+        // the row cost a line. Now the tooltip is on the name, where it says
+        // something the name does not -- and because a `title` is not
+        // keyboard-reachable, the same path is also the accessible name of the
+        // copy button beside it, which is a tab stop.
+        const identity = describeDocument(doc);
+        el.docName.title = identity.nameTitle;
+        el.copyPath.title = identity.copyTitle;
+        el.copyPath.setAttribute("aria-label", identity.copyLabel);
+        el.copyPath.disabled = !identity.canCopy;
+
         const bits = [`${doc.pageCount} ${doc.pageCount === 1 ? "page" : "pages"}`];
         if (doc.wordCount) bits.push(`${doc.wordCount.toLocaleString()} words`);
         if (doc.title?.trim()) bits.push(doc.title.trim());
         if (doc.author?.trim()) bits.push(doc.author);
         el.docMeta.textContent = bits.join(" · ");
-        el.docPath.textContent = doc.path;
-        el.docPath.title = doc.path;
         document.title = `${doc.name} — ${PRODUCT}`;
     } else {
         document.title = PRODUCT;
@@ -366,6 +377,24 @@ el.toggleSidebar.addEventListener("click", () => {
         loadOutline();
         el.searchInput.focus();
     }
+});
+
+el.copyPath.addEventListener("click", async () => {
+    // The path the button announces, not `state` read afresh: what is copied is
+    // then provably the thing its accessible name just said.
+    const path = el.copyPath.title;
+    let failure = null;
+    try {
+        await navigator.clipboard.writeText(path);
+    } catch (err) {
+        // Includes `navigator.clipboard` being absent, which throws a TypeError
+        // here rather than rejecting. Outside a secure context it simply is not
+        // there, and the panel is not always one.
+        failure = err;
+    }
+    const outcome = copyOutcome(failure);
+    setStatus(outcome.text, { error: outcome.error });
+    setTimeout(() => setStatus(null), 2500);
 });
 
 el.reload.addEventListener("click", async () => {

@@ -37,10 +37,13 @@ body {
 
 /* --- header ------------------------------------------------------------- */
 
+/* The bar is one row (#71). It carried a second, full-width one for the absolute
+   path until that row's own tooltip was found to repeat it verbatim -- a line of
+   a narrow panel spent restating what was already on screen. */
 .bar {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
-    grid-template-areas: "main actions" "path path";
+    grid-template-areas: "main actions";
     gap: 2px 8px;
     padding: 8px 12px;
     border-bottom: 1px solid var(--border-color-default, #d1d9e0);
@@ -61,16 +64,15 @@ body {
     gap: 6px;
 }
 
-.bar-path {
-    grid-area: path;
-    color: var(--text-color-muted, #59636e);
-    font-family: var(--font-mono, "SFMono-Regular", Consolas, monospace);
-    font-size: var(--text-code-inline, 12px);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    direction: rtl;
-    text-align: left;
+/* An icon-only button still needs the hit area of a labelled one, so the
+   horizontal padding shrinks to what centres the glyph rather than to nothing.
+   The name is carried by `aria-label`; there is no visible text to lay out. */
+.btn.icon-only {
+    padding-inline: 6px;
+}
+
+.btn.icon-only .icon {
+    margin: 0;
 }
 
 /* Does not shrink while the meta line still has space to give: measured at
