@@ -38,10 +38,10 @@
 // string. Not on `code`, not on `data`, not in the message of a throw.
 //
 // The corollary, and the trap this module now exists to close: **a tool handler
-// must not throw.** `extension.mjs` wraps every registered tool so that it
-// cannot, at the registration site rather than per handler, because a new tool
-// added later would otherwise inherit the broken channel by simply not being
-// told.
+// must not throw.** `reportingFailures` below wraps every registered tool so
+// that it cannot, applied at the registration site rather than per handler,
+// because a new tool added later would otherwise inherit the broken channel by
+// simply not being told.
 //
 // ## Why the text has to say, itself, that it failed
 //
@@ -107,3 +107,45 @@ export function toolFailure(toolName, err) {
         error: summary,
     };
 }
+
+/**
+ * Wraps one registered tool so a throw becomes a legible returned failure.
+ *
+ * Applied at the registration site rather than inside each handler. Both work
+ * today; only this one keeps working. A tool added later inherits the legible
+ * channel by being registered at all, which is the difference between a
+ * property and a convention -- and #45's predecessor was exactly a convention
+ * that one call site kept and the rest did not.
+ *
+ * ## Why the forwarding is variadic
+ *
+ * The SDK does **not** call a handler with one argument. From the same
+ * `_executeToolAndRespond` quoted above, immediately before the catch that
+ * discards a throw:
+ *
+ *     const rawResult = await handler(args, {
+ *       sessionId, toolCallId, toolName, arguments: args,
+ *       availableTools, traceparent, tracestate
+ *     });
+ *
+ * A wrapper written `(args) => tool.handler(args)` would drop that second
+ * argument for every tool at once -- including `traceparent`/`tracestate`,
+ * which are W3C trace context, so the symptom would be a missing span rather
+ * than an error. No tool reads it today, which is precisely the problem: the
+ * loss is invisible from inside a handler and no existing test can see it, so
+ * it would be discovered by a tool nobody has written yet.
+ *
+ * That is the exact inverse of the property this wrapper buys. A boundary that
+ * exists to stop facts being dropped must not drop its own arguments, so it
+ * forwards whatever it is handed and asserts nothing about how many there are.
+ */
+export const reportingFailures = (tool) => ({
+    ...tool,
+    handler: async (...args) => {
+        try {
+            return await tool.handler(...args);
+        } catch (err) {
+            return toolFailure(tool.name, err);
+        }
+    },
+});

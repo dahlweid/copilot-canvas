@@ -147,6 +147,35 @@ a required property` and the handler never ran. #28 measured the opposite for
 `additionalProperties` were each violated and every one reached the handler. The
 two surfaces differ; a tool handler is still the only defence it has.
 
+## The handler is called with two arguments, not one
+
+Found in review of the fix (PR #91, round 1), in the same function as hop 1 and
+a few lines above it:
+
+```js
+const rawResult = await handler(args, {
+  sessionId, toolCallId, toolName, arguments: args,
+  availableTools, traceparent, tracestate
+});
+```
+
+The first version of `reportingFailures` was written `async (args) =>
+tool.handler(args)` and dropped that second argument for every registered tool
+at once — including `traceparent`/`tracestate`, which are W3C trace context, so
+the symptom would have been a missing span rather than an error.
+
+Worth recording rather than quietly fixing, because of *why* it survived review
+of a change whose entire subject was information dropped at a boundary. No tool
+handler in the extension reads the context, so nothing was broken, no test could
+go red, and the loss was invisible from inside a handler — the same shape as #45
+itself, one level up. A wrapper is a boundary, and the arity of a boundary is
+part of what crosses it.
+
+The fix is variadic forwarding, which is also correct for an SDK that adds a
+third argument later. `probes/probe-bridge-discard.mjs` now tracks this call
+site alongside the two discards, because `src/tool-error.mjs` quotes it as its
+reason.
+
 ## What this is *not*
 
 Stated explicitly, because each is a claim this measurement does not license.
@@ -169,10 +198,12 @@ Stated explicitly, because each is a claim this measurement does not license.
 - `src/tool-error.mjs`: `asToolError` (which threw) replaced by `toolFailure`
   (which returns a `ToolResultObject`). The code, the message and the whole
   `data` bag are rendered into `textResultForLlm`.
-- `extension.mjs`: every registered tool is wrapped at the **registration site**,
-  so a handler cannot throw. Per-handler `try/catch` was the previous shape and
-  is what let one call site drift; a tool added later now inherits the legible
-  channel by being registered at all.
+- `src/tool-error.mjs`: `reportingFailures` wraps one tool so a throw becomes a
+  returned failure, and `extension.mjs` applies it at the **registration site**
+  to every tool. Per-handler `try/catch` was the previous shape and is what let
+  one call site drift; a tool added later now inherits the legible channel by
+  being registered at all. It forwards variadically — see the call-site section
+  above for what the first version of it dropped.
 - `extension.mjs`: canvas actions keep throwing, because measured, that works
   there — but the code is folded into the message, because measured, the `code`
   field does not cross.

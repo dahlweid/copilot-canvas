@@ -27,7 +27,7 @@ import { createIdleShutdown } from "./src/word-lifecycle.mjs";
 import { createRenderCacheSlot } from "./src/render-cache-slot.mjs";
 import { normalizeReadArgs, DEFAULT_READ_LIMIT, MAX_READ_LIMIT } from "./src/word/read-args.mjs";
 import { MAX_HEADING_LEVEL, MIN_HEADING_LEVEL, OPERATION_HELP, OPERATION_NAMES } from "./src/word/edit-intent.mjs";
-import { toolFailure } from "./src/tool-error.mjs";
+import { reportingFailures } from "./src/tool-error.mjs";
 import { changeRecordFrom } from "./src/change-record.mjs";
 import {
     BLOCK_HELP,
@@ -201,32 +201,6 @@ async function run(fn) {
         throw withCodeInMessage(asCanvasError(err));
     }
 }
-
-/**
- * Tool failures travel as *results*, never as exceptions.
- *
- * Measured: a throw from a tool handler reaches the agent as the string
- * `Tool execution failed`, with the message, the code and the data bag all
- * discarded en route — see `src/tool-error.mjs` for the two hops and
- * `spikes/tool-errors/` for the run. A returned `ToolResultObject` arrives
- * intact.
- *
- * Applied here, at the registration site, rather than inside each handler. Both
- * work today; only this one keeps working. A tool added later inherits the
- * legible channel by being registered at all, which is the difference between a
- * property and a convention — and #45's predecessor was exactly a convention
- * that one call site kept and the rest did not.
- */
-const reportingFailures = (tool) => ({
-    ...tool,
-    handler: async (args) => {
-        try {
-            return await tool.handler(args);
-        } catch (err) {
-            return toolFailure(tool.name, err);
-        }
-    },
-});
 
 // --- canvas ----------------------------------------------------------------
 

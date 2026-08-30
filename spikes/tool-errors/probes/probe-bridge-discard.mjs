@@ -50,6 +50,24 @@ const HOP_1 = {
 };
 
 /**
+ * The handler call itself, in the same blob and a few lines above hop 1.
+ *
+ * Not a discard site -- it is here because `reportingFailures` quotes it as the
+ * reason it forwards variadically. A wrapper that names one parameter drops the
+ * SDK's context object, including the W3C trace headers, and no handler and no
+ * test downstream can see that happen. So the quote is load-bearing and belongs
+ * under the same citation check as the discards it sits between.
+ *
+ * A pattern, not a literal, for the same reason as hop 2: this file is the app
+ * copy today and is not guaranteed to stay unminified.
+ */
+const CALL_SITE = {
+    what: "SDK: a handler is called with (args, context)",
+    path: join(localAppData, "Programs", "GitHub Copilot", "copilot-sdk", "extension.js"),
+    needles: [/await handler\(\s*args\s*,\s*\{/],
+};
+
+/**
  * Hop 2's needle, as a pattern rather than a string.
  *
  * Measured while writing this, and the reason it is not a literal: the runtime
@@ -119,6 +137,7 @@ function check(label, filePath, needles, fatal = true) {
 console.log("#45 bridge citations\n");
 
 check("hop 1 -- " + HOP_1.what, HOP_1.path, HOP_1.needles);
+check("call site -- " + CALL_SITE.what, CALL_SITE.path, CALL_SITE.needles);
 
 const runtimes = installedRuntimes();
 if (runtimes.length === 0) {
@@ -137,5 +156,5 @@ if (runtimes.length === 0) {
     }
 }
 
-console.log(failures === 0 ? "OK: both citations still resolve." : `FAILED: ${failures} citation(s) no longer resolve.`);
+console.log(failures === 0 ? "OK: every citation still resolves." : `FAILED: ${failures} citation(s) no longer resolve.`);
 process.exit(failures === 0 ? 0 : 1);

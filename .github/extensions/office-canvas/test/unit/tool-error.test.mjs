@@ -26,11 +26,15 @@
 //      behaviour of leaving facts on `data`. 7 pass, 3 fail.
 //   D. src/tool-error.mjs -> paste `json.slice(0, MAX_DETAIL_CHARS)` instead of
 //      stating the size. 9 pass, 1 fail.
+//   E. src/tool-error.mjs -> `reportingFailures` forwards `(args)` instead of
+//      `(...args)`, i.e. the shape this file shipped in review round 1. 12 pass,
+//      1 fail — and *only* the arity test, which is the point: nothing else in
+//      the suite, and no handler in the extension, can see that loss.
 
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { toolFailure } from "../../src/tool-error.mjs";
+import { toolFailure, reportingFailures } from "../../src/tool-error.mjs";
 import { EditError } from "../../src/word/document-editor.mjs";
 
 /**
@@ -150,4 +154,67 @@ test("a thrown non-error degrades to a usable failure rather than to 'undefined'
     // `throw undefined` is legal and has happened; so is a rejected string.
     assert.match(toolFailure("read_document", undefined).textResultForLlm, /word_error: Unknown error/);
     assert.match(toolFailure("read_document", "just a string").textResultForLlm, /word_error: just a string/);
+});
+
+// --- the wrapper -----------------------------------------------------------
+
+test("the wrapper forwards every argument the SDK passes, not just the first", () => {
+    // Measured, `copilot-sdk/extension.js` calls a handler as
+    // `handler(args, { sessionId, toolCallId, toolName, arguments, availableTools,
+    // traceparent, tracestate })`. A wrapper that names one parameter drops the
+    // second for every tool at once, silently and invisibly from inside a
+    // handler -- the same failure shape as #45 itself, one level up.
+    //
+    // Asserted here rather than through a registered tool on purpose: no handler
+    // in the extension reads the context today, so nothing downstream can go red
+    // when it disappears. The loss is only visible at the boundary that causes it.
+    const seen = [];
+    const wrapped = reportingFailures({
+        name: "probe",
+        handler: async (...args) => {
+            seen.push(args);
+            return "ok";
+        },
+    });
+
+    const context = { sessionId: "s-1", toolCallId: "tc-1", traceparent: "00-trace-span-01" };
+    return wrapped.handler({ path: "x.docx" }, context).then((result) => {
+        assert.equal(result, "ok");
+        assert.equal(seen.length, 1);
+        assert.equal(seen[0].length, 2, "the SDK's second argument was dropped");
+        assert.deepEqual(seen[0][0], { path: "x.docx" });
+        assert.equal(seen[0][1], context, "the context must arrive by identity, not by copy");
+    });
+});
+
+test("the wrapper turns a throw into a legible returned failure", async () => {
+    const wrapped = reportingFailures({
+        name: "read_document",
+        handler: async () => {
+            throw new EditError("file_locked", "Another process is holding it.");
+        },
+    });
+
+    const result = await wrapped.handler({});
+    assert.ok(isToolResultObject(result), "a throw must not escape the wrapper");
+    assert.equal(result.resultType, "failure");
+    assert.match(result.textResultForLlm, /read_document failed\./);
+    assert.match(result.textResultForLlm, /file_locked: Another process is holding it\./);
+});
+
+test("the wrapper leaves everything but the handler alone", () => {
+    // The SDK reads `name`, `description` and `inputSchema` off the same object.
+    // A wrapper that rebuilt it would drop whatever it forgot to copy.
+    const tool = {
+        name: "read_document",
+        description: "Reads a document.",
+        inputSchema: { type: "object", properties: { path: { type: "string" } } },
+        handler: async () => "ok",
+    };
+    const wrapped = reportingFailures(tool);
+
+    assert.equal(wrapped.name, tool.name);
+    assert.equal(wrapped.description, tool.description);
+    assert.equal(wrapped.inputSchema, tool.inputSchema);
+    assert.notEqual(wrapped.handler, tool.handler, "the handler is the one thing that must change");
 });
