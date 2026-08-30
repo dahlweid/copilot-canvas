@@ -23,8 +23,10 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 
 import { loadApp, respondWith } from "./ui-harness.mjs";
+import { elementIdsFromMarkup } from "./ui-dom.mjs";
 import { textItem } from "./stub-pdfjs.mjs";
 
 const PRODUCT = "Word Document Viewer";
@@ -69,6 +71,47 @@ const entries = (panel) => panel.children.filter((child) => child.classList?.con
 
 /** The panel's heading line, which every populated panel opens with. */
 const panelTitle = (panel) => panel.children[0]?.textContent;
+
+/** Every id `index.html` declares, which is the set `app.js` can reach. */
+const markupIds = async () =>
+    elementIdsFromMarkup(await readFile(new URL("../../src/ui/index.html", import.meta.url), "utf8"));
+
+test("only the document name is wired to the Word mark", async (t) => {
+    // #87. The Open in Word button had a second placement, which made its
+    // appearance depend on whether the mark could be extracted from this
+    // machine. Asserted over *every* element the markup ships rather than over
+    // the two ids that used to be involved, so a third placement anywhere in the
+    // bar fails here too.
+    const app = await loadApp({ state: READY });
+    t.after(app.restore);
+
+    const wired = (await markupIds()).filter((id) => app.el(id).src !== null);
+    assert.deepEqual(wired, ["docNameMark"], `these elements were given a source: ${wired.join(", ") || "none"}`);
+    assert.equal(app.el("docNameMark").src, "/api/word-icon");
+
+    // The button's glyph is not something the mark can take away. Both outcomes
+    // of the load, since the swap that went away used to fire on each.
+    const glyph = app.el("openInWordGlyph");
+    assert.equal(glyph.hidden, false, "the Open in Word glyph starts hidden");
+    app.el("docNameMark").dispatch("load");
+    assert.equal(glyph.hidden, false, "a loaded mark hid the Open in Word glyph");
+    app.el("docNameMark").dispatch("error");
+    assert.equal(glyph.hidden, false, "a failed mark hid the Open in Word glyph");
+});
+
+test("the markup ships no second Word mark for app.js to find", async (t) => {
+    // The other half of the assertion above, and the one that goes red if the
+    // <img> comes back into the button: `el()` refuses an id index.html does not
+    // declare, so this fails the moment the element exists again.
+    const app = await loadApp({ state: READY });
+    t.after(app.restore);
+
+    assert.throws(
+        () => app.el("openInWordMark"),
+        /declares no element with id 'openInWordMark'/,
+        "the Open in Word button carries a Word mark again",
+    );
+});
 
 test("the bar names the document and the tab names both", async (t) => {
     const app = await loadApp({ state: READY });

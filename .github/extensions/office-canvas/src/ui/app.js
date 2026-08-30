@@ -25,8 +25,6 @@ const el = {
     docMeta: $("docMeta"),
     copyPath: $("copyPath"),
     docNameMark: $("docNameMark"),
-    openInWordMark: $("openInWordMark"),
-    openInWordGlyph: $("openInWordGlyph"),
     status: $("status"),
     sidebar: $("sidebar"),
     outline: $("outline"),
@@ -454,14 +452,16 @@ el.searchInput.addEventListener("keydown", (event) => {
 });
 
 // The real Word mark, if this machine has one (#68). Wired at load and never
-// again: the answer cannot change while the panel lives, and both placements
-// share one request -- the second resolves from the browser's cache.
+// again: the answer cannot change while the panel lives.
+//
+// One placement, beside the document's name. The Open in Word button had a
+// second one until #87, which made that button's appearance depend on whether
+// the mark could be extracted here; it now always draws its own glyph.
 //
 // Deliberately not awaited and deliberately not reported. It decorates a bar
 // that is already drawn, so nothing here is allowed to delay or fail the
 // startup below.
 showWordMark({ img: el.docNameMark });
-showWordMark({ img: el.openInWordMark, fallback: el.openInWordGlyph });
 
 api("/api/state")
     .then((initial) => applyState(initial))
