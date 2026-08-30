@@ -175,3 +175,29 @@ up native text selection, search and print — a bad trade for a read-only viewe
 
 When editing the extension, run `extensions_reload` before testing — and never `console.log`
 from `extension.mjs`, since stdout carries JSON-RPC. Use `session.log` instead.
+
+## Licence
+
+This project is licensed under the **MIT Licence** — see [`LICENSE`](LICENSE). SPDX
+identifier: `MIT`. That is deliberate: an extension is installed by copying one folder into
+someone else's setup and running it alongside their own code, so a licence that reached
+through that combination would defeat the delivery mechanism.
+
+### Third-party code
+
+The canvas renders with **Mozilla pdf.js**, vendored into the repository under
+`.github/extensions/office-canvas/src/ui/vendor/` and licensed under the **Apache License,
+Version 2.0**. It stays under its own terms; MIT covers this project's code, not Mozilla's.
+The attribution, the vendored version and a copy of the licence text are in
+[`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).
+
+### Microsoft Word is yours, not ours
+
+The document tools drive an installation of Microsoft Word that is already on your machine.
+No Microsoft code is redistributed here, and Word is not a dependency this project can
+supply.
+
+Using those tools therefore requires **your own licensed copy of Microsoft Word**, governed
+by your agreement with Microsoft. That is a Microsoft EULA matter and **not** a term of this
+project's open-source licence — MIT can neither grant you Word nor take it away, and reading
+it as though it could would be a false claim in both directions.
