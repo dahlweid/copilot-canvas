@@ -69,32 +69,10 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { registerHooks } from "node:module";
 
 import { ViewerInstance } from "../../src/server.mjs";
 import { createRenderCacheSlot } from "../../src/render-cache-slot.mjs";
-
-const SDK_SPECIFIER = "@github/copilot-sdk/extension";
-const stubSdkUrl = new URL("./stub-sdk.mjs", import.meta.url).href;
-const stubCacheUrl = new URL("./stub-render-cache.mjs", import.meta.url).href;
-
-registerHooks({
-    resolve(specifier, context, nextResolve) {
-        if (specifier === SDK_SPECIFIER) return { url: stubSdkUrl, shortCircuit: true };
-        const resolved = nextResolve(specifier, context);
-        // Only extension.mjs's own import is swapped. src/server.mjs imports the
-        // same module for `DocumentError` and `normalizeDocPath`, and the stub
-        // re-exports them from the real one -- redirecting those too would be a
-        // cycle.
-        if (
-            resolved.url.endsWith("/src/render-cache.mjs") &&
-            String(context.parentURL ?? "").endsWith("/extension.mjs")
-        ) {
-            return { ...resolved, url: stubCacheUrl, shortCircuit: true };
-        }
-        return resolved;
-    },
-});
+import { stubCacheUrl, stubSdkUrl, loadExtension } from "./extension-stubs.mjs";
 
 let home;
 let docPath;
