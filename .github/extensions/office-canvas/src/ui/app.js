@@ -3,6 +3,7 @@
 
 import { PdfView } from "./pdf-view.mjs";
 import { describeChangeBanner } from "./change-wording.mjs";
+import { monitorConnection } from "./connection-status.mjs";
 
 /**
  * What the viewer calls itself.
@@ -417,12 +418,11 @@ function connect() {
         currentPage = page;
         view.goToPage(page);
     });
-    source.onerror = () => {
-        // EventSource reconnects on its own; surface it only if it lingers.
-        setTimeout(() => {
-            if (source.readyState === EventSource.CONNECTING) setStatus("Reconnecting…", { busy: true });
-        }, 1500);
-    };
+    // Everything the panel says about the connection itself lives in
+    // `connection-status.mjs`, which owns `onopen`/`onerror` from here. #66: the
+    // handler this replaced claimed "Reconnecting…" for as long as `readyState`
+    // was CONNECTING, which `EventSource` keeps it at forever.
+    monitorConnection(source, { setStatus });
 }
 
 el.pathForm.addEventListener("submit", (event) => {

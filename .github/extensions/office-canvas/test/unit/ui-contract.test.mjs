@@ -181,3 +181,52 @@ test("keyboard focus stays visible", async () => {
     assert.ok(!/outline\s*:\s*(none|0)\b/.test(rule[1]), ":focus-visible removes the outline");
 });
 
+// --- Who owns the connection status -------------------------------------------
+//
+// #66: `onerror` claimed "Reconnecting…" for as long as `readyState` was
+// CONNECTING, and `EventSource` keeps it there forever, so the claim was
+// permanent and false. The decision now lives in `connection-status.mjs`, where
+// `connection-status.test.mjs` can execute it.
+//
+// **What these two can and cannot fail on**, stated because a guard that reads
+// like protection and is not is this repo's most expensive habit. They fail on a
+// delegation that was removed and on an inline status that came back -- the
+// regression actually at issue. They *cannot* fail on a monitor that is
+// imported, called, and then never reached at runtime, because nothing here
+// executes `app.js`: it cannot even be imported under Node, failing at module
+// resolution of `pdf-view.mjs`'s absolute `/vendor/pdf.min.mjs` before any DOM
+// access. The runtime end is measured by
+// `spikes/viewer-connection/probes/probe-dead-server.mjs` instead, against a
+// real EventSource and a really-closed server.
+
+test("app.js delegates its connection status rather than deciding it inline", async () => {
+    const script = await read("app.js");
+
+    assert.match(
+        script,
+        /import\s*\{[^}]*\bmonitorConnection\b[^}]*\}\s*from\s*"\.\/connection-status\.mjs"/,
+        "app.js no longer imports the connection monitor",
+    );
+    assert.match(script, /monitorConnection\s*\(\s*source\s*,/, "app.js imports the monitor but never calls it");
+});
+
+test("app.js carries no connection status of its own", async () => {
+    // Comments are stripped first, and that is not a convenience: this file's
+    // own explanation of the fix quotes the very strings being banned, and the
+    // comment left in `app.js` at the delegation site does too. Matching raw
+    // source would make the guard fail on prose describing the fix while
+    // passing on prose that happened to avoid the words -- i.e. it would be
+    // measuring vocabulary, not behaviour. The `:` exclusion keeps `http://`
+    // and `file://` from eating the rest of their line.
+    const script = (await read("app.js")).replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
+
+    // These strings live in the module now, so their presence here means a
+    // second opinion about the connection was reintroduced beside the first.
+    assert.doesNotMatch(script, /Reconnecting/, "app.js is announcing a reconnection again");
+    assert.doesNotMatch(script, /readyState/, "app.js is branching on readyState again");
+    // Both handlers belong to the monitor. An assignment here silently replaces
+    // whichever one it names -- the monitor would still be wired and simply
+    // never called.
+    assert.doesNotMatch(script, /source\s*\.\s*on(error|open)\s*=/, "app.js overwrites a handler the monitor owns");
+});
+
