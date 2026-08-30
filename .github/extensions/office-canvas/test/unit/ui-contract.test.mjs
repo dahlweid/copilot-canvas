@@ -15,14 +15,18 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const UI = path.resolve(HERE, "..", "..", "src", "ui");
+const SRC = path.resolve(HERE, "..", "..", "src");
+const EXTENSION = path.resolve(HERE, "..", "..", "extension.mjs");
 
 const read = (name) => readFile(path.join(UI, name), "utf8");
+const readSrc = (name) => readFile(path.join(SRC, name), "utf8");
+const readExtension = () => readFile(EXTENSION, "utf8");
 
 test("every id app.js looks up exists in index.html", async () => {
     const [script, markup] = await Promise.all([read("app.js"), read("index.html")]);
@@ -136,8 +140,9 @@ test("every button has an accessible name", async () => {
     const buttons = buttonsIn(markup);
 
     // A guard against the extraction matching nothing: an empty set would pass
-    // every assertion below while measuring no button at all.
-    assert.ok(buttons.length >= 6, `expected the markup to define buttons, found ${buttons.length}`);
+    // every assertion below while measuring no button at all. Five, since #69
+    // retired the picker's Open button along with the rest of that screen.
+    assert.ok(buttons.length >= 5, `expected the markup to define buttons, found ${buttons.length}`);
 
     for (const b of buttons) {
         const named = b.text || b.ariaLabel;
@@ -228,5 +233,195 @@ test("app.js carries no connection status of its own", async () => {
     // whichever one it names -- the monitor would still be wired and simply
     // never called.
     assert.doesNotMatch(script, /source\s*\.\s*on(error|open)\s*=/, "app.js overwrites a handler the monitor owns");
+});
+
+// --- The no-document state (#69) ---------------------------------------------
+//
+// The picker was the last screen that asked the user to choose a document, which
+// is the one job the canvas gives to Copilot. Deleting it is only half the
+// change: the state it occupied is reachable (`path` is optional in the canvas
+// input schema), so what stands there now has to tell a first-time reader what
+// to do instead.
+
+test("the document picker is gone from the markup, the wiring and the API", async () => {
+    // Same shape as the Change... removal above: markup alone is not enough,
+    // because a leftover `$("pathForm")` returns null and the listener attach
+    // throws on load, taking the whole UI with it.
+    const [script, markup, server] = await Promise.all([read("app.js"), read("index.html"), readSrc("server.mjs")]);
+
+    for (const id of ["pathForm", "pathInput", "pickerError", "recents", "recentsBlock", "workspaceDocs"]) {
+        assert.ok(!markup.includes(id), `index.html still carries the picker's ${id}`);
+        assert.ok(!script.includes(id), `app.js still references ${id}, which is now null`);
+    }
+    assert.ok(!script.includes("/api/browse"), "app.js still fetches the picker's browse endpoint");
+    assert.ok(!server.includes("/api/browse"), "server.mjs still routes the picker's browse endpoint");
+});
+
+test("the no-document state invites no input", async () => {
+    // The property, not the current markup: any form control on this screen is
+    // the picker returning under another name. `<input>`, `<textarea>` and
+    // `<select>` are the three ways a user types or picks, and a `<form>` is the
+    // thing that would submit one.
+    const markup = await read("index.html");
+    const empty = markup.match(/<section class="empty"[\s\S]*?<\/section>/)?.[0];
+
+    assert.ok(empty, "index.html has no empty state, so a canvas opened with no path shows nothing");
+    for (const tag of ["<form", "<input", "<textarea", "<select"]) {
+        assert.ok(!empty.includes(tag), `the no-document state offers a ${tag}> to operate`);
+    }
+});
+
+test("the no-document state says who opens a document and how", async () => {
+    // What replaces the picker has one job: a reader who opens a fresh canvas
+    // must learn that they ask Copilot, and what Copilot will use. Both halves
+    // are asserted, because either alone leaves the screen a dead end -- "ask
+    // Copilot" with no verb, or an action name with nobody to address.
+    const markup = await read("index.html");
+    const empty = markup.match(/<section class="empty"[\s\S]*?<\/section>/)?.[0] ?? "";
+
+    assert.match(empty, /\bCopilot\b/, "the no-document state never names Copilot");
+    assert.match(empty, /open_document/, "the no-document state never names the action that opens a document");
+    assert.match(
+        empty,
+        /No document is open/i,
+        "the no-document state never says that no document is open",
+    );
+});
+
+test("the canvas description no longer promises a document picker", async () => {
+    // The schema still makes `path` optional, and should: the panel must be
+    // able to exist empty. What had to change is the sentence that told the
+    // agent -- and through it the user -- to expect a picker there.
+    const extension = await readExtension();
+    assert.ok(!/document picker/i.test(extension), "extension.mjs still promises a document picker");
+    assert.match(
+        extension,
+        /Omit to open the canvas empty/,
+        "the optional `path` no longer says what omitting it does",
+    );
+});
+
+// --- Where the absolute path went (#71) --------------------------------------
+//
+// The path had a full-width row of its own whose tooltip repeated its text
+// verbatim. Removing the row is the easy half; the hard half is that the path
+// must not become pointer-only, which is what a bare `title` would make it.
+
+test("the absolute-path row is gone from the markup, the wiring and the layout", async () => {
+    // Three files, because a leftover in any one of them is a different bug: a
+    // stale `$("docPath")` returns null and the assignment in `render()` throws,
+    // taking the UI down; a stale grid area leaves a blank strip under the bar.
+    const [script, markup, css] = await Promise.all([read("app.js"), read("index.html"), read("app.css")]);
+
+    assert.ok(!markup.includes("docPath"), "index.html still carries the absolute-path row");
+    assert.ok(!script.includes("docPath"), "app.js still references docPath, which is now null");
+    assert.ok(!css.includes(".bar-path"), "app.css still styles the row that no longer exists");
+
+    const bar = css.match(/\.bar\s*\{([^}]*)\}/);
+    assert.ok(bar, "app.css defines no .bar rule");
+    assert.ok(!/\bpath\b/.test(bar[1]), ".bar still reserves a grid area for the path row");
+});
+
+test("the path is reachable without a pointer", async () => {
+    // The accessibility half of #71, and the reason a tooltip alone was not the
+    // answer: `title` is not keyboard-reachable and is announced inconsistently.
+    // What replaces the row has to be a control -- a tab stop with a name --
+    // and `app.js` has to put the real path into that name rather than leaving
+    // the static placeholder standing.
+    const [script, markup] = await Promise.all([read("app.js"), read("index.html")]);
+    const copy = buttonsIn(markup).find((b) => b.id === "copyPath");
+
+    assert.ok(copy, "the markup defines no control carrying the path");
+    assert.ok(copy.ariaLabel, "the path control has no accessible name");
+    assert.ok(copy.title, "the path control has no tooltip for a pointer user");
+    assert.match(
+        script,
+        /el\.copyPath\.setAttribute\("aria-label"/,
+        "app.js never puts the path into the control's name",
+    );
+    assert.match(script, /el\.docName\.title\s*=/, "app.js never puts the path into the name's tooltip");
+});
+
+test("app.js delegates what the bar says about a document rather than deciding it inline", async () => {
+    // Same reasoning as the connection status above: `app.js` cannot be
+    // imported under Node, so a decision left in it has no reachable test. This
+    // fails on a delegation that was removed and on the old inline assignment
+    // coming back. It *cannot* fail on a wrong answer from the module -- that is
+    // `doc-identity.test.mjs`'s job, and it executes the code.
+    const script = await read("app.js");
+
+    assert.match(
+        script,
+        /import\s*\{[^}]*\bdescribeDocument\b[^}]*\}\s*from\s*"\.\/doc-identity\.mjs"/,
+        "app.js no longer imports the document description",
+    );
+    assert.match(script, /describeDocument\s*\(\s*doc\s*\)/, "app.js imports the description but never calls it");
+});
+
+// --- The Word mark (#68) -----------------------------------------------------
+//
+// The hard constraint is what is *absent*: no icon file may be committed. The
+// repo is public, so shipping Microsoft's mark would be redistributing it, and
+// the open icon sets have dropped the family for trademark reasons. The bytes
+// come from the user's own Word at runtime or they do not come at all.
+
+test("no icon is committed anywhere in the extension", async () => {
+    // Stated as a property of the tree rather than of the files this change
+    // happened to add: the constraint is "never a resource in the sources", so
+    // it has to fail on a .png or .ico appearing anywhere, by any later change.
+    const root = path.join(EXTENSION, "..");
+    const found = [];
+    const walk = async (dir) => {
+        for (const entry of await readdir(dir, { withFileTypes: true })) {
+            if (entry.name === "node_modules" || entry.name === ".git") continue;
+            const full = path.join(dir, entry.name);
+            if (entry.isDirectory()) await walk(full);
+            else if (/\.(png|ico)$/i.test(entry.name)) found.push(path.relative(root, full));
+        }
+    };
+    await walk(root);
+
+    assert.deepEqual(found, [], `an icon was committed: ${found.join(", ")}`);
+});
+
+test("the Word mark is fetched at runtime, from a route the server actually has", async () => {
+    const [markup, css, server] = await Promise.all([read("index.html"), read("app.css"), readSrc("server.mjs")]);
+
+    assert.match(markup, /class="word-mark"/, "the markup has nowhere to put the mark");
+    assert.match(css, /\.word-mark\s*\{/, "the mark is unsized, so it would draw at whatever the extraction produced");
+    assert.match(server, /"GET \/api\/word-icon"/, "the markup fetches a route the server does not serve");
+});
+
+test("the mark ships with no source, so a machine without Word draws nothing broken", async () => {
+    // The single most likely regression here: giving the <img> a `src` in the
+    // markup. It looks tidier and it puts a broken-image box in the bar of
+    // every machine that has no Word, which is most of them. The source is set
+    // by `word-mark.mjs`, after which a successful load reveals the image.
+    const markup = await read("index.html");
+    const marks = [...markup.matchAll(/<img\b[^>]*class="word-mark"[^>]*>/g)].map((m) => m[0]);
+
+    assert.ok(marks.length >= 2, `expected the name and the button to carry a mark, found ${marks.length}`);
+    for (const mark of marks) {
+        assert.ok(!/\bsrc=/.test(mark), `a word-mark ships with a src: ${mark}`);
+        assert.match(mark, /\bhidden\b/, `a word-mark is visible before it has loaded: ${mark}`);
+        // Decorative, exactly like the glyphs it replaces: the button's text is
+        // its name and the document's name is beside it.
+        assert.match(mark, /alt=""/, `a word-mark claims an accessible name: ${mark}`);
+    }
+});
+
+test("app.js delegates the mark's fallback rather than deciding it inline", async () => {
+    // The failure path is the whole point of #68's "degrade gracefully", and it
+    // has branches, so it lives where a test can execute it.
+    const script = await read("app.js");
+
+    assert.match(
+        script,
+        /import\s*\{[^}]*\bshowWordMark\b[^}]*\}\s*from\s*"\.\/word-mark\.mjs"/,
+        "app.js no longer imports the mark loader",
+    );
+    assert.match(script, /showWordMark\s*\(/, "app.js imports the loader but never calls it");
+    // The button keeps a drawn glyph to fall back to; the name never had one.
+    assert.match(script, /fallback:\s*el\.openInWordGlyph/, "the button has no glyph to fall back to");
 });
 

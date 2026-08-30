@@ -156,7 +156,7 @@ test("development-only material is excluded, each under a named rule", async () 
     const cases = {
         "node_modules/left-pad/index.js": "node_modules",
         "spikes/screenshot-notes.md": "spikes",
-        "artifacts/recents.json": "artifacts",
+        "artifacts/render-cache.json": "artifacts",
         "dist/stale.mjs": "output",
         "build/stale.mjs": "output",
         ".vscode/settings.json": "editor",

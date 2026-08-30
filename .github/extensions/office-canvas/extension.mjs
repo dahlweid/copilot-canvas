@@ -150,7 +150,7 @@ const describePathArg = (value) => (typeof value === "string" ? "an empty string
  * resolved to a *directory* and was only ever caught downstream, by a code
  * naming something else. The canvas is unaffected: `open` tests
  * `ctx.input?.path` for truthiness before calling this, so an omitted path
- * still opens the document picker.
+ * still opens the canvas on its empty state.
  *
  * `invalid_path` rather than a new code: it is already the extension-surface
  * code for an unusable path, and it is what `normalizeDocPath` answers an
@@ -195,6 +195,26 @@ async function run(fn) {
 
 // --- canvas ----------------------------------------------------------------
 
+/*
+ * No `icon` here, and its absence is a measurement rather than an oversight
+ * (#68). The Word mark reached the document name and the Open in Word button;
+ * the canvas *tab* was the third placement asked for and it is not reachable
+ * from a Node extension.
+ *
+ * `spikes/word-icon/probes/probe-icon-sources.mjs` measures why, on the SDK
+ * bundled with CLI 1.0.80: `Canvas` builds `this.declaration` from an explicit
+ * five-field literal -- `id, displayName, description, inputSchema, actions` --
+ * with no spread, so an `icon` option is dropped before the declaration exists,
+ * whatever its value. The string `icon` appears nowhere in the SDK's runtime
+ * JavaScript; the only occurrences are in the generated wire typings, where
+ * `DiscoveredCanvas.icon` is documented as a host-local PNG path that nothing on
+ * this side populates.
+ *
+ * The one route that might work -- committing a PNG for the host to find -- is
+ * the one the issue forbids. Re-run arm 3 of that probe against a newer SDK
+ * before concluding this is still closed.
+ */
+
 const wordCanvas = createCanvas({
     id: "word-doc",
     displayName: "Word document",
@@ -219,7 +239,8 @@ const wordCanvas = createCanvas({
                 type: "string",
                 description:
                     `Absolute or workspace-relative path to a Word document (${supportedList()}). ` +
-                    `Omit to open the canvas on its document picker.`,
+                    `Omit to open the canvas empty; it then tells the user to ask for a document, ` +
+                    `and this canvas's open_document action puts one in it.`,
             },
         },
         additionalProperties: false,

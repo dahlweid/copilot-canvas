@@ -16,6 +16,16 @@
     <body>
         <header class="bar" id="bar" hidden>
             <div class="bar-main">
+                <!--
+                    The real Word mark, when this machine has one (#68). It is
+                    fetched from the user's own installation at runtime and is
+                    not a file in this repository -- the repo is public, and the
+                    open icon sets have dropped the Microsoft family for
+                    trademark reasons. `hidden` until it loads: an <img> whose
+                    source 404s draws the browser's broken-image affordance, and
+                    a machine without Word must simply show no decoration.
+                -->
+                <img class="word-mark" id="docNameMark" alt="" width="16" height="16" hidden />
                 <span class="doc-name" id="docName">&nbsp;</span>
                 <span class="doc-meta" id="docMeta"></span>
             </div>
@@ -27,6 +37,29 @@
                     and no CDN -- the viewer is served by an ephemeral local
                     server and fetches nothing off the machine.
                 -->
+                <!--
+                    Where the absolute path went (#71). The old full-width row
+                    spent a line of a narrow panel restating what its own
+                    tooltip said. The path is now the name's tooltip *and* this
+                    control's accessible name, so it survives without a pointer:
+                    a `title` alone is not keyboard-reachable and is read
+                    inconsistently, but a button is a tab stop that announces its
+                    name on focus. Both attributes are rewritten in `render()`
+                    with the open document's path; the static values are what a
+                    reader of the markup and the accessible-name test see.
+                -->
+                <button
+                    type="button"
+                    id="copyPath"
+                    class="btn icon-only"
+                    title="Copy full path"
+                    aria-label="Copy full path"
+                >
+                    <svg class="icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                        <rect x="5.5" y="5.5" width="8" height="8" rx="1" />
+                        <path d="M10.5 3.5v-1a1 1 0 0 0-1-1h-7a1 1 0 0 0-1 1v7a1 1 0 0 0 1 1h1" />
+                    </svg>
+                </button>
                 <button
                     type="button"
                     id="toggleSidebar"
@@ -48,7 +81,14 @@
                     Reload
                 </button>
                 <button type="button" id="openInWord" class="btn" title="Open in Microsoft Word">
-                    <svg class="icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                    <img class="word-mark" id="openInWordMark" alt="" width="16" height="16" hidden />
+                    <svg
+                        class="icon"
+                        id="openInWordGlyph"
+                        viewBox="0 0 16 16"
+                        aria-hidden="true"
+                        focusable="false"
+                    >
                         <path d="M13.5 9.5v3a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1h3" />
                         <path d="M9.5 2.5h4v4" />
                         <path d="M13.5 2.5 7.5 8.5" />
@@ -56,7 +96,6 @@
                     Open in Word
                 </button>
             </div>
-            <div class="bar-path" id="docPath" title=""></div>
         </header>
 
         <div class="status" id="status" hidden></div>
@@ -104,40 +143,33 @@
                 <div class="pages" id="pages"></div>
             </section>
 
-            <section class="picker" id="picker">
-                <div class="picker-inner">
-                    <!--
-                        The no-document state, and the only screen with room to
-                        say what this is. It is reachable on its own -- the
-                        canvas opens here when `open_canvas` carries no path --
-                        so the product name lives here rather than in the header
-                        bar, which names the open document instead.
-                    -->
+            <!--
+                The no-document state, and the only screen with room to say what
+                this is. It is reachable on its own -- the canvas opens here when
+                `open_canvas` carries no path -- so the product name lives here
+                rather than in the header bar, which names the open document.
+
+                It instructs and offers nothing to operate. A path box and a
+                click-to-open list were both here until #69; both asked the user
+                to drive document selection, which is the one job this panel
+                gives to Copilot ("display only -- the user does not type into
+                it, they ask Copilot for the change"). Deleting them without
+                putting words in their place would have made a canvas opened with
+                no path a dead panel, so what replaces them names the thing the
+                user has to say, and the action that carries it out.
+            -->
+            <section class="empty" id="emptyState">
+                <div class="empty-inner">
                     <h1 id="productName">Word Document Viewer</h1>
                     <p class="muted" id="engineNote">Rendered by Microsoft Word for page-accurate layout.</p>
 
-                    <form class="path-form" id="pathForm">
-                        <input
-                            type="text"
-                            id="pathInput"
-                            aria-label="Path to a Word document"
-                            placeholder="C:\path\to\document.docx"
-                            autocomplete="off"
-                            spellcheck="false"
-                        />
-                        <button type="submit" class="btn primary">Open</button>
-                    </form>
-                    <p class="error" id="pickerError" hidden></p>
-
-                    <div class="list-block" id="recentsBlock" hidden>
-                        <h2>Recent</h2>
-                        <ul class="list" id="recents"></ul>
-                    </div>
-
-                    <div class="list-block" id="workspaceBlock" hidden>
-                        <h2>In this workspace</h2>
-                        <ul class="list" id="workspaceDocs"></ul>
-                    </div>
+                    <p class="empty-lead">No document is open in this panel.</p>
+                    <p class="empty-how">
+                        Ask Copilot for the one you want — for example
+                        <span class="sample">“Show me docs\report.docx in the Word canvas”</span> — and it
+                        appears here. Copilot opens it with this canvas's
+                        <code>open_document</code> action; there is nothing to fill in on this screen.
+                    </p>
                 </div>
             </section>
         </main>

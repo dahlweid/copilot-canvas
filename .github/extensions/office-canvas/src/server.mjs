@@ -6,14 +6,14 @@
 
 import { createServer } from "node:http";
 import { createReadStream } from "node:fs";
-import { readFile, readdir, stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { DocumentError, normalizeDocPath, SUPPORTED } from "./render-cache.mjs";
+import { DocumentError, normalizeDocPath } from "./render-cache.mjs";
 import { FileWatcher } from "./watcher.mjs";
-import { addRecent, readRecents } from "./store.mjs";
 import { loadWorker, VENDOR_DIR } from "./vendor-assets.mjs";
+import { wordIcon } from "./word/word-icon.mjs";
 
 const UI_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "ui");
 
@@ -23,6 +23,7 @@ const MIME = {
     ".js": "text/javascript; charset=utf-8",
     ".mjs": "text/javascript; charset=utf-8",
     ".svg": "image/svg+xml",
+    ".png": "image/png",
 };
 
 /**
@@ -37,13 +38,6 @@ const VENDOR_FILES = new Set(["pdf.min.mjs", "pdf-text-layer.css"]);
 
 /** Served by reassembling the committed parts; never present as one file. */
 const VENDOR_WORKER_ROUTE = "/vendor/pdf.worker.min.mjs";
-
-// The picker offers exactly what the cache will open. Its own copy of this set
-// had drifted -- it omitted `.dotx`, so a template in the workspace was hidden
-// from the picker while `open_document` on the same path succeeded. Exported so
-// a unit test can assert the two stay equal.
-export const DOC_EXTENSIONS = SUPPORTED;
-const SCAN_SKIP = new Set(["node_modules", ".git", "bin", "obj", "dist", "build", ".venv", "__pycache__"]);
 
 const json = (res, status, body) => {
     const payload = JSON.stringify(body);
@@ -112,35 +106,6 @@ async function readBody(req, limit = 64 * 1024) {
     }
 }
 
-/** Recursively lists Word documents under a root, breadth-first and bounded. */
-async function scanForDocuments(root, { limit = 200, maxDepth = 6 } = {}) {
-    if (!root) return [];
-    const found = [];
-    const queue = [{ dir: root, depth: 0 }];
-    while (queue.length && found.length < limit) {
-        const { dir, depth } = queue.shift();
-        let entries;
-        try {
-            entries = await readdir(dir, { withFileTypes: true });
-        } catch {
-            continue;
-        }
-        for (const entry of entries) {
-            if (found.length >= limit) break;
-            const full = path.join(dir, entry.name);
-            if (entry.isDirectory()) {
-                if (depth >= maxDepth) continue;
-                if (entry.name.startsWith(".") || SCAN_SKIP.has(entry.name.toLowerCase())) continue;
-                queue.push({ dir: full, depth: depth + 1 });
-            } else if (DOC_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) {
-                if (entry.name.startsWith("~$")) continue; // Word lock file
-                found.push({ path: full, name: entry.name, relative: path.relative(root, full) });
-            }
-        }
-    }
-    return found.sort((a, b) => a.relative.localeCompare(b.relative));
-}
-
 /**
  * Auto-refresh failures that will not clear on their own.
  *
@@ -189,6 +154,7 @@ export class ViewerInstance {
         spawnFn = spawn,
         vendorDir = VENDOR_DIR,
         autoRefreshDelaysMs = AUTO_REFRESH_DELAYS_MS,
+        wordIcon: iconSource = wordIcon,
     }) {
         // A function, or a RenderCache directly. The function form is what the
         // extension passes, and it is not a convenience: a panel outlives Word
@@ -205,6 +171,11 @@ export class ViewerInstance {
         this.spawnFn = spawnFn;
         this.vendorDir = vendorDir;
         this.autoRefreshDelaysMs = autoRefreshDelaysMs;
+        // Shared across instances by default, so the extraction happens once per
+        // process rather than once per panel. Injectable because CI has neither
+        // Word nor PowerShell, and the caching and the 404 are the parts with
+        // branches.
+        this.wordIcon = iconSource;
         this.url = null;
 
         this.doc = null; // last known describe() payload
@@ -334,7 +305,6 @@ export class ViewerInstance {
             this.status = "ready";
             await this.#watcher.watch(info.path);
             await this.#watcher.acknowledge();
-            await addRecent(info);
             this.#pushState();
             return info;
         } catch (err) {
@@ -561,24 +531,6 @@ export class ViewerInstance {
         return { launched: true, path: this.doc.path };
     }
 
-    async browse() {
-        const [workspaceDocs, recents] = await Promise.all([
-            scanForDocuments(this.workspacePath),
-            readRecents(),
-        ]);
-        const existing = await Promise.all(
-            recents.map(async (entry) => {
-                try {
-                    await stat(entry.path);
-                    return entry;
-                } catch {
-                    return null;
-                }
-            }),
-        );
-        return { workspacePath: this.workspacePath, workspaceDocs, recents: existing.filter(Boolean) };
-    }
-
     // --- http ----------------------------------------------------------------
 
     async #handle(req, res) {
@@ -728,14 +680,45 @@ export class ViewerInstance {
         return createReadStream(file).pipe(res);
     }
 
+    /**
+     * The Word application icon, extracted from this machine's own Word.
+     *
+     * 404 when there is none, and that is an ordinary answer rather than an
+     * error: it decorates a bar that is already drawn, so a machine without
+     * Word simply keeps the glyph the markup ships with. Nothing is logged at
+     * request level and nothing reaches the user -- a missing decoration that
+     * announced itself would be worse than the missing decoration.
+     *
+     * ETag rather than a long `max-age`, following the vendored worker: the URL
+     * carries no version, so a far-future expiry would pin a browser to the
+     * icon of whichever Word was installed when it first asked.
+     */
+    async #serveWordIcon(req, res) {
+        const icon = await this.wordIcon.get();
+        if (!icon) return json(res, 404, { error: { code: "not_found", message: "No Word icon on this machine." } });
+
+        if (req.headers["if-none-match"] === icon.etag) {
+            res.writeHead(304, { ETag: icon.etag, "Cache-Control": "private, must-revalidate" });
+            return res.end();
+        }
+        res.writeHead(200, {
+            "Content-Type": MIME[".png"],
+            "Content-Length": icon.buffer.byteLength,
+            "Cache-Control": "private, must-revalidate",
+            ETag: icon.etag,
+        });
+        if (req.method === "HEAD") return res.end();
+        return res.end(icon.buffer);
+    }
+
     async #serveApi(req, res, route, url) {
         try {
             switch (`${req.method} ${route}`) {
                 case "GET /api/state":
                     return json(res, 200, this.state);
 
-                case "GET /api/browse":
-                    return json(res, 200, await this.browse());
+                case "GET /api/word-icon":
+                    return await this.#serveWordIcon(req, res);
 
                 case "POST /api/open": {
                     const body = await readBody(req);

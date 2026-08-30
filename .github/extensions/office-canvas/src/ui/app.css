@@ -37,10 +37,13 @@ body {
 
 /* --- header ------------------------------------------------------------- */
 
+/* The bar is one row (#71). It carried a second, full-width one for the absolute
+   path until that row's own tooltip was found to repeat it verbatim -- a line of
+   a narrow panel spent restating what was already on screen. */
 .bar {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
-    grid-template-areas: "main actions" "path path";
+    grid-template-areas: "main actions";
     gap: 2px 8px;
     padding: 8px 12px;
     border-bottom: 1px solid var(--border-color-default, #d1d9e0);
@@ -61,16 +64,27 @@ body {
     gap: 6px;
 }
 
-.bar-path {
-    grid-area: path;
-    color: var(--text-color-muted, #59636e);
-    font-family: var(--font-mono, "SFMono-Regular", Consolas, monospace);
-    font-size: var(--text-code-inline, 12px);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    direction: rtl;
-    text-align: left;
+/* An icon-only button still needs the hit area of a labelled one, so the
+   horizontal padding shrinks to what centres the glyph rather than to nothing.
+   The name is carried by `aria-label`; there is no visible text to lay out. */
+.btn.icon-only {
+    padding-inline: 6px;
+}
+
+.btn.icon-only .icon {
+    margin: 0;
+}
+
+/* The Word mark, when this machine has one to give (#68). Sized to match the
+   drawn glyphs it stands in for rather than to the 32px the extraction
+   produces, so the bar's rhythm does not change with the machine. `hidden`
+   until it loads -- see index.html. */
+.word-mark {
+    width: 16px;
+    height: 16px;
+    flex: 0 0 auto;
+    align-self: center;
+    object-fit: contain;
 }
 
 /* Does not shrink while the meta line still has space to give: measured at
@@ -136,8 +150,8 @@ body {
 }
 
 /* Sized in `em` so an icon tracks the label it sits beside. Stroked in
-   `currentColor`, which is what lets one set of paths serve the default
-   button, the accent-coloured quiet button and the filled primary. */
+   `currentColor`, which is what lets one set of paths serve both the default
+   button and the accent-coloured quiet button. */
 .icon {
     flex: 0 0 auto;
     width: 1.16em;
@@ -168,18 +182,6 @@ body {
 input:focus-visible {
     outline: 2px solid var(--color-focus-outline, #0969da);
     outline-offset: 1px;
-}
-
-.btn.primary {
-    border-color: var(--true-color-blue, #0969da);
-    background: var(--true-color-blue, #0969da);
-    color: #ffffff;
-}
-
-.btn.primary:hover:not(:disabled) {
-    border-color: var(--true-color-blue, #0969da);
-    background: var(--true-color-blue, #0969da);
-    filter: brightness(1.1);
 }
 
 /* The Contents toggle is the one button with a state, and it carries
@@ -339,15 +341,6 @@ input[type="text"] {
     font-variant-numeric: tabular-nums;
 }
 
-.entry .snippet {
-    display: block;
-    color: var(--text-color-muted, #59636e);
-    font-size: var(--text-body-small, 12px);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
 .entry[data-level="2"] .label {
     padding-left: 12px;
 }
@@ -438,20 +431,20 @@ input[type="text"] {
         0 0 0 2px var(--fgColor-accent, #0969da);
 }
 
-/* --- picker ------------------------------------------------------------- */
+/* --- the no-document state ---------------------------------------------- */
 
-.picker {
+.empty {
     flex: 1 1 auto;
     min-width: 0;
     overflow-y: auto;
     display: none;
 }
 
-.picker.visible {
+.empty.visible {
     display: block;
 }
 
-.picker-inner {
+.empty-inner {
     max-width: 560px;
     margin: 0 auto;
     padding: 32px 20px;
@@ -464,46 +457,30 @@ h1 {
     margin: 0 0 4px;
 }
 
-h2 {
-    font-size: var(--text-body-small, 12px);
+.empty-lead {
+    margin: 24px 0 4px;
     font-weight: var(--font-weight-semibold, 600);
-    color: var(--text-color-muted, #59636e);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    margin: 0 0 4px;
 }
 
-.path-form {
-    display: flex;
-    gap: 8px;
-    margin: 20px 0 8px;
-}
-
-.error {
-    color: var(--true-color-red, #cf222e);
-    font-size: var(--text-body-small, 12px);
-    margin: 4px 0 0;
-}
-
-.list-block {
-    margin-top: 24px;
-}
-
-.list {
-    list-style: none;
+.empty-how {
     margin: 0;
-    padding: 0;
-    border: 1px solid var(--border-color-default, #d1d9e0);
-    border-radius: 8px;
-    overflow: hidden;
+    color: var(--text-color-muted, #59636e);
 }
 
-.list .entry {
-    padding: 6px 10px;
+/* The example sentence and the action name are the two things a reader has to
+   be able to pick out of the paragraph -- one is what to say, the other is what
+   Copilot will do. Quiet emphasis rather than a code block: this is prose, and a
+   fenced example would read as something to be typed here, which is the idea
+   this screen exists to retire. */
+.sample {
+    color: var(--text-color-default, #1f2328);
+    font-style: italic;
 }
 
-.list li + li .entry {
-    border-top: 1px solid var(--border-color-default, #d1d9e0);
+.empty-how code {
+    font-family: var(--font-mono, "SFMono-Regular", Consolas, monospace);
+    font-size: var(--text-code-inline, 12px);
+    color: var(--text-color-default, #1f2328);
 }
 
 .spinner {

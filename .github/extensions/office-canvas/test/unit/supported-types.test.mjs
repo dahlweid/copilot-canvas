@@ -2,11 +2,16 @@
 // else. These tests are what keep that true.
 //
 // The drift they exist to catch was real and silent: `SUPPORTED` gained
-// `.dotx`, but two tool parameter descriptions and the picker's own set were
-// hardcoded copies that did not. The tool descriptions are the contract a
-// language model reads, so the agent declined `.dotx` documents the code would
-// have opened -- plausibly, by telling the user templates are unsupported, with
-// no error and nothing to grep for.
+// `.dotx`, but two tool parameter descriptions were hardcoded copies that did
+// not. The tool descriptions are the contract a language model reads, so the
+// agent declined `.dotx` documents the code would have opened -- plausibly, by
+// telling the user templates are unsupported, with no error and nothing to grep
+// for.
+//
+// A third copy lived in the server, as the picker's own extension set. It went
+// with the picker in #69, which is why nothing here compares two sets any more:
+// there is one set left, and a comparison against a set derived from it would
+// assert a tautology rather than a risk.
 //
 // `extension.mjs` cannot be imported here: it calls `joinSession()` at module
 // scope. So its tool descriptions are checked by reading the source, which is
@@ -20,7 +25,6 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { SUPPORTED, supportedList, requireSupported } from "../../src/render-cache.mjs";
-import { DOC_EXTENSIONS } from "../../src/server.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const extensionSource = await readFile(path.join(here, "..", "..", "extension.mjs"), "utf8");
@@ -59,12 +63,6 @@ test("the tool descriptions are derived, not restated", () => {
         anyDescription.length,
         `${anyDescription.length - derived.length} path description(s) are not derived from SUPPORTED`,
     );
-});
-
-test("the picker offers exactly what the cache will open", () => {
-    // These drifted apart once: a .dotx in the workspace was hidden from the
-    // picker while open_document on the same path succeeded.
-    assert.deepEqual([...DOC_EXTENSIONS].sort(), [...SUPPORTED].sort());
 });
 
 test("the unsupported-type error names the same set", () => {
