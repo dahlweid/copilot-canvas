@@ -19,7 +19,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { CreateError, DocumentAuthor, creatableList } from "../../src/word/document-author.mjs";
-import { asToolError } from "../../src/tool-error.mjs";
+import { toolFailure } from "../../src/tool-error.mjs";
 import { fileRevisionToken } from "../../src/revision-token.mjs";
 
 const withTemp = async (fn) => {
@@ -32,39 +32,38 @@ const withTemp = async (fn) => {
 };
 
 /**
- * The tool boundary, applied to an error.
+ * The tool boundary, applied to an error — the *real* one, measured.
  *
- * `asToolError` forwards only `code`, `message` and `data`, so anything recorded
- * as a top-level property on an error is visible to a test and invisible to the
- * agent. A test that asserts one layer beneath the strip will happily confirm a
- * fact no caller can observe — which has now happened twice in this stack, once
- * in the fix for it.
+ * This helper used to be `asToolError`, and the comment here used to say that
+ * `code`, `message` and `data` were "what the agent sees". Measured (#45), none
+ * of the three reached the agent at all: a thrown error crossed as the bare
+ * string `Tool execution failed`. So every assertion made through it was
+ * confirming a fact no caller could observe — precisely the failure the comment
+ * warned about, committed by the warning itself.
  *
- * This file used to model that projection by hand, because `asToolError` lived
- * in `extension.mjs` and that cannot be imported (it calls `joinSession()` at
- * module scope). Layer 2 extracted it to `src/tool-error.mjs`, so the real
- * function is used here instead. A model that has to be pinned to its original
- * is a second copy of it; importing removes the copy.
+ * `toolFailure` is the boundary that now exists, and the one thing that crosses
+ * it is `textResultForLlm`. Projecting to that string is what makes an
+ * assertion here mean something on the far side.
  */
-const throughToolBoundary = asToolError;
+const throughToolBoundary = (err) => toolFailure("create_document", err).textResultForLlm;
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
-test("the tool boundary drops top-level properties and keeps data", () => {
+test("the tool boundary carries the code and the data bag, and drops top-level properties", () => {
     // The property this whole file depends on, asserted against the real
-    // function rather than assumed of it. If `asToolError` ever started
-    // forwarding a fourth field, every assertion below would keep passing while
-    // testing a boundary that no longer exists.
+    // function rather than assumed of it. If `toolFailure` ever stopped
+    // rendering `data` into the text, every assertion below would keep passing
+    // while testing a boundary that no longer carries anything.
     const err = Object.assign(new Error("nope"), {
         code: "create_failed",
         exception: "System.Runtime.InteropServices.COMException",
         data: { detail: "kept" },
     });
 
-    const wrapped = throughToolBoundary(err);
-    assert.equal(wrapped.code, "create_failed");
-    assert.deepEqual(wrapped.data, { detail: "kept" });
-    assert.equal(wrapped.exception, undefined, "a top-level property survived the boundary");
+    const text = throughToolBoundary(err);
+    assert.match(text, /create_failed/);
+    assert.match(text, /"detail":"kept"/);
+    assert.doesNotMatch(text, /COMException/, "a top-level property survived the boundary");
 });
 
 test("a flat detail on CreateError reaches the agent", () => {
@@ -84,7 +83,7 @@ test("a flat detail on CreateError reaches the agent", () => {
     // assertion that is not subject to it.
     const err = new CreateError("create_failed", "nope", { leftBehind: true });
 
-    assert.deepEqual(throughToolBoundary(err).data, { leftBehind: true });
+    assert.match(throughToolBoundary(err), /"leftBehind":true/);
 });
 
 const spec = { blocks: [{ kind: "heading", level: 1, text: "Title" }, { kind: "paragraph", text: "Body." }] };
@@ -149,7 +148,7 @@ test("autocorrect suppression is reported, not assumed", async () => {
     // agent sees, and the defect this pins is a field being added host-side and
     // silently dropped on the way out: `restored` was written into the host
     // report and lost at three object literals in document-author.mjs, which is
-    // the same class as asToolError forwarding only code/message/data. A
+    // the same class as the tool boundary carrying only part of an error. A
     // property-by-property assertion cannot see an omission; this can.
     await withTemp(async (dir) => {
         const doc = path.join(dir, "report.docx");
@@ -271,16 +270,13 @@ test("only extensions SaveAs2's format matches are creatable", async () => {
             // being created and never named the file.
             const seen = throughToolBoundary(err);
             const full = path.join(dir, name);
-            assert.ok(seen.message.includes(full), `${name}: does not name the path -- ${seen.message}`);
+            assert.ok(seen.includes(full), `${name}: does not name the path -- ${seen}`);
             for (const ok of creatableList().split(", ")) {
-                assert.ok(seen.message.includes(ok), `${name}: does not offer ${ok} -- ${seen.message}`);
+                assert.ok(seen.includes(ok), `${name}: does not offer ${ok} -- ${seen}`);
             }
             const ext = path.extname(name);
             if (ext) {
-                assert.ok(
-                    seen.message.includes(ext),
-                    `${name}: does not name the rejected type -- ${seen.message}`,
-                );
+                assert.ok(seen.includes(ext), `${name}: does not name the rejected type -- ${seen}`);
             }
         }
     });
@@ -326,15 +322,15 @@ test("a host failure names no cause, and carries the exception type through the 
         });
 
         const raw = await failed(author, doc);
-        const err = throughToolBoundary(raw);
+        const text = throughToolBoundary(raw);
 
-        assert.equal(err.code, "create_failed");
-        assert.equal(err.data?.exception, "System.Runtime.InteropServices.COMException");
+        assert.match(text, /create_failed/);
+        assert.match(text, /"exception":"System\.Runtime\.InteropServices\.COMException"/);
         // Whatever the message says, it must not say why -- nothing here
         // distinguished a locked folder from a bad path from a Word that fell
         // over, and this repo has shipped a correct code with a message that
         // asserted the wrong reason more than once.
-        assert.doesNotMatch(err.message, /lock|locked|permission|read-only|close Word|open in Word/i);
+        assert.doesNotMatch(text, /lock|locked|permission|read-only|close Word|open in Word/i);
     });
 });
 
@@ -353,18 +349,18 @@ test("a failed create reports whether it actually cleaned up after itself", asyn
         const cleaned = throughToolBoundary(
             await failed(new DocumentAuthor({ reader: stubReader(doc), host: hostSaying(false) }), doc),
         );
-        assert.equal(cleaned.data?.leftBehind, false);
-        assert.match(cleaned.message, /No document was left behind/);
-        assert.doesNotMatch(cleaned.message, /partial/i);
+        assert.match(cleaned, /"leftBehind":false/);
+        assert.match(cleaned, /No document was left behind/);
+        assert.doesNotMatch(cleaned, /partial/i);
 
         const partial = throughToolBoundary(
             await failed(new DocumentAuthor({ reader: stubReader(doc), host: hostSaying(true) }), doc),
         );
-        assert.equal(partial.data?.leftBehind, true);
-        assert.match(partial.message, /partial document was left/i);
+        assert.match(partial, /"leftBehind":true/);
+        assert.match(partial, /partial document was left/i);
         // And it names the path, because "a partial document exists somewhere"
         // is not something a caller can act on.
-        assert.ok(partial.message.includes(doc));
+        assert.ok(partial.includes(doc));
     });
 });
 
@@ -382,8 +378,8 @@ test("'created' with no file on disk is reported as a failure", async () => {
         const err = await failed(author, doc);
         assert.equal(err.code, "create_not_persisted");
         // The one errno that licenses the message's claim of absence.
-        assert.equal(throughToolBoundary(err).data?.cause, "ENOENT");
-        assert.equal(throughToolBoundary(err).data?.created, false);
+        assert.match(throughToolBoundary(err), /"cause":"ENOENT"/);
+        assert.match(throughToolBoundary(err), /"created":false/);
     });
 });
 
@@ -411,12 +407,12 @@ test("a directory is not refused as a file that already exists", async () => {
             },
         });
 
-        const err = throughToolBoundary(await failed(author, asDirectory));
+        const text = throughToolBoundary(await failed(author, asDirectory));
 
         assert.equal(hostSaw, asDirectory, "the preflight refused before the host could classify");
-        assert.equal(err.code, "invalid_path");
-        assert.match(err.message, /is a directory/i);
-        assert.doesNotMatch(err.message, /edit_document/i, "a directory was described as an existing document");
+        assert.match(text, /invalid_path/);
+        assert.match(text, /is a directory/i);
+        assert.doesNotMatch(text, /edit_document/i, "a directory was described as an existing document");
     });
 });
 
@@ -445,26 +441,24 @@ test("a file that cannot be read back is not reported as one that was never writ
             },
         });
 
-        const err = throughToolBoundary(await failed(author, asDirectory));
+        const text = throughToolBoundary(await failed(author, asDirectory));
 
-        assert.equal(err.code, "create_unverified");
-        assert.equal(err.data?.cause, "EISDIR");
-        assert.equal(err.data?.created, null, "a read that only failed was reported as proof of absence");
-        assert.match(err.message, /Do not create it again/);
-        assert.doesNotMatch(err.message, /there is no file at that path/);
+        assert.match(text, /create_unverified/);
+        assert.match(text, /"cause":"EISDIR"/);
+        assert.match(text, /"created":null/, "a read that only failed was reported as proof of absence");
+        assert.match(text, /Do not create it again/);
+        assert.doesNotMatch(text, /there is no file at that path/);
         // Asserted through the boundary, because this is a path where a document
         // may exist and the description tells callers to check the field. Whole
         // shape again: an error path is where a field is most likely to be
         // dropped, since the success path is the one people look at.
-        assert.deepEqual(err.data?.autoCorrect, {
-            suppressed: false,
-            reason: "attached_instance",
-            restored: false,
-            restoreReason: null,
-            settings: null,
-            restoreSettings: null,
-            prior: null,
-        });
+        assert.ok(
+            text.includes(
+                '"autoCorrect":{"suppressed":false,"reason":"attached_instance","restored":false,' +
+                    '"restoreReason":null,"settings":null,"restoreSettings":null,"prior":null}',
+            ),
+            `the autocorrect outcome did not cross whole:\n${text}`,
+        );
     });
 });
 
@@ -485,12 +479,12 @@ test("a document that cannot be read back is still reported as created", async (
         });
 
         const raw = await failed(author, doc);
-        const err = throughToolBoundary(raw);
+        const text = throughToolBoundary(raw);
 
-        assert.equal(err.code, "document_unreadable");
-        assert.equal(err.data?.created, true, "the created flag is dropped at the tool boundary");
-        assert.equal(err.data?.cause, "word_timeout");
-        assert.match(err.message, /Do not repeat the call/);
+        assert.match(text, /document_unreadable/);
+        assert.match(text, /"created":true/, "the created flag is dropped at the tool boundary");
+        assert.match(text, /"cause":"word_timeout"/);
+        assert.match(text, /Do not repeat the call/);
         assert.equal(await readFile(doc, "utf8"), "AUTHORED", "the created document was deleted");
     });
 });
@@ -502,9 +496,10 @@ test("the autocorrect outcome survives to the caller on the failure that still a
     // there is one. Everywhere else the create did not happen and the question
     // is meaningless.
     //
-    // Asserted *through* `asToolError`, which forwards only code, message and
-    // data. A check one layer beneath that strip would happily confirm a
-    // property no caller can observe; that has bitten this stack twice.
+    // Asserted *through* `toolFailure`, the boundary the agent actually reads.
+    // A check one layer beneath it would happily confirm a property no caller
+    // can observe; that has bitten this stack three times, most recently in #45
+    // where it hid the whole defect.
     //
     // The unsuppressed case specifically, because it is the one that carries
     // information: `suppressed: true` is the default assumption a caller would
@@ -520,11 +515,11 @@ test("the autocorrect outcome survives to the caller on the failure that still a
             host: goodHost({ autoCorrect: { suppressed: false, reason: "attached_instance" } }),
         });
 
-        const err = throughToolBoundary(await failed(author, doc));
+        const text = throughToolBoundary(await failed(author, doc));
 
-        assert.equal(err.code, "document_unreadable");
-        assert.equal(err.data?.autoCorrect?.suppressed, false, "the autocorrect outcome is dropped at the tool boundary");
-        assert.equal(err.data?.autoCorrect?.reason, "attached_instance");
+        assert.match(text, /document_unreadable/);
+        assert.match(text, /"suppressed":false/, "the autocorrect outcome is dropped at the tool boundary");
+        assert.match(text, /"reason":"attached_instance"/);
     });
 });
 

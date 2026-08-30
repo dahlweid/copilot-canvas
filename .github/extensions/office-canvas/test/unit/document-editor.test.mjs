@@ -141,8 +141,8 @@ test("when the rollback itself fails, the snapshot is kept and named", async () 
         assert.equal(err.rolledBack, false);
         assert.match(err.snapshot ?? "", /\.snapshot$/, "the error does not name the snapshot to recover from");
 
-        // ...and again through the tool boundary's filter. `asToolError` in
-        // extension.mjs forwards only `code`, `message` and `data`, so a fact
+        // ...and again through the tool boundary's filter. `toolFailure` in
+        // src/tool-error.mjs renders only `code`, `message` and `data`, so a fact
         // recorded solely as a top-level property is visible to this test and
         // invisible to the agent. The assertions above passed while the caller
         // learned nothing but "word_timeout"; these are the ones that matter.

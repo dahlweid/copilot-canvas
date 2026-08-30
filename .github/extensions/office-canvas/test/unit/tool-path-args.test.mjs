@@ -24,30 +24,41 @@
 // ## Why every assertion here pins a code *and* a message
 //
 // The pre-fix build already refuses these calls. A test asserting only that the
-// handler rejects passes identically against the broken and the fixed code and
+// handler refuses passes identically against the broken and the fixed code and
 // measures nothing at all. So each assertion names the typed code and the
 // sentence, and additionally asserts the Node code is *absent*.
 //
+// ## Why the tool assertions read a returned value and the canvas one a throw
+//
+// They are different channels and were measured separately (#45). A tool that
+// throws reaches the agent as `Tool execution failed` with everything else
+// discarded, so its refusal has to be *returned*; a canvas action's thrown
+// message does survive, but its `code` field does not, so its refusal is thrown
+// with the code folded into the message. Asserting either one in the other's
+// shape would pin something no caller can observe.
+//
 // ## Mutations used to confirm these can go red
 //
-//   A. extension.mjs, `resolveInputPath` -> restore the body from main
-//      (`if (path.isAbsolute(input) || ...)` with no guard). This is the defect
-//      itself. Measured over the whole unit suite: 435 pass, 8 fail -- the eight
-//      failures are every test in this file except the picker one, and no
-//      pre-existing test moved, which is the concrete form of "nothing on main
-//      pins this".
-//   B. extension.mjs, `resolveInputPath` -> keep the guard but throw
-//      `invalid_request` instead of `invalid_path`. Measured, this file: 3 pass,
+// Measured over this file alone unless stated.
+//
+//   A. extension.mjs, `resolveInputPath` -> strip both guard blocks, leaving the
+//      body from main. This is the #38 defect itself. 2 pass, 8 fail.
+//   B. extension.mjs, `resolveInputPath` -> keep the guards but throw
+//      `invalid_request` instead of `invalid_path` from the first one. 4 pass,
 //      6 fail. This is what pins the code rather than the fact of a typed
-//      throw; the two survivors reach the second throw, which mutation B leaves
-//      alone.
+//      refusal; the survivors reach the second throw, which B leaves alone.
 //   C. extension.mjs, the canvas `open` -> `if (ctx.input)` instead of
 //      `if (ctx.input?.path)`, which is how refusing a blank path could
-//      plausibly break the document picker. Measured, this file: 7 pass, 2 fail.
+//      plausibly break the document picker. 8 pass, 2 fail.
+//   D. extension.mjs -> drop `.map(reportingFailures)` at the registration site,
+//      i.e. the #45 defect: handlers throw again. 2 pass, 8 fail.
+//   E. extension.mjs, `run` -> `throw asCanvasError(err)` without
+//      `withCodeInMessage`, i.e. the canvas action loses its code again. 9 pass,
+//      1 fail.
 //
-// The picker test is the one that stays green under A, and deliberately so: it
-// does not test the fix, it guards the regression the fix could cause, and C is
-// its proof. Every other test here is red under A.
+// The picker test is the one that stays green under A and D, and deliberately
+// so: it does not test either fix, it guards the regression the #38 fix could
+// cause, and C is its proof. Every other test here is red under A.
 
 import test, { after, before } from "node:test";
 import assert from "node:assert/strict";
@@ -92,12 +103,21 @@ async function openPanel(instanceId, input) {
     return canvas.open({ instanceId, input });
 }
 
-/** Asserts a tool refusal: the typed code, the sentence, and no Node code. */
-function assertTypedRefusal(err, expected) {
-    assert.equal(err.code, "invalid_path", `expected invalid_path, got ${err.code}`);
-    assert.equal(err.message, `invalid_path: ${expected}`);
-    assert.doesNotMatch(err.message, /ERR_INVALID_ARG_TYPE/);
-    return true;
+/**
+ * Asserts a tool refusal: the typed code, the sentence, and no Node code.
+ *
+ * Reads the *returned* result, not a thrown error. Measured: a throw from a
+ * tool handler reaches the agent as the bare string `Tool execution failed`, so
+ * a refusal asserted against a rejection would be asserting something the agent
+ * cannot see -- which is the shape #45 was. `src/tool-error.mjs` carries the
+ * measurement.
+ */
+function assertTypedRefusal(result, expected) {
+    assert.equal(result?.resultType, "failure", `expected a failure result, got ${JSON.stringify(result)?.slice(0, 120)}`);
+    const text = result.textResultForLlm;
+    assert.match(text, /invalid_path/, `expected invalid_path in:\n${text}`);
+    assert.ok(text.includes(expected), `expected the sentence in:\n${text}`);
+    assert.doesNotMatch(text, /ERR_INVALID_ARG_TYPE/);
 }
 
 const REQUIRED = "`path` is required: give an absolute path to the document, or one relative to the workspace.";
@@ -117,27 +137,32 @@ const TOOLS_WITHOUT_PATH = [
 
 for (const [name, args] of TOOLS_WITHOUT_PATH) {
     test(`${name} refuses a missing path with a typed invalid_path`, async () => {
-        await assert.rejects(
-            () => toolNamed(name).handler(args),
-            (err) => assertTypedRefusal(err, REQUIRED),
-        );
+        assertTypedRefusal(await toolNamed(name).handler(args), REQUIRED);
     });
 }
+
+test("no registered tool reports a refusal by throwing", async () => {
+    // The property, over the whole set rather than the four cases above: a tool
+    // that throws is a tool whose failure reaches the agent as `Tool execution
+    // failed`, whatever it put in the error. Asserted here so a tool added later
+    // cannot opt out of the legible channel by being written the obvious way.
+    for (const tool of sdk.joined.tools) {
+        const returned = await tool.handler({}).then(
+            (value) => value,
+            (err) => ({ threw: err }),
+        );
+        assert.ok(!returned?.threw, `${tool.name} threw instead of returning a failure: ${returned?.threw?.message}`);
+    }
+});
 
 test("a null path is the same refusal as an absent one", async () => {
     // `args.path === null` is what an agent emitting a JSON null produces, and
     // it reached `path.isAbsolute` exactly as `undefined` did.
-    await assert.rejects(
-        () => toolNamed("read_document").handler({ path: null }),
-        (err) => assertTypedRefusal(err, REQUIRED),
-    );
+    assertTypedRefusal(await toolNamed("read_document").handler({ path: null }), REQUIRED);
 });
 
 test("a path of the wrong type names the type it got", async () => {
-    await assert.rejects(
-        () => toolNamed("read_document").handler({ path: 42 }),
-        (err) => assertTypedRefusal(err, notAString("a number")),
-    );
+    assertTypedRefusal(await toolNamed("read_document").handler({ path: 42 }), notAString("a number"));
 });
 
 test("an empty path is refused rather than resolved to the workspace directory", async () => {
@@ -145,11 +170,7 @@ test("an empty path is refused rather than resolved to the workspace directory",
     // so a blank path resolved to a folder and was refused, if at all, further
     // down and under a code naming something else.
     for (const blank of ["", "   ", "\t"]) {
-        await assert.rejects(
-            () => toolNamed("read_document").handler({ path: blank }),
-            (err) => assertTypedRefusal(err, notAString("an empty string")),
-            `expected a typed refusal for ${JSON.stringify(blank)}`,
-        );
+        assertTypedRefusal(await toolNamed("read_document").handler({ path: blank }), notAString("an empty string"));
     }
 });
 
@@ -173,11 +194,13 @@ test("the open_document action refuses a missing path with a typed invalid_path"
     await assert.rejects(
         () => action.handler({ instanceId: "action-panel", input: {} }),
         (err) => {
-            // A canvas action carries the code as a field rather than folded
-            // into the message, so this is the same refusal in the other shape.
+            // A canvas action is the *other* channel, and it behaves differently:
+            // measured, a thrown message survives it but the `code` field does
+            // not. So throwing is right here -- and the code has to be in the
+            // message, or the agent never learns it. Same refusal, other shape.
             assert.equal(err.name, "CanvasError");
             assert.equal(err.code, "invalid_path");
-            assert.equal(err.message, REQUIRED);
+            assert.equal(err.message, `invalid_path: ${REQUIRED}`);
             assert.doesNotMatch(err.message, /ERR_INVALID_ARG_TYPE/);
             return true;
         },

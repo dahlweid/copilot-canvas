@@ -44,9 +44,10 @@ import { listSnapshots, revertToLatest, SnapshotError, takeSnapshot } from "./sn
  * A typed edit failure.
  *
  * `details` is copied onto `data` as well as onto the error itself, and the
- * `data` half is the one that matters: `asToolError` forwards only `code`,
- * `message` and `data`, so a detail that lives solely as a top-level property
- * reaches this module's own tests and never reaches the agent.
+ * `data` half is the one that matters: `toolFailure` renders `code`, `message`
+ * and `data` into the text the agent receives, so a detail that lives solely as
+ * a top-level property reaches this module's own tests and never reaches the
+ * agent.
  *
  * This is deliberately fixed *here* rather than at each throw site. The bug was
  * first found and fixed one call site at a time, which left every other
@@ -468,10 +469,11 @@ export class DocumentEditor {
      */
     async #recoverFromUnknownOutcome({ docPath, snapshot, before, cause }) {
         // Facts go on `data` as well as on the error itself. Only `code`,
-        // `message` and `data` survive `asToolError` at the tool boundary, so a
-        // top-level property here reaches this module's own tests and nothing
-        // else -- which is exactly how this was wrong the first time: the
-        // snapshot was correctly kept and its name never left the process.
+        // `message` and `data` are rendered into the failure text at the tool
+        // boundary, so a top-level property here reaches this module's own tests
+        // and nothing else -- which is exactly how this was wrong the first
+        // time: the snapshot was correctly kept and its name never left the
+        // process.
         const record = (fields, note) => {
             Object.assign(cause, fields);
             cause.data = { ...(cause.data ?? {}), ...fields };
@@ -623,8 +625,8 @@ export class DocumentEditor {
      * ordering. It stages a copy and renames it over the document, and deletes
      * the snapshot only once that rename has returned -- so on *any* throw the
      * document still holds its pre-revert bytes and the snapshot is still there
-     * to retry from. Both facts go on `data`, where `asToolError` will forward
-     * them; they are more use to a caller than the errno is.
+     * to retry from. Both facts go on `data`, which `toolFailure` renders into
+     * the failure text; they are more use to a caller than the errno is.
      *
      * The errno is reported but deliberately not mapped from. Measured on this
      * machine, `rename` answers EPERM for an exclusive holder, a Word-like
