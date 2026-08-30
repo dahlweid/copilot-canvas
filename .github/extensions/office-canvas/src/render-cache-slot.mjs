@@ -6,18 +6,39 @@
 // or the idle timer fires. The next caller is supposed to get a fresh one.
 //
 // It did not, and the reason is that disposal takes real time while the slot
-// holding the cache was cleared only afterwards. `WordHost.dispose` sends
-// `quit` under a 20 s timeout and then waits up to a further 5 s for the child
-// to exit, so the window is up to ~25 s wide, and for that whole window the
-// slot still pointed at a cache whose host had already set `#disposed`. Every
-// caller arriving inside it was handed that host, and `#ensureStarted` answers
-// a disposed host with `The Word host has been shut down.`
+// holding the cache was cleared only afterwards. `WordHost.dispose` sends `quit`
+// under a 20 s timeout (`word-host.mjs:473`) and then waits up to a further 5 s
+// for the child to exit (`:486`), so the window is up to ~25 s wide -- a ceiling
+// derived from those two constants, not measured. For that whole window the slot
+// still pointed at a cache that was on its way out, and every caller arriving
+// inside it was handed that cache.
 //
-// For a tool call that is a bad half-minute. For a canvas it is permanent:
-// `ViewerInstance` captured the reference it was constructed with, so a panel
-// opened inside the window held the dead host for the rest of the session, with
-// nothing in the code able to give it another one. That is the "works for one
-// session and is then dead" shape reported in #61.
+// What such a caller gets is *not* one failure but two, and the difference is
+// worth keeping straight because only the second is the sentence from #61:
+//
+//   - In the ~5 s tail, `#disposed` is set, so `#ensureStarted` answers with
+//     `The Word host has been shut down.`
+//   - In the ~20 s before that, `#disposed` is still false -- it is set at `:483`
+//     between the quit and the exit wait, and cannot be set earlier because
+//     `#send` refuses to run against a disposed host and would reject the very
+//     quit being sent. The caller's command is written to a host that is inside
+//     `Stop-Word` and not reading, so it is never answered; when the child exits,
+//     `#onExit` rejects it through `#rejectAll` with the same `word_unavailable`
+//     code but a different message: `The Word host exited (code N, signal S).`
+//     It does not respawn Word, because `dispose()` clears `#openArgs` on entry,
+//     which makes `request()`'s replay path unreachable.
+//
+// That second reading is derived from those sources rather than measured; the
+// unit tests here exercise the tail, which is the one that produced #61.
+//
+// For a tool call either is a bad half-minute. What made it *stick* was the
+// panel: `ViewerInstance` captured the reference it was constructed with, and
+// `open` reuses an existing instance for the same id by design ("rehydrate,
+// reload, focus"), so a panel created inside the window never consulted the slot
+// again and stayed dead for the life of the process. Measured downstream: the
+// surface came back only on `extensions_reload`, which clears it because the
+// instance map dies with the process. That is the "works for one session and is
+// then dead" shape reported in #61.
 //
 // So the swap is synchronous and the disposal is awaited afterwards. There is
 // no instant at which `get()` can return a cache that something has already

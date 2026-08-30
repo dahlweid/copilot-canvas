@@ -191,7 +191,13 @@ derived from those constants rather than measured. `#disposed` is set *between*
 the two, right after the quit returns; it cannot be set earlier, because `#send`
 refuses to run against a disposed host and would reject the very quit being sent.
 So for the tail of that window the host answers every request with `The Word host
-has been shut down.`
+has been shut down.` Before that — while the quit is still in flight — a caller
+is not answered at all: its command goes to a host sitting inside `Stop-Word`,
+and is rejected only when the child exits, with the same `word_unavailable` code
+but a different message, `The Word host exited (code N, signal S).` It cannot
+respawn Word, because `dispose()` clears `#openArgs` on entry and that makes
+`request()`'s replay path unreachable. **One window, two failures** — do not
+treat the shutdown sentence as the whole of it.
 
 Two rules follow, and #61 was both of them being broken at once:
 
