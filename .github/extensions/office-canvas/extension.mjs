@@ -27,7 +27,7 @@ import { createIdleShutdown } from "./src/word-lifecycle.mjs";
 import { createRenderCacheSlot } from "./src/render-cache-slot.mjs";
 import { normalizeReadArgs, DEFAULT_READ_LIMIT, MAX_READ_LIMIT } from "./src/word/read-args.mjs";
 import { MAX_HEADING_LEVEL, MIN_HEADING_LEVEL, OPERATION_HELP, OPERATION_NAMES } from "./src/word/edit-intent.mjs";
-import { asToolError } from "./src/tool-error.mjs";
+import { toolFailure } from "./src/tool-error.mjs";
 import { changeRecordFrom } from "./src/change-record.mjs";
 import {
     BLOCK_HELP,
@@ -109,6 +109,25 @@ function asCanvasError(err) {
     return new CanvasError("word_canvas_error", err?.message ?? "Unknown error");
 }
 
+/**
+ * The canvas-action half of #45, which is a *different* channel from the tool
+ * half and fails differently.
+ *
+ * Measured in the same session as the tool arms (spikes/tool-errors/): a canvas
+ * action that throws reaches the agent as `Canvas operation failed: Error:
+ * <message>`. The message survives -- so unlike a tool, throwing from a canvas
+ * action is not a dead channel and this path is not rewritten. But the `code`
+ * does not survive: a `CanvasError("MARK-D-CODE", "MARK-D-MESSAGE")` arrived
+ * carrying `MARK-D-MESSAGE` and no trace of `MARK-D-CODE`.
+ *
+ * So the code is folded into the message here, for the same reason and by the
+ * same rule as the tool surface: the only field that reaches the agent is the
+ * one it has to be in. `CanvasError.code` is still set, because the field is
+ * the SDK's contract and the extension's own tests and callers read it -- it is
+ * simply not something the agent can see.
+ */
+const withCodeInMessage = (err) => new CanvasError(err.code, `${err.code}: ${err.message}`);
+
 function requireInstance(instanceId) {
     const instance = instances.get(instanceId);
     if (!instance) {
@@ -179,19 +198,35 @@ async function run(fn) {
     try {
         return await fn();
     } catch (err) {
-        throw asCanvasError(err);
+        throw withCodeInMessage(asCanvasError(err));
     }
 }
 
 /**
- * Tools are not canvas actions, so `CanvasError` means nothing to a tool caller.
- * The code is folded into the message instead, because that is what the agent
- * actually reads when deciding what to do next.
+ * Tool failures travel as *results*, never as exceptions.
  *
- * Lives in `./src/tool-error.mjs` so it can be tested directly: this module is
- * not importable from a test, and the defects this boundary causes are exactly
- * the ones invisible from one layer beneath it.
+ * Measured: a throw from a tool handler reaches the agent as the string
+ * `Tool execution failed`, with the message, the code and the data bag all
+ * discarded en route — see `src/tool-error.mjs` for the two hops and
+ * `spikes/tool-errors/` for the run. A returned `ToolResultObject` arrives
+ * intact.
+ *
+ * Applied here, at the registration site, rather than inside each handler. Both
+ * work today; only this one keeps working. A tool added later inherits the
+ * legible channel by being registered at all, which is the difference between a
+ * property and a convention — and #45's predecessor was exactly a convention
+ * that one call site kept and the rest did not.
  */
+const reportingFailures = (tool) => ({
+    ...tool,
+    handler: async (args) => {
+        try {
+            return await tool.handler(args);
+        } catch (err) {
+            return toolFailure(tool.name, err);
+        }
+    },
+});
 
 // --- canvas ----------------------------------------------------------------
 
@@ -503,22 +538,15 @@ const readDocumentTool = {
         // `getCache()`. Keeping the checks together and ahead of `withWordWork`
         // is what stops that from being an accident of evaluation order as more
         // validation arrives -- L2's edit path will have considerably more.
-        let paging;
-        let docPath;
-        try {
-            paging = normalizeReadArgs(args);
-            docPath = resolveInputPath(args?.path);
-        } catch (err) {
-            throw asToolError(err);
-        }
+        //
+        // Nothing is caught here. `reportingFailures` catches at the
+        // registration site, so both the validation throws and anything the
+        // Word work raises become the same legible failure result; a catch here
+        // as well would only wrap the code into the message twice.
+        const paging = normalizeReadArgs(args);
+        const docPath = resolveInputPath(args?.path);
 
-        return withWordWork(async () => {
-            try {
-                return await getCache().readStructure(docPath, paging);
-            } catch (err) {
-                throw asToolError(err);
-            }
-        });
+        return withWordWork(() => getCache().readStructure(docPath, paging));
     },
 };
 
@@ -631,13 +659,8 @@ const createDocumentTool = {
     handler: async (args) => {
         // Path resolution runs before any Word work is entered, matching
         // read_document: a malformed path should cost a string operation, not a
-        // cold Word start.
-        let docPath;
-        try {
-            docPath = resolveInputPath(args?.path);
-        } catch (err) {
-            throw asToolError(err);
-        }
+        // cold Word start. Uncaught here; see `reportingFailures`.
+        const docPath = resolveInputPath(args?.path);
 
         // Everything except `path` is forwarded, rather than `{ blocks }` being
         // picked out.
@@ -659,13 +682,7 @@ const createDocumentTool = {
         // there and not checked in code is a promise nothing keeps.
         const { path: _path, ...spec } = args ?? {};
 
-        return withWordWork(async () => {
-            try {
-                return await getCache().createDocument(docPath, spec);
-            } catch (err) {
-                throw asToolError(err);
-            }
-        });
+        return withWordWork(() => getCache().createDocument(docPath, spec));
     },
 };
 
@@ -724,19 +741,15 @@ const editDocumentTool = {
     },
     handler: async (args) =>
         withWordWork(async () => {
-            try {
-                const intent = { op: args?.op, address: args?.address };
-                if (args?.text !== undefined) intent.text = args.text;
-                if (args?.headingLevel !== undefined) intent.headingLevel = args.headingLevel;
+            const intent = { op: args?.op, address: args?.address };
+            if (args?.text !== undefined) intent.text = args.text;
+            if (args?.headingLevel !== undefined) intent.headingLevel = args.headingLevel;
 
-                const result = await getCache().editDocument(resolveInputPath(args?.path), intent, {
-                    revisionToken: args?.revisionToken,
-                });
-                await refreshCanvasesFor(result.document.path, changeRecordFrom(result));
-                return result;
-            } catch (err) {
-                throw asToolError(err);
-            }
+            const result = await getCache().editDocument(resolveInputPath(args?.path), intent, {
+                revisionToken: args?.revisionToken,
+            });
+            await refreshCanvasesFor(result.document.path, changeRecordFrom(result));
+            return result;
         }),
 };
 
@@ -776,19 +789,15 @@ const revertDocumentTool = {
     },
     handler: async (args) =>
         withWordWork(async () => {
-            try {
-                const result = await getCache().revertDocument(resolveInputPath(args?.path), {
-                    revisionToken: args?.revisionToken,
-                });
-                // A revert undoes the edit the overlay was describing, so the
-                // record is cleared rather than replaced. The restored text is
-                // not a change the agent made -- highlighting it would tell the
-                // user the opposite of what happened.
-                await refreshCanvasesFor(result.document.path, null);
-                return result;
-            } catch (err) {
-                throw asToolError(err);
-            }
+            const result = await getCache().revertDocument(resolveInputPath(args?.path), {
+                revisionToken: args?.revisionToken,
+            });
+            // A revert undoes the edit the overlay was describing, so the
+            // record is cleared rather than replaced. The restored text is
+            // not a change the agent made -- highlighting it would tell the
+            // user the opposite of what happened.
+            await refreshCanvasesFor(result.document.path, null);
+            return result;
         }),
 };
 
@@ -859,7 +868,7 @@ process.on("unhandledRejection", (reason) => {
 
 session = await joinSession({
     canvases: [wordCanvas],
-    tools: [createDocumentTool, readDocumentTool, editDocumentTool, revertDocumentTool],
+    tools: [createDocumentTool, readDocumentTool, editDocumentTool, revertDocumentTool].map(reportingFailures),
     hooks: {
         onSessionEnd: async () => {
             await shutdown(null);

@@ -51,7 +51,8 @@ import { describeSpec, validateSpec } from "./create-intent.mjs";
  * Identical to `EditError` in `document-editor.mjs`, deliberately and by
  * adoption rather than by coincidence: `details` is copied onto `data` as well
  * as onto the error, and the `data` half is the one that reaches the agent,
- * because `asToolError` forwards only `code`, `message` and `data`.
+ * because `toolFailure` renders only `code`, `message` and `data` into the text
+ * the agent receives.
  *
  * This class previously did the `Object.assign` half and not the mirror, so a
  * detail reached the agent only if the *caller* remembered to nest it under
@@ -116,7 +117,7 @@ export const creatableList = () => [...CREATABLE].join(", ");
  * every site kept forwarding the old two and dropped it. The value arrived at
  * this boundary and stopped, and the host-side result was correct throughout.
  *
- * That is the same failure as `asToolError` forwarding only `code`, `message`
+ * That is the same failure as the tool boundary rendering only `code`, `message`
  * and `data`: a field set below a boundary that nothing above it can observe.
  * It was caught because create-smoke asserts on the tool result rather than on
  * the host response -- an assertion one layer lower would have passed while no

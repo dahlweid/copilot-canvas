@@ -30,7 +30,7 @@ import { fileURLToPath } from "node:url";
 
 import { RenderCache } from "../../src/render-cache.mjs";
 import { fileRevisionToken, tokensMatch } from "../../src/revision-token.mjs";
-import { asToolError } from "../../src/tool-error.mjs";
+import { toolFailure } from "../../src/tool-error.mjs";
 import { codepoints, documentPlainText, documentXml } from "./docx-zip.mjs";
 import { assertNoLeakedWord, ownedWordLedger, wordPids } from "./word-pids.mjs";
 
@@ -376,9 +376,11 @@ try {
         // top of revert() refuses a held document before `revertToLatest` runs,
         // so holding the document would test the pre-flight and never this.
         //
-        // Asserted through `asToolError`, because that is the boundary the agent
+        // Asserted through `toolFailure`, because that is the boundary the agent
         // stands at, and an error that is correct one layer beneath it is a
-        // defect this repo has already shipped once.
+        // defect this repo has already shipped twice -- most recently #45, where
+        // the whole error was discarded and every test one layer down stayed
+        // green.
         const root = path.join(workRoot, "artifacts", "snapshots");
         const snapshots = [];
         for (const sub of await readdir(root)) {
@@ -406,12 +408,12 @@ try {
         }
 
         assert.ok(thrown, "a revert whose snapshot could not be read reported success");
-        const wire = asToolError(thrown);
-        assert.equal(wire.code, "revert_failed", `unexpected code ${wire.code}: ${wire.message}`);
-        assert.equal(wire.data?.step, "copy");
-        assert.equal(wire.data?.errno, "EBUSY", `unexpected errno ${wire.data?.errno}`);
-        assert.equal(wire.data?.documentUnchanged, true);
-        assert.equal(wire.data?.snapshotRetained, true);
+        const wire = toolFailure("revert_document", thrown).textResultForLlm;
+        assert.match(wire, /revert_failed/, `unexpected failure text: ${wire}`);
+        assert.match(wire, /"step":"copy"/, wire);
+        assert.match(wire, /"errno":"EBUSY"/, `unexpected errno: ${wire}`);
+        assert.match(wire, /"documentUnchanged":true/, wire);
+        assert.match(wire, /"snapshotRetained":true/, wire);
 
         // The two claims on `data`, checked rather than trusted -- they are the
         // whole reason this failure is safe to retry.

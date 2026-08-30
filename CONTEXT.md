@@ -119,6 +119,17 @@ which stays as the fallback rather than being replaced.
 `file_not_found` is the only code common to both surfaces today, and it means the
 same thing in each. Everything else is surface-specific.
 
+**How a code reaches the agent at all — the two channels differ, measured.** A
+tool failure must be **returned**, not thrown: a thrown error crosses the host as
+the bare string `Tool execution failed`, with the code, the message and the
+`data` bag all discarded (#45, `spikes/tool-errors/`). `src/tool-error.mjs`'s
+`toolFailure` renders all three into `textResultForLlm`, which is the one thing
+that survives, and `extension.mjs` applies it at the tool **registration site**
+so no handler can opt out. A **canvas action** is the opposite: its thrown
+message survives but its `code` field does not, so the code is folded into the
+message there instead. Anything a layer records outside those two paths is
+visible to a test and to nobody else.
+
 Most of the host's codes mean what they say. Two do not — `file_locked` and
 `permission_denied` — and a third trap is not a code at all: `writable` is a
 field reported *beside* a code, which is why it is described here with them.
