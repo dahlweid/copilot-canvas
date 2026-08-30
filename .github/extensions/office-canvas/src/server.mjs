@@ -131,6 +131,29 @@ const TERMINAL_REFRESH_CODES = new Set(["permission_denied", "unsupported_type",
  */
 const AUTO_REFRESH_DELAYS_MS = [500, 1500, 4000];
 
+/**
+ * Unwinds work whose viewer was closed under it.
+ *
+ * Deliberately **not** a `DocumentError`. Every code in that family names
+ * something about the *document* and is shown to a user; this names something
+ * about the panel, is produced only by teardown, and its one reader is the
+ * watcher's `#deliver`, which logs it. Sharing the type would put a teardown
+ * code somewhere a user-facing message is chosen from, and the message would
+ * eventually be shown for a document that is perfectly fine.
+ *
+ * It also must not be a code `#autoRefresh` can mistake for a refresh failure:
+ * a cancellation recorded as a failure puts the panel into `status: "error"`
+ * during its own teardown, so anything reading the retry state afterwards sees
+ * an error that never happened.
+ */
+export class ViewerClosedError extends Error {
+    constructor() {
+        super("The canvas was closed while a refresh was in flight.");
+        this.name = "ViewerClosedError";
+        this.code = "viewer_closed";
+    }
+}
+
 export class ViewerInstance {
     #server = null;
     #clients = new Set();
@@ -138,6 +161,24 @@ export class ViewerInstance {
     #refreshing = null;
     /** Resolves the live RenderCache. See the constructor. */
     #cacheSource = null;
+
+    /**
+     * Set by `close()`, and never cleared. Terminal is not an assumption: the
+     * extension deletes an instance from its map *before* closing it and builds
+     * a fresh one on the next open, so nothing can reach a closed instance to
+     * revive it.
+     */
+    #closed = false;
+
+    /**
+     * Ends the auto-refresh backoff early, or null when none is pending.
+     *
+     * One at a time by the watcher's contract rather than by luck: `onChange` is
+     * awaited, and `FileWatcher` dispatches no second change while one is in
+     * flight -- which is also why `#autoRefresh` is documented as having exactly
+     * one intended caller.
+     */
+    #wakeBackoff = null;
 
     // Counts change records as they are recorded. `changed` tells you a render
     // happened; this tells you whether the record in `this.change` is still the
@@ -324,6 +365,11 @@ export class ViewerInstance {
      * the re-render has happened.
      */
     async refresh({ force = false, change } = {}) {
+        // Before `not_open`, because disposal is the more specific fact: `close()`
+        // deliberately does not null `this.doc` (out of scope in #81), so a closed
+        // viewer would otherwise sail past this guard and refresh normally --
+        // which is exactly the route #80 measured and mis-attributed.
+        this.#throwIfClosed();
         if (!this.doc) throw new DocumentError("not_open", "No document is open in this canvas.");
 
         // Recorded before anything else can publish state. The render below
@@ -383,6 +429,14 @@ export class ViewerInstance {
         this.#refreshing = (async () => {
             const docPath = this.doc.path;
             const result = await this.cache.refresh(docPath);
+            // Checked on the *result*, not only before the attempt. A guard at
+            // the top alone still lets a refresh that was already in flight run
+            // to completion and mutate a disposed instance -- and everything
+            // below this line is the expensive half: `cache.pdf` is a second
+            // Word round-trip (measured at ~1s on the probe's fixture), and the
+            // assignments and broadcast publish a render for a panel that is
+            // gone.
+            this.#throwIfClosed();
             if (!result.changed && !force) return { changed: false, doc: this.doc };
             await this.cache.pdf(docPath);
             this.doc = result;
@@ -441,9 +495,35 @@ export class ViewerInstance {
      * fingerprint back. It is currently the only call site. A second caller --
      * a tool handler, an HTTP route -- inherits the throw and must catch it, or
      * it becomes an unhandled rejection rather than a refusal anyone acts on.
+     *
+     * **Cancellation is the fourth part (#81).** The loop above holds the panel
+     * open for ~6s after the last attempt started, and `close()` used to be
+     * unable to reach into it. Measured against a *real* `RenderCache` in
+     * `spikes/viewer-disposal/probes/probe-close-during-retry.mjs`: two further
+     * `cache.refresh` calls and **one `WordHost.openDocument`** landed after
+     * `close()` returned, plus the PDF export that follows it -- a disposed
+     * panel driving Word. #80 had measured the same continuation with a fake
+     * cache and called it inert, which it was, but only because a fake cannot
+     * open a file.
+     *
+     * A disposal flag rather than an `AbortSignal`, and the reason is the
+     * boundary rather than the effort: the leaf of this work is a PowerShell
+     * host driving Word over COM, where `Documents.Open` on a locked file hangs
+     * rather than failing and nothing observes a signal. A signal threaded down
+     * there would look like cancellation without being any, which is the shape
+     * of guard this file already refuses elsewhere. What *is* ours to cancel is
+     * all above that boundary -- starting another attempt, sleeping between
+     * attempts, and acting on a result -- and the flag covers exactly that,
+     * claiming nothing about the call already in flight.
      */
     async #autoRefresh() {
         if (!this.doc) return;
+        // Reachable: `close()` closes the watcher, but a `#settle` already past
+        // its own checks goes on to call `#deliver`, so a change can be handed
+        // over after the panel is gone. Throwing rather than returning keeps one
+        // rule -- a closed viewer never *consumes* a change -- instead of a
+        // second, quieter one for the case where it had not started yet.
+        this.#throwIfClosed();
         this.log(`document changed on disk: ${path.basename(this.doc.path)}`);
         this.#broadcast("rendering", { path: this.doc.path });
         // Deliberately does not clear the change record. This fires for an
@@ -466,6 +546,16 @@ export class ViewerInstance {
                 await this.refresh({ force });
                 return;
             } catch (err) {
+                // Not a refresh failure, and must not be dressed as one. Falling
+                // through would set `status: "error"` on a panel that is being
+                // torn down, push that state, and then pick a retry delay for a
+                // condition that will never clear -- so teardown would read as a
+                // failed refresh to anything that looked afterwards. Rethrown
+                // rather than swallowed: the watcher's `#deliver` treats a
+                // rejection as "not consumed" and rolls its fingerprint back,
+                // which is the property #75 relies on and which a silent return
+                // would spend.
+                if (err instanceof ViewerClosedError) throw err;
                 const code = err.code ?? "refresh_failed";
                 const delay = TERMINAL_REFRESH_CODES.has(code) ? undefined : this.autoRefreshDelaysMs[attempt];
                 if (delay === undefined) {
@@ -475,9 +565,40 @@ export class ViewerInstance {
                     throw err;
                 }
                 this.log(`auto-refresh failed (${code}); retrying in ${delay}ms`);
-                await new Promise((resolve) => setTimeout(resolve, delay));
+                await this.#backoff(delay);
+                // No guard here on purpose. `close()` wakes the sleep above, and
+                // the next `refresh()` throws on its own entry check -- a second
+                // test between them could never be the one that fires, and a
+                // guard that cannot fire reads as protection.
             }
         }
+    }
+
+    /**
+     * Waits between auto-refresh attempts, interruptibly.
+     *
+     * A plain `setTimeout` would leave `close()` returning with up to 4s of
+     * timer still pending and a continuation still owed an attempt. Waking it
+     * makes the loop unwind within a tick of `close()`, which is the difference
+     * between a flag that records disposal and a `close()` that actually
+     * cancels.
+     */
+    #backoff(ms) {
+        return new Promise((resolve) => {
+            const timer = setTimeout(() => {
+                this.#wakeBackoff = null;
+                resolve();
+            }, ms);
+            this.#wakeBackoff = () => {
+                clearTimeout(timer);
+                this.#wakeBackoff = null;
+                resolve();
+            };
+        });
+    }
+
+    #throwIfClosed() {
+        if (this.#closed) throw new ViewerClosedError();
     }
 
     setPage(page) {
@@ -793,6 +914,14 @@ export class ViewerInstance {
     }
 
     async close() {
+        // First, and before any await. Everything below yields, and a
+        // continuation that resumes during one of those yields must already see
+        // a closed viewer -- otherwise `close()` has a window in which it is
+        // running and disposal is not yet true.
+        this.#closed = true;
+        // A backoff sitting on a 4s timer is the common case at teardown, since
+        // that is where an armed retry loop spends most of its life.
+        this.#wakeBackoff?.();
         this.#watcher.close();
         for (const client of this.#clients) {
             try {
