@@ -300,7 +300,15 @@ try {
     "ERROR: $($_.Exception.Message)"
 } finally {
     if ($null -ne $app) {
-        try { $app.Quit($WD_DO_NOT_SAVE) } catch { }
+        # Quit(), never Quit(<arg>). Under Windows PowerShell 5.1 -- the runtime
+        # every .ps1 here runs under -- the argument form does not bind, so it
+        # throws and the Word survives; process exit does not reap it either
+        # (PLAN.md 20, probe-quit0-leak.ps1). The no-argument form takes the same
+        # default, since wdSaveChanges is only consulted for a dirty document.
+        # Reporting, not swallowing: an empty catch is what turned this from a
+        # hard failure into a leak nobody could see. Step writes the trace file
+        # the parent prints, so this lands on a channel that is read.
+        try { $app.Quit() } catch { Step "Quit() FAILED (Word may leak) -- $($_.Exception.Message.Split([char]10)[0])" }
         try { [Runtime.InteropServices.Marshal]::ReleaseComObject($app) | Out-Null } catch { }
     }
     Step 'quit'

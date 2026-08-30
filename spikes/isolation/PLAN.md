@@ -1634,6 +1634,48 @@ the thing an attribution failure leaves unproven. So they take different gates,
 and folding them into one flag is what made the old code either leak or
 over-kill depending on which way it was folded.
 
+### 20.11 The audit residue: seven sites survived this section's own fix, and the swallow that hid them wrote to nowhere
+
+§20 was written, the shipped path was fixed, and **seven `Quit(<arg>)` call sites
+were still in the tree** — all under `spikes/isolation/probes/`. Re-measured at
+`6dc3369` by re-running `probe-quit0-leak.ps1` under `powershell.exe`:
+
+| arm | pid | threw | alive after the owning process exited |
+| --- | --- | --- | --- |
+| `Quit(0)` | 38820 | yes | **True — leaked** |
+| `Quit()` control | 10888 | no | False — reaped |
+
+Arms disagree, so the probe returns a verdict rather than `exit 2`. The defect is
+live at this SHA, not historical.
+
+**The issue text would have left three of the seven.** It recorded that the
+variable form `Quit($var)` "binds correctly in isolation" and scoped the fix to
+literals. The table at the head of §20 — measured later — says both forms throw.
+Two records of one quantity disagreed, and the newer one is the measurement;
+trusting the older would have fixed four sites and called the job done.
+
+**A `catch` that reports is only a report if something reads the channel.** The
+fix replaces `catch { }` with a catch that says the quit failed, which is only
+worth writing where the words can arrive:
+
+| site | why stdout was not a channel | what it writes instead |
+| --- | --- | --- |
+| `probe-autocorrect.ps1` instance-B worker | parent starts it `Start-Process -WindowStyle Hidden`; its console goes nowhere | appends to `$ResultPath` |
+| `probe-word-share-mode-holder.ps1` | same shape | writes `"$PidFile.note"`, which the parent now prints in its `finally` |
+| the other five | run in the foreground, `Step` writes the trace file | `Step` |
+
+Reporting into a hidden console is a swallow wearing a report's clothes, and it
+would have passed any review that checked only for the absence of `catch { }`.
+
+**The guard.** `test/unit/quit-argument.test.mjs` enumerates tracked `.ps1` via
+`git ls-files`, blanks comments, and flags `.Quit(<non-empty>)`. It allows
+`.Quit([ref]$x)` — the documented escape hatch for a genuinely non-default
+`wdSaveChanges` — because a rule that bans the correct remedy gets worked around
+rather than obeyed. `probe-quit0-leak.ps1` is exempt as the file that *measures*
+the throw, and its occurrence count is pinned to exactly 1 so the exemption
+cannot quietly widen. Killed mutants: reverting one fixed site to the argument
+form, and adding a second argument-form call to the exempt probe.
+
 ## 21. Facts we had measured and failed to join to the code they bore on
 
 Every entry below is a fact this repo had **already measured, written down and
@@ -1836,3 +1878,121 @@ run and the report, the correct action is to re-merge and re-run, not to send th
 older numbers with a note. A number that describes an abandoned tree is not
 evidence, and unlike a stale SHA it does not announce itself — it looks exactly
 like a passing gate.
+
+## 23. Measured: the console encoding is two boundaries, and only one of them fails recoverably
+
+§20's sibling defect. PR #46 established the rule — a host must pin **both**
+`[Console]::OutputEncoding` and `[Console]::InputEncoding` — and #50 found the
+identical asymmetry still living in `spikes/live-word/live-word.ps1`: outbound
+set, inbound never. Fixed here.
+
+### 23.1 The four-arm measurement, across both runtimes
+
+`probe-console-input-encoding.mjs`, sending `Grüße ÄÖÜ` through a spawned
+`powershell.exe -File` with stdin piped:
+
+| arm | 5.1 | 7.6.5 (Core) |
+| --- | --- | --- |
+| unset (control) | CORRUPTED — `U+251C U+255D …` | CORRUPTED — same |
+| `UTF8Encoding($false)` | INTACT | INTACT |
+| `[Text.Encoding]::UTF8` | INTACT | INTACT |
+| `[Text.Encoding]::Default` | **CORRUPTED — `U+00C3 U+00BC …`** | INTACT |
+
+`[Text.Encoding]::Default` resolves to **Windows-1252 under 5.1 and UTF-8 under
+7.6.5**, so a script using it is correct or broken depending on which host
+launched it, with no failure either way. It is therefore rejected by the shared
+matcher rather than accepted as a third spelling.
+
+Note the two corruption signatures differ. The unset control yields the OEM
+`U+251C` family; `::Default` yields the familiar `Ã¼` shape. A reader who has
+learned to recognise one will not recognise the other, so "looks like the
+encoding bug" is not a diagnosis.
+
+**The setter did not throw on any arm.** The documented hazard — that
+`[Console]::InputEncoding` can throw when stdin is a redirected pipe — is exactly
+the spawn shape used here, in both runtimes, and it did not fire. So the
+assignment in `live-word.ps1` is deliberately **unguarded**: a `catch` whose
+body cannot be reached is a claim of protection rather than protection, which is
+this repo's own standard applied to itself.
+
+### 23.2 The directions fail differently, and the worse one is outbound
+
+Measured by spawning `powershell.exe -Command` writing `Grüße ÄÖÜ` to stderr,
+read with `setEncoding("utf8")`:
+
+| outbound pin | received |
+| --- | --- |
+| none | `U+FFFD` per non-ASCII character — **information destroyed** |
+| `UTF8Encoding($false)` | intact |
+
+This is the asymmetry that matters. Inbound corruption is a *reversible*
+transcoding — the bytes still carry the original, wearing the wrong codepage —
+whereas outbound corruption collapses every non-ASCII character to the same
+replacement character and **cannot be decoded back**. The strand most exposed is
+the diagnostic one, because PowerShell reports its own errors in German on this
+machine: the message describing why something failed is the message least able
+to survive it.
+
+### 23.3 The audit: where the two boundaries actually are
+
+Enumerated by rule over `git ls-files '*.ps1'`, not by a hand-kept list.
+
+**Inbound** — a script is exposed only if it reads `[Console]::In`. Three do:
+
+| script | state |
+| --- | --- |
+| `src/word/word-host.ps1` | both pinned (PR #46) |
+| `spikes/live-word/live-word.ps1` | outbound only → **the #50 defect, fixed here** |
+| `probes/probe-console-input-encoding.ps1` | exempt: varying the assignment *is* its measurement |
+
+Every other `.ps1` in the tree never reads stdin, so the inbound boundary does
+not exist for it. That is a bounded result rather than a survey: the guard
+re-derives the set on each run, so a host added tomorrow is covered the day it
+lands rather than the day someone remembers the list.
+
+**Outbound** — 39 spawn sites across 17 files. The shipped surface is two
+scripts:
+
+| script | before | after |
+| --- | --- | --- |
+| `src/word/word-host.ps1` | pinned | unchanged |
+| `src/word/word-icon.ps1` | **nothing pinned** | pinned here |
+
+`word-icon.ps1` was not corrupting anything: its stdout payload is base64, which
+is ASCII and identical under every codepage in play, and `decodeIcon` checks the
+PNG magic afterwards so a mangled payload would have failed closed. It was
+**untested rather than broken** — safe because of what happened to be travelling
+on the channel, not because of any rule. Its `winword-not-found` early exit
+writes to stderr under `$ErrorActionPreference = 'Stop'`, which is where a German
+PowerShell error would go.
+
+The remaining sites are probes and integration suites. They are held to the
+inbound rule and deliberately not to the outbound one: several exercise unpinned
+console behaviour on purpose, and a rule that swept them would accumulate
+exemptions until it meant nothing.
+
+### 23.4 The ordering check had a blind spot at `[Console]::Error`
+
+.NET builds and caches the writer behind each `[Console]` stream on first use, so
+a pin placed below the first touch is too late while reading as correct. The
+existing check looked for `[Console]::(In|Out)` only. `word-icon.ps1` writes its
+diagnostic to `[Console]::Error` **before** it writes the payload to
+`[Console]::Out`, so a pin moved between the two would have been too late for the
+only message that carries German — and the check would have passed it.
+
+Confirmed by mutation rather than by reading: with `USES_CONSOLE` matching
+`(In|Out)`, the mutant that moves the pin below the stderr write **SURVIVED**;
+with `Error` added, it is **KILLED**. The widening is load-bearing, and that is a
+measurement rather than an argument.
+
+### 23.5 The file-encoding boundary is a different one, and it is clean
+
+Checked because it is adjacent and fails the same way silently: Windows
+PowerShell 5.1 decodes a BOM-less `.ps1` as the ANSI codepage, so a non-ASCII
+literal in the *source* is corrupted before any console is involved. Four tracked
+`.ps1` files carry non-ASCII bytes without a BOM — and in all four the bytes are
+in **comments only**, so nothing executable is affected. The files that need
+non-ASCII in code already avoid the trap two ways: `make-fixture.ps1` and
+`mutate-create.ps1` build every umlaut and dash from `[char]0x…` codepoints, and
+`mutate-pdfjs.ps1` / `mutate-webview.ps1` keep a UTF-8 BOM plus a runtime
+self-check that goes red if they are ever decoded as ANSI. No change needed.

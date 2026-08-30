@@ -12,7 +12,27 @@ param([string]$PidDir)
 
 $ErrorActionPreference = 'Stop'
 $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+# Both directions, because the protocol is UTF-8 in both directions and this file
+# used to say so only once. With InputEncoding left at its default, Windows
+# PowerShell decodes the UTF-8 JSON run-spike.mjs writes to this process's stdin
+# as the OEM codepage, so non-ASCII arrives as mojibake while reads still look
+# perfect -- which is exactly why the asymmetry survives being looked at. It is
+# the defect fixed in word-host.ps1 for issue #40, found still living here (#50).
+#
+# Probe code earns no exemption from this. This repo's evidence fails by
+# returning a plausible wrong answer rather than by crashing, and a spike that
+# mangled its own non-ASCII input would report an encoding artefact of the
+# harness as a Word behaviour, with nothing to tell the two apart.
+#
+# Measured by spikes/isolation/probes/probe-console-input-encoding.mjs, which
+# drives this same spawn shape -- `powershell.exe -File` with piped stdio --
+# several ways: without the second line the text is corrupted, with either UTF-8
+# form it is intact. The assignment is deliberately not wrapped in a try/catch:
+# the one real risk, that the setter throws when stdin is a redirected pipe
+# rather than a console, is an arm of that probe and it does not throw in this
+# shape. A guard whose catch cannot be reached is not protection, it is a claim.
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+[Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
 
 $WD_PRINT_VIEW = 3
 $WD_ALERTS_NONE = 0
