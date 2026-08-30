@@ -177,6 +177,36 @@ attribute** does not block reading, and neither does `chmod`, because Node's
 and it is worth stating that explicitly because this repo's unit tests run on
 Linux.) No layer needs a branch for either.
 
+### Lifecycle
+
+**The slot**:
+The extension holds at most one `RenderCache`, and therefore at most one hidden
+Word, in a single slot (`src/render-cache-slot.mjs`). Callers ask the slot; it
+builds lazily and hands back what it has. Nobody else may hold a cache.
+
+**The teardown window**:
+A disposal is **not instantaneous, and the host dies at its start rather than at
+its end**. `WordHost.dispose` sends `quit` under a 20 s timeout and then waits up
+to 5 s more for the child to exit — a ~25 s ceiling, derived from those constants
+— and it sets `#disposed` on the way *in*. From that moment the host answers
+every request with `The Word host has been shut down.`
+
+Two rules follow, and #61 was both of them being broken at once:
+
+- **Clear the slot synchronously, before awaiting the teardown.** Emptying it
+  afterwards leaves a dead host reachable for the whole window, so the next
+  caller is handed the corpse instead of a fresh one. Await the teardown by all
+  means — just not before the swap.
+- **Resolve the cache per use; never capture one.** A long-lived holder that
+  keeps a constructor reference turns a ~25 s window into a permanent failure,
+  because nothing in the code can replace what it is holding. `ViewerInstance`
+  did exactly this, which is why the reported canvases never recovered while a
+  retried tool call would have.
+
+The idle timer is a standing suspect here and was **not** the cause of #61: it is
+gated on `isDisplaying()` and canvases were open. The disposal that matters is
+the one the last panel's `onClose` runs.
+
 ### Rendering
 
 **Render**:

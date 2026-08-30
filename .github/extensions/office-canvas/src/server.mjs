@@ -146,6 +146,8 @@ export class ViewerInstance {
     #clients = new Set();
     #watcher = null;
     #refreshing = null;
+    /** Resolves the live RenderCache. See the constructor. */
+    #cacheSource = null;
 
     // Counts change records as they are recorded. `changed` tells you a render
     // happened; this tells you whether the record in `this.change` is still the
@@ -155,7 +157,15 @@ export class ViewerInstance {
     #changeEpoch = 0;
 
     constructor({ cache, instanceId, workspacePath, log = () => {}, spawnFn = spawn, vendorDir = VENDOR_DIR }) {
-        this.cache = cache;
+        // A function, or a RenderCache directly. The function form is what the
+        // extension passes, and it is not a convenience: a panel outlives Word
+        // being shut down, and this instance used to keep the exact object it
+        // was handed. Once that cache was disposed -- the last canvas closing,
+        // or the idle timer -- the panel held a host that answers everything
+        // with "The Word host has been shut down.", for the rest of the
+        // session, with nothing in the code able to replace it. That was #61.
+        // Resolving per use means the panel picks up whatever cache is live now.
+        this.#cacheSource = typeof cache === "function" ? cache : () => cache;
         this.instanceId = instanceId;
         this.workspacePath = workspacePath ?? null;
         this.log = log;
@@ -178,6 +188,11 @@ export class ViewerInstance {
                 this.#autoRefresh().catch((err) => this.log(`auto-refresh failed: ${err.message}`));
             },
         });
+    }
+
+    /** The live RenderCache, resolved per use rather than captured. */
+    get cache() {
+        return this.#cacheSource();
     }
 
     async start() {
