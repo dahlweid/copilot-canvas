@@ -24,6 +24,7 @@ import { RenderCache, DocumentError, normalizeDocPath, supportedList } from "./s
 import { ViewerInstance } from "./src/server.mjs";
 import { artifactsRoot } from "./src/store.mjs";
 import { createIdleShutdown } from "./src/word-lifecycle.mjs";
+import { createRenderCacheSlot } from "./src/render-cache-slot.mjs";
 import { normalizeReadArgs, DEFAULT_READ_LIMIT, MAX_READ_LIMIT } from "./src/word/read-args.mjs";
 import { MAX_HEADING_LEVEL, MIN_HEADING_LEVEL, OPERATION_HELP, OPERATION_NAMES } from "./src/word/edit-intent.mjs";
 import { asToolError } from "./src/tool-error.mjs";
@@ -49,7 +50,6 @@ import { creatableList } from "./src/word/document-author.mjs";
 const instances = new Map();
 
 let session = null;
-let cache = null;
 
 // A tool call can arrive with no canvas open, so Word may be started purely to
 // serve one. Nothing would then ever shut it down -- the canvas path releases
@@ -65,14 +65,20 @@ const log = (message, level = "info", { ephemeral = level === "info" } = {}) => 
     void session?.log(`[office-canvas] ${message}`, { level, ephemeral })?.catch(() => {});
 };
 
+// The one live RenderCache, and therefore the one hidden Word. Held in a slot
+// rather than a bare `let` because the slot is what makes a disposal invisible
+// to the next caller: it empties synchronously and awaits the teardown after,
+// so nothing is ever handed a cache that is already being disposed. That was
+// #61 -- the whole Word surface stayed down after one shutdown.
+const caches = createRenderCacheSlot({
+    create: () => new RenderCache({ cacheRoot: artifactsRoot(), log: (m) => log(m) }),
+    log: (m) => log(m),
+});
+
 const lifecycle = createIdleShutdown({
     idleMs: IDLE_SHUTDOWN_MS,
     isDisplaying: () => instances.size > 0,
-    dispose: async () => {
-        const idle = cache;
-        cache = null;
-        await idle?.dispose();
-    },
+    dispose: () => caches.dispose(),
     log: (m) => log(m),
 });
 
@@ -87,10 +93,7 @@ const withWordWork = (fn) => lifecycle.run(fn);
 
 function getCache() {
     lifecycle.cancel();
-    if (!cache) {
-        cache = new RenderCache({ cacheRoot: artifactsRoot(), log: (m) => log(m) });
-    }
-    return cache;
+    return caches.get();
 }
 
 /** Maps our typed errors onto canvas error codes the agent can act on. */
@@ -185,7 +188,10 @@ const wordCanvas = createCanvas({
             let instance = instances.get(ctx.instanceId);
             if (!instance) {
                 instance = new ViewerInstance({
-                    cache: getCache(),
+                    // A resolver, not a reference: a panel outlives Word being
+                    // shut down, and a captured cache is how a canvas ended up
+                    // holding a host that had been disposed (#61).
+                    cache: () => caches.get(),
                     instanceId: ctx.instanceId,
                     workspacePath: session?.workspacePath,
                     log: (m) => log(m),
@@ -228,10 +234,9 @@ const wordCanvas = createCanvas({
                 return;
             }
             log("last canvas closed, shutting Word down");
-            await cache?.dispose().catch(() => {});
-            cache = null;
+            await caches.dispose();
         } else if (docPath && ![...instances.values()].some((i) => i.doc?.path === docPath)) {
-            await cache?.close(docPath).catch(() => {});
+            await caches.peek()?.close(docPath).catch(() => {});
         }
     },
 
@@ -361,13 +366,13 @@ const wordCanvas = createCanvas({
             handler: async (ctx) =>
                 run(async () => {
                     const instance = requireInstance(ctx.instanceId);
-                    if (!instance.doc) return { open: false, wordVersion: cache?.wordVersion ?? null };
+                    if (!instance.doc) return { open: false, wordVersion: caches.peek()?.wordVersion ?? null };
                     const info = await getCache().info(instance.doc.path);
                     return {
                         open: true,
                         path: instance.doc.path,
                         currentPage: instance.lastPage,
-                        wordVersion: cache?.wordVersion ?? null,
+                        wordVersion: caches.peek()?.wordVersion ?? null,
                         ...info,
                     };
                 }),
@@ -759,7 +764,7 @@ function reapOnExit() {
     // Synchronous last resort: async teardown does not get to run on exit, and a
     // hidden Word left behind is invisible to the user and never cleaned up.
     try {
-        cache?.reap();
+        caches.peek()?.reap();
     } catch {
         /* nothing more can be done at this point */
     }
@@ -772,7 +777,7 @@ async function shutdown(signal) {
     try {
         await Promise.all([...instances.values()].map((i) => i.close().catch(() => {})));
         instances.clear();
-        await cache?.dispose().catch(() => {});
+        await caches.dispose();
     } finally {
         reapOnExit();
         if (signal) process.exit(0);

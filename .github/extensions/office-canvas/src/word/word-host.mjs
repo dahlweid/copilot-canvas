@@ -91,6 +91,19 @@ export class WordHost {
         return this.#child !== null && this.#child.exitCode === null;
     }
 
+    /**
+     * True once `dispose()` has run. Terminal: a disposed host answers every
+     * request with `The Word host has been shut down.` and never starts again.
+     *
+     * Exposed so a caller can tell a live host from a dead one *without* asking
+     * it to do something, which on a live host means starting Word. The
+     * regression test for #61 is exactly that question, and there was no
+     * Office-free way to ask it.
+     */
+    get disposed() {
+        return this.#disposed;
+    }
+
     async #ensureStarted() {
         if (this.#disposed) throw new WordUnavailableError("The Word host has been shut down.");
         if (this.running) return;

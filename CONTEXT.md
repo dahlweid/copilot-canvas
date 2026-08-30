@@ -177,6 +177,45 @@ attribute** does not block reading, and neither does `chmod`, because Node's
 and it is worth stating that explicitly because this repo's unit tests run on
 Linux.) No layer needs a branch for either.
 
+### Lifecycle
+
+**The slot**:
+The extension holds at most one `RenderCache`, and therefore at most one hidden
+Word, in a single slot (`src/render-cache-slot.mjs`). Callers ask the slot; it
+builds lazily and hands back what it has. Nobody else may hold a cache.
+
+**The teardown window**:
+A disposal is **not instantaneous**. `WordHost.dispose` sends `quit` under a 20 s
+timeout and then waits up to 5 s more for the child to exit — a ~25 s ceiling,
+derived from those constants rather than measured. `#disposed` is set *between*
+the two, right after the quit returns; it cannot be set earlier, because `#send`
+refuses to run against a disposed host and would reject the very quit being sent.
+So for the tail of that window the host answers every request with `The Word host
+has been shut down.`
+
+Two rules follow, and #61 was both of them being broken at once:
+
+- **Clear the slot synchronously, before awaiting the teardown.** Emptying it
+  afterwards leaves the doomed cache reachable for the whole window, so a caller
+  arriving in the tail is handed a corpse instead of a fresh host. Await the
+  teardown by all means — just not before the swap.
+- **Resolve the cache per use; never capture one.** This is what turned a ~25 s
+  window into a process-lifetime failure: `ViewerInstance` kept its constructor
+  reference, and `open` reuses an existing instance for the same id by design
+  ("rehydrate, reload, focus"), so a panel created inside the window never
+  consulted the slot again. Measured: the surface recovered only on
+  `extensions_reload`, which clears it because the instance map dies with the
+  process.
+
+Fixing the slot alone would also cure the stickiness, since a panel could then
+only ever capture a live cache. Resolving per use is what makes that property
+**structural** instead of incidental, so a disposal path added later cannot
+strand a panel by forgetting the first rule.
+
+The idle timer is a standing suspect here and was **not** the cause of #61: it is
+gated on `isDisplaying()` and canvases were open. The disposal that matters is
+the one the last panel's `onClose` runs.
+
 ### Rendering
 
 **Render**:
