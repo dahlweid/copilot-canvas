@@ -19,6 +19,31 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# Pin the outbound console encoding before anything is written.
+#
+# The payload below is base64, which is ASCII and therefore identical under
+# every codepage in play -- so this is not fixing a corrupted icon. It is fixing
+# the *failure* path, which is where the non-ASCII actually lives: an
+# unhandled PowerShell error on this machine is reported in German, and
+# `$ErrorActionPreference = 'Stop'` above means a failure surfaces exactly
+# that way.
+#
+# Measured, spawning this script's shape (`-NoProfile -NonInteractive`, stderr
+# piped, `setEncoding("utf8")` on the Node side): with the encoding unpinned,
+# "Gr[U+00FC][U+00DF]e [U+00C4][U+00D6][U+00DC]" on stderr arrives as
+# U+FFFD U+FFFD for every non-ASCII character; with it pinned, it arrives
+# intact. Note that this direction fails *lossily* -- U+FFFD cannot be decoded
+# back -- unlike the inbound direction, whose OEM mojibake is at least
+# reversible. A diagnostic is the one thing that must survive the case where
+# everything else did not.
+#
+# This is also what makes the rule in `console-encoding.test.mjs` true of the
+# whole shipped surface rather than of stdin-readers only: a script that pins
+# nothing because its current payload happens to be ASCII is one edit away from
+# a lossy channel, and nothing about the ASCII would have to change for that
+# edit to be wrong.
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+
 # Where the installers put it, newest layout first. The registry App Paths entry
 # is consulted first because it is what the shell itself resolves `winword` by,
 # so it survives a non-default install directory that a hardcoded list cannot.

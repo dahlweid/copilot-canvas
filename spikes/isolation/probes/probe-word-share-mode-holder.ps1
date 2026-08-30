@@ -58,7 +58,18 @@ try {
     [Runtime.InteropServices.Marshal]::ReleaseComObject($doc) | Out-Null
 } finally {
     if ($null -ne $word) {
-        try { $word.Quit(0) } catch { }
+        # Quit(), never Quit(<arg>). Under Windows PowerShell 5.1 -- the runtime
+        # this is spawned under -- the argument form does not bind: it throws and
+        # the Word survives, and process exit does not reap it either (PLAN.md 20,
+        # probe-quit0-leak.ps1). The no-argument form takes the same default,
+        # since wdSaveChanges is only consulted for a dirty document.
+        #
+        # The outcome goes to a note file beside the pid file, and the parent
+        # prints it. This process is started with `Start-Process -WindowStyle
+        # Hidden`, so its console goes nowhere: a catch writing to stdout or
+        # stderr would be a swallow that merely looks like a report.
+        $quitNote = 'Quit(): ok'
+        try { $word.Quit() } catch { $quitNote = 'Quit(): FAILED (Word may leak) -- ' + $_.Exception.Message.Split([char]10)[0] }
         try { [Runtime.InteropServices.Marshal]::ReleaseComObject($word) | Out-Null } catch { }
         [GC]::Collect(); [GC]::WaitForPendingFinalizers()
         # Quit() returns in ~120ms and the process outlives it by seconds, longer
@@ -69,6 +80,15 @@ try {
             while ((Get-Date) -lt $d -and $null -ne (Get-Process -Id $ownedPid -ErrorAction SilentlyContinue)) {
                 Start-Sleep -Milliseconds 250
             }
+            # Reported as an observation, not as a cause: a pid still present at
+            # the deadline is a survivor whatever the reason, and this script
+            # deliberately kills nothing -- the parent was handed the pid and
+            # owns that decision.
+            $still = $null -ne (Get-Process -Id $ownedPid -ErrorAction SilentlyContinue)
+            $quitNote += "; owned pid $ownedPid alive after 90s poll: $still"
+        } else {
+            $quitNote += '; no pid was claimed, so survival is unobservable here'
         }
+        try { [IO.File]::WriteAllText("$PidFile.note", $quitNote) } catch { }
     }
 }

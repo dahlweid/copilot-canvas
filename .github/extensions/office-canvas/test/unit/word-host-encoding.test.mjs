@@ -50,6 +50,8 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { assignsUtf8, blankComments } from "./ps-encoding-rule.mjs";
+
 const here = path.dirname(fileURLToPath(import.meta.url));
 const hostScript = path.join(here, "..", "..", "src", "word", "word-host.ps1");
 
@@ -67,16 +69,14 @@ const rawSource = await readFile(hostScript, "utf8");
  *
  * Comments are blanked rather than dropped so every offset is preserved -- the
  * ordering test compares positions, and removing text would shift them.
- * Line-comments only: PowerShell's `<# #>` block form does not appear here, and
- * a matcher for a construct the file does not use is untested code in a test.
+ *
+ * `blankComments` and `assignsUtf8` are imported rather than restated here.
+ * `console-encoding.test.mjs` needs the same two, and a second copy is a second
+ * record of one quantity, free to disagree with the first -- which it did, the
+ * copy grown against this file recognising only this file's spelling of a UTF-8
+ * encoding and reporting a correctly pinned `live-word.ps1` as unpinned.
  */
-const source = rawSource.replace(/#[^\n]*/g, (m) => " ".repeat(m.length));
-
-/** Matches an assignment of any UTF-8 encoding to one Console encoding property. */
-const assignsUtf8 = (property) =>
-    new RegExp(
-        String.raw`\[Console\]::${property}\s*=\s*(New-Object\s+(System\.)?Text\.UTF8Encoding|\[(System\.)?Text\.Encoding\]::UTF8)`,
-    );
+const source = blankComments(rawSource);
 
 test("the host decodes its stdin as UTF-8", () => {
     // The one line whose absence was issue #40. Written as its own test so a

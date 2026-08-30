@@ -194,6 +194,15 @@ try {
     if (-not $proc.WaitForExit($ShutdownTimeoutSeconds * 1000)) {
         Write-Host "WARNING: holder did not exit within ${ShutdownTimeoutSeconds}s; not killing anything."
     }
+    # The holder runs with its console hidden, so this note file is the only
+    # channel by which its Quit outcome can reach anyone. Printing it here is
+    # what stops the holder's reporting catch from being a swallow.
+    $note = "$pidFile.note"
+    if (Test-Path -LiteralPath $note) {
+        Write-Host ("holder shutdown: " + (Get-Content -LiteralPath $note -Raw).Trim())
+    } else {
+        Write-Host "holder shutdown: no note written -- it did not reach its cleanup block."
+    }
 }
 
 # And once Word has let go, as a positive control that the file itself is not the
