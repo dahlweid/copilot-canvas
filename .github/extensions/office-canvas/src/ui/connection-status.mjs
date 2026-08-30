@@ -1,11 +1,13 @@
 // What a viewer panel is allowed to claim about its own connection.
 //
-// Separate from `app.js` for the same reason `change-wording.mjs` is, and the
-// reason is measured rather than assumed: `app.js` cannot be imported under
-// Node at all. It reaches `pdf-view.mjs`, which imports pdf.js from an absolute
-// `/vendor/` URL, and module resolution fails there before any DOM access --
-// `Cannot find module 'C:\vendor\pdf.min.mjs'`. Logic left inside `app.js` has
-// no reachable assertion, so the decision lives here where a test can drive it.
+// Separate from `app.js` for the same reason `change-wording.mjs` is: the rule
+// about what a panel may claim is worth executing on its own, against no
+// `EventSource` and no DOM. When this was split, `app.js` also could not be
+// imported under Node -- it reaches `pdf-view.mjs`, which imports pdf.js from an
+// absolute `/vendor/` URL, and module resolution failed there with `Cannot find
+// module 'C:\vendor\pdf.min.mjs'`. #76 removed that blocker (`ui-harness.mjs`),
+// so that is no longer the reason and is recorded here as history rather than as
+// a live fact.
 //
 // The defect this exists to end (#66): `EventSource` reconnects on a schedule of
 // its own and never stops, so `readyState` sits at CONNECTING forever, so a

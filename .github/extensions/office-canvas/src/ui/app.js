@@ -338,7 +338,17 @@ function applyState(next, { forceReload = false } = {}) {
     if (state?.doc && state.doc.key !== previousKey) {
         outlineLoadedFor = null;
         if (el.sidebar.dataset.open === "true") loadOutline();
-        showPdf(currentPage);
+        // Deliberately no `showPdf` here. `render()` above has already loaded
+        // it -- synchronously as far as `loadedPdfUrl`, so a second call was
+        // only ever a no-op -- and it loads under the condition this branch does
+        // not test: `state.status !== "error"`. A document whose refresh failed
+        // terminally keeps its last-known `doc` and a `pdfUrl` naming a render
+        // that has since been evicted, so a panel re-opened onto that instance
+        // fetched it, failed, and replaced the host's typed message ("…is held
+        // by another program") with "Could not display the document" -- an error
+        // about something the reader was never being shown, in place of the one
+        // they could act on. Found by `app.test.mjs` once #76 made this file
+        // executable.
     }
 }
 

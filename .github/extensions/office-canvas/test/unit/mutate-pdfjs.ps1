@@ -406,8 +406,9 @@ $mutants = @(
 
     # The defect exactly as it shipped: the view answering "is this page worth
     # re-planning?" for itself, and getting a different answer than the planner.
-    # Only the source check can see this -- `pdf-view.mjs` cannot be imported
-    # under Node -- which is precisely why the source check exists.
+    # The source check was the only detector when `pdf-view.mjs` could not be
+    # imported under Node; since #76 `pdf-view.test.mjs` covers the behaviour too,
+    # and this mutant is now killed by both.
     @{ name = 'the viewer decides for itself which painted pages matter'
        file = 'src/ui/pdf-view.mjs'
        from = '        if (this.#change && candidatePages(this.#change).includes(page.number)) {

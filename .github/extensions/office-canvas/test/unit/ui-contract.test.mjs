@@ -197,10 +197,12 @@ test("keyboard focus stays visible", async () => {
 // like protection and is not is this repo's most expensive habit. They fail on a
 // delegation that was removed and on an inline status that came back -- the
 // regression actually at issue. They *cannot* fail on a monitor that is
-// imported, called, and then never reached at runtime, because nothing here
-// executes `app.js`: it cannot even be imported under Node, failing at module
-// resolution of `pdf-view.mjs`'s absolute `/vendor/pdf.min.mjs` before any DOM
-// access. The runtime end is measured by
+// imported, called, and then never reached at runtime, because nothing **here**
+// executes `app.js`. That used to be forced -- `app.js` could not be imported
+// under Node, failing at module resolution of `pdf-view.mjs`'s absolute
+// `/vendor/pdf.min.mjs` before any DOM access -- and since #76 it is a property
+// of this file only: `app.test.mjs` does execute `app.js`, against a stub DOM.
+// Neither reaches a real `EventSource`, so the runtime end is still measured by
 // `spikes/viewer-connection/probes/probe-dead-server.mjs` instead, against a
 // real EventSource and a really-closed server.
 
