@@ -12,17 +12,39 @@
 // Office-free; no imports beyond nothing at all.
 
 /**
- * Matches an assignment of any UTF-8 encoding to one `[Console]` encoding
- * property.
+ * Matches one of three enumerated textual spellings of a UTF-8 assignment to a
+ * `[Console]` encoding property.
  *
- * All three spellings PowerShell offers are accepted, because all three produce
- * a UTF-8 encoding and the rule is about the encoding, not the syntax:
+ * Scope, stated exactly, because this file is the one whose whole job is to be
+ * the rule and a rule that overstates itself is the worst place for it:
+ *
+ * - It recognises **these three spellings and no others**. They are the three
+ *   PowerShell offers and the three the tree uses; a fourth way of naming a
+ *   UTF-8 encoding would be reported as unpinned. That failure is loud and
+ *   safe — it reddens on correct code, which gets noticed and fixed — whereas
+ *   the reverse would not be.
+ * - It is a **textual** match over the source. It cannot tell code from a
+ *   string, so an assignment written inside a quoted string or a here-string
+ *   would count as pinning the encoding. No here-string in the tree contains
+ *   one today (checked), so this is a known limit rather than an observed
+ *   defect. Note the sibling guard in `quit-argument.test.mjs` deliberately
+ *   does *not* strip here-strings, because there the leaking `Quit` genuinely
+ *   lives inside one — the two guards want opposite things from the same
+ *   construct, which is why neither hands this off to a shared stripper.
+ * - Comments are handled, and only because they bit: see `blankComments`.
+ *
+ * What it does not do is verify that the assignment executes, or that it
+ * executes first. Ordering is a separate assertion in
+ * `console-encoding.test.mjs`, built on `USES_CONSOLE`, and it is separate
+ * precisely because this regex cannot see it.
  *
  *   [Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false)
  *   [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
  *   [Console]::InputEncoding = [System.Text.Encoding]::UTF8
  *
- * The `System.` prefix is optional in PowerShell and therefore optional here.
+ * All three are accepted because all three produce a UTF-8 encoding and the
+ * rule is about the encoding rather than the syntax. The `System.` prefix is
+ * optional in PowerShell and therefore optional here.
  *
  * Note what is deliberately *not* accepted: `[Text.Encoding]::Default`. It names
  * a different encoding on each runtime -- the ANSI codepage under Windows

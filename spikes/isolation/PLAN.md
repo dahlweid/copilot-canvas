@@ -1935,9 +1935,21 @@ to survive it.
 
 ### 23.3 The audit: where the two boundaries actually are
 
-Enumerated by rule over `git ls-files '*.ps1'`, not by a hand-kept list.
+Enumerated by rule, not by a hand-kept list. Both rules are given verbatim below
+so the figures are re-derivable rather than re-inventable — the first version of
+this section reported "39 spawn sites across 17 files", which reproduced under
+nobody's rule including its own, because it was counted by eye from a truncated
+display and quoted under the wrong corpus.
 
-**Inbound** — a script is exposed only if it reads `[Console]::In`. Three do:
+**Inbound** — a script is exposed only if it reads `[Console]::In`. The corpus is
+the tracked `.ps1` files, since this is a property of the script:
+
+```powershell
+Select-String -Path (git ls-files '*.ps1') -Pattern '\[Console\]::In\b'
+```
+
+Three match, and `test/unit/console-encoding.test.mjs` re-derives the same set on
+every run:
 
 | script | state |
 | --- | --- |
@@ -1950,8 +1962,48 @@ not exist for it. That is a bounded result rather than a survey: the guard
 re-derives the set on each run, so a host added tomorrow is covered the day it
 lands rather than the day someone remembers the list.
 
-**Outbound** — 39 spawn sites across 17 files. The shipped surface is two
-scripts:
+**Outbound** — the corpus here is the tracked `.mjs` files, not the `.ps1` ones,
+because a spawn is written on the Node side. Quoting an inbound `.ps1` rule over
+an outbound `.mjs` figure is what made the original number irreproducible:
+
+```powershell
+Select-String -Path (git ls-files '*.mjs') -Pattern '"(powershell\.exe|pwsh)"'
+```
+
+**38 matches across 18 files**, identical at `6dc3369` and at this branch's head —
+so this PR moved neither. Re-derive it from a clean `git archive` extract rather
+than the working tree if you want it independent of untracked scratch files.
+
+**A match is a mention, not a call, and the gap is large.** 14 of the 38 do not
+carry `spawn` or `execFile` on their own line: 12 are the interpreter name
+sitting alone as an argument of a multi-line call, one (`word-pids.mjs:207`) is
+a real call through a locally-named `exec(...)` wrapper, and one
+(`probe-console-input-encoding.mjs:69`) is a loop that drives *both* interpreters
+from a single site. So 38 bounds the surface from above and 24 — matches whose
+own line also names `spawn` or `execFile` — bounds it from below, and the true
+figure is neither, since that lower bound demonstrably excludes at least one
+genuine call. This section therefore does not report a count of spawn calls at
+all: the load-bearing results are the two tables, which are exact.
+
+The shipped surface is two scripts:
+
+| script | before | after |
+| --- | --- | --- |
+| `src/word/word-host.ps1` | pinned | unchanged |
+| `src/word/word-icon.ps1` | **nothing pinned** | pinned here |
+
+`word-icon.ps1` was not corrupting anything: its stdout payload is base64, which
+is ASCII and identical under every codepage in play, and `decodeIcon` checks the
+PNG magic afterwards so a mangled payload would have failed closed. It was
+**untested rather than broken** — safe because of what happened to be travelling
+on the channel, not because of any rule. Its `winword-not-found` early exit
+writes to stderr under `$ErrorActionPreference = 'Stop'`, which is where a German
+PowerShell error would go.
+
+The remaining sites are probes and integration suites. They are held to the
+inbound rule and deliberately not to the outbound one: several exercise unpinned
+console behaviour on purpose, and a rule that swept them would accumulate
+exemptions until it meant nothing.
 
 | script | before | after |
 | --- | --- | --- |

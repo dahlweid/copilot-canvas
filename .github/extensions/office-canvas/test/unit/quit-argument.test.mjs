@@ -31,52 +31,17 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { blankComments } from "./ps-encoding-rule.mjs";
-
-const execFileAsync = promisify(execFile);
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const REPO = path.resolve(HERE, "..", "..", "..", "..", "..");
+import { REPO, gitAvailable, trackedFiles } from "./tracked-files.mjs";
 
 // The one file allowed to use the argument form, because measuring the throw is
 // what it is for. Exempting it by name is not a hole: the count below pins how
 // many times it may do so, so a second site added here still reddens.
 const MEASURES_THE_THROW = "spikes/isolation/probes/probe-quit0-leak.ps1";
 const MEASURED_OCCURRENCES = 1;
-
-/**
- * Tracked `.ps1` files, asked of git rather than the filesystem.
- *
- * Two reasons. A worktree can carry untracked scratch scripts that are nobody's
- * business, and this repo's probes are split across sibling worktrees, so the
- * filesystem answers a different question than "what is in this commit".
- */
-async function trackedPowerShellFiles() {
-    const { stdout } = await execFileAsync("git", ["ls-files", "-z", "*.ps1"], {
-        cwd: REPO,
-        maxBuffer: 8 * 1024 * 1024,
-    });
-    return stdout.split("\0").filter(Boolean);
-}
-
-// Skip rather than fail where there is no git to ask -- an installed extension
-// folder is a plain directory, and this property is about the repository.
-let available = null;
-async function gitAvailable() {
-    if (available !== null) return available;
-    try {
-        await execFileAsync("git", ["rev-parse", "--git-dir"], { cwd: REPO });
-        available = true;
-    } catch {
-        available = false;
-    }
-    return available;
-}
 
 /**
  * The script with its line comments blanked, so a call named in prose is not
@@ -113,7 +78,7 @@ function argumentFormCalls(source) {
 test("no .ps1 calls Application.Quit with a bare argument", async (t) => {
     if (!(await gitAvailable())) return t.skip("no git checkout to enumerate");
 
-    const files = await trackedPowerShellFiles();
+    const files = await trackedFiles("*.ps1");
     // A file list that came back empty would make every assertion below pass
     // without examining anything -- the same shape as a glob that matches
     // nothing and exits 0. This repo has measured that failure once already.
@@ -121,7 +86,7 @@ test("no .ps1 calls Application.Quit with a bare argument", async (t) => {
 
     const offenders = [];
     for (const file of files) {
-        if (file.replace(/\\/g, "/") === MEASURES_THE_THROW) continue;
+        if (file === MEASURES_THE_THROW) continue;
         const source = blankComments(await readFile(path.join(REPO, file), "utf8"));
         for (const call of argumentFormCalls(source)) {
             offenders.push(`${file}:${call.line}  .Quit(${call.arg})`);
@@ -144,7 +109,7 @@ test("the probe that measures the throw still contains exactly the calls it need
     // Without this, the exemption above is unbounded: any number of new
     // argument-form calls could be added to that file and nothing would notice.
     // Pinning the count is what keeps the one allowed exception able to go red.
-    const files = (await trackedPowerShellFiles()).map((f) => f.replace(/\\/g, "/"));
+    const files = await trackedFiles("*.ps1");
     assert.ok(
         files.includes(MEASURES_THE_THROW),
         `${MEASURES_THE_THROW} is not in the tree, so the exemption above now covers nothing and would hide a real site`,

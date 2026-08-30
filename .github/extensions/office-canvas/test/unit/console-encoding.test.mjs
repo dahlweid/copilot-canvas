@@ -28,17 +28,11 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { assignsUtf8, blankComments, READS_STDIN, USES_CONSOLE, WRITES_CONSOLE } from "./ps-encoding-rule.mjs";
-
-const execFileAsync = promisify(execFile);
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const REPO = path.resolve(HERE, "..", "..", "..", "..", "..");
+import { REPO, gitAvailable, trackedFiles } from "./tracked-files.mjs";
 
 // The one script allowed to read stdin without pinning the encoding, because
 // varying that assignment across arms is the measurement it performs. The test
@@ -56,23 +50,7 @@ const MUST_BE_COVERED = [
 ];
 
 async function trackedPowerShellFiles() {
-    const { stdout } = await execFileAsync("git", ["ls-files", "-z", "*.ps1"], {
-        cwd: REPO,
-        maxBuffer: 8 * 1024 * 1024,
-    });
-    return stdout.split("\0").filter(Boolean).map((f) => f.replace(/\\/g, "/"));
-}
-
-let available = null;
-async function gitAvailable() {
-    if (available !== null) return available;
-    try {
-        await execFileAsync("git", ["rev-parse", "--git-dir"], { cwd: REPO });
-        available = true;
-    } catch {
-        available = false;
-    }
-    return available;
+    return trackedFiles("*.ps1");
 }
 
 /**
