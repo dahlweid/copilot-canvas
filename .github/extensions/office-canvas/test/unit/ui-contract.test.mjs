@@ -202,9 +202,16 @@ test("keyboard focus stays visible", async () => {
 // under Node, failing at module resolution of `pdf-view.mjs`'s absolute
 // `/vendor/pdf.min.mjs` before any DOM access -- and since #76 it is a property
 // of this file only: `app.test.mjs` does execute `app.js`, against a stub DOM.
-// Neither reaches a real `EventSource`, so the runtime end is still measured by
-// `spikes/viewer-connection/probes/probe-dead-server.mjs` instead, against a
-// real EventSource and a really-closed server.
+//
+// That blind spot is no longer unattended, and the handover is measured rather
+// than asserted. `test/unit/connection-lost.test.mjs` drives `app.js` until its
+// `#status` element carries the terminal message. Replacing the call below with
+// `monitorConnection(source, { setStatus: () => {} })` -- still a call, still
+// matching the regex -- leaves **this file green** and turns that one red.
+//
+// Neither reaches a real `EventSource`, so the reconnect scheduling is still
+// measured by `spikes/viewer-connection/probes/probe-dead-server.mjs` instead,
+// against a real EventSource and a really-closed server.
 
 test("app.js delegates its connection status rather than deciding it inline", async () => {
     const script = await read("app.js");
