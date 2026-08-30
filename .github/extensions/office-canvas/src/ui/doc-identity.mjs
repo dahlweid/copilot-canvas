@@ -1,11 +1,15 @@
 // How the header bar identifies the open document, once the absolute-path row
 // is gone (#71).
 //
-// This lives in its own module because `app.js` has no reachable test: it cannot
-// be imported under Node at all, dying at module resolution of `pdf-view.mjs`'s
-// absolute `/vendor/pdf.min.mjs` specifier before any DOM access. Logic left in
-// there is asserted only by reading source text, which cannot fail on a wrong
-// answer -- only on a changed spelling. What is decided here can be executed.
+// This lives in its own module because the decision is worth executing on its
+// own. It was written when `app.js` had no reachable test at all -- it could not
+// be imported under Node, dying at module resolution of `pdf-view.mjs`'s
+// absolute `/vendor/pdf.min.mjs` specifier before any DOM access. #76 removed
+// that: `test/unit/ui-harness.mjs` resolves the specifier and supplies a DOM, so
+// `app.test.mjs` now drives `app.js` directly. The split still earns its place
+// -- the rules here are asserted against no DOM at all, and `app.js` is asserted
+// against a stand-in for one -- but "cannot be imported" is no longer the
+// reason, and leaving that claim here would be a stale measurement.
 
 /** The separator this path uses, or null when it has none. */
 function separatorOf(path) {

@@ -1,9 +1,11 @@
 // Which pages the overlay marks, and why.
 //
-// Split out of `pdf-view.mjs` because that module imports pdf.js from an
-// absolute `/vendor/` URL and cannot be loaded under Node, so anything decided
-// inside it is untestable. The decision here is the part worth testing: the
-// drawing is not.
+// Split out of `pdf-view.mjs` because the decision is the part worth testing and
+// the drawing is not. It was also, when written, the only way to reach it at
+// all: `pdf-view.mjs` imports pdf.js from an absolute `/vendor/` URL and could
+// not be loaded under Node. #76 removed that -- `test/unit/ui-harness.mjs`
+// resolves the specifier to a stand-in, and `pdf-view.test.mjs` now drives the
+// view. The split stands on its first reason alone.
 //
 // ## The rule
 //

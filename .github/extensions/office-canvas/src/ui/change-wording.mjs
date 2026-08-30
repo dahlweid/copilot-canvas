@@ -1,9 +1,11 @@
 // Reader-facing wording for a change record.
 //
-// Separate from `pdf-view.mjs` for two reasons. The banner and the on-page badge
-// must say the same thing about one edit, and `pdf-view.mjs` imports pdf.js from
-// an absolute `/vendor/` URL, so it cannot be imported under Node and anything
-// living inside it cannot be unit-tested.
+// Separate from `pdf-view.mjs` because the banner and the on-page badge must say
+// the same thing about one edit, and one phrase table is how that is guaranteed
+// rather than hoped for. A second reason held when this was written and no
+// longer does: `pdf-view.mjs` imports pdf.js from an absolute `/vendor/` URL and
+// could not be imported under Node. #76's harness resolves that specifier, so
+// the first reason is now the only one.
 //
 // The editor's own `applied.description` is deliberately not used here. It is
 // written for the agent -- "replace the text of p:8f957157e47d" -- and naming an

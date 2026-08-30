@@ -240,11 +240,13 @@ test("every page the plan can mark is a page the viewer would re-check", () => {
 });
 
 test("the viewer derives the trigger instead of restating it", async () => {
-    // A source check because `pdf-view.mjs` imports pdf.js from an absolute
-    // `/vendor/` URL and cannot be loaded under Node. The behaviour above cannot
-    // reach the one line that had the bug, so this asserts the line is gone and
-    // that the shared answer is imported. Without it the fix is one careless
-    // edit from returning, silently and only in a browser.
+    // A source check, kept for what behaviour cannot reach: the one line that
+    // had the bug is a private call inside `#renderPage`, and asserting the line
+    // is gone stops the fix being one careless edit from returning. Its original
+    // justification -- that `pdf-view.mjs` could not be loaded under Node -- no
+    // longer holds; since #76 `pdf-view.test.mjs` executes the re-plan trigger
+    // ("a page painted after the change arrived is still marked"). This check now
+    // guards the *shape* of the fix, and that one does the work.
     const { readFile } = await import("node:fs/promises");
     const { fileURLToPath } = await import("node:url");
     const source = await readFile(

@@ -2,8 +2,10 @@
 //
 // The elements are stubs rather than a DOM: what is being measured is the order
 // of the swap and which element is left visible, and that is a property of the
-// module, not of a browser. `app.js`, which calls it, cannot be imported under
-// Node at all.
+// module, not of a browser. `app.js`, which calls it, is executed by
+// `app.test.mjs` since #76 -- but not this part of it: `showWordMark` is fired
+// at load and deliberately neither awaited nor reported, so the panel cannot
+// observe it and neither can a test driving the panel.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
