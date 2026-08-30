@@ -71,3 +71,113 @@ test("hidden elements are hidden with a declaration that outranks a component's 
     assert.ok(rule, "app.css defines no [hidden] rule, so `hidden` is advisory only");
     assert.match(rule[1], /display\s*:\s*none\s*!important/, "[hidden] must beat a component's own display");
 });
+
+// --- The chrome's naming and its buttons -------------------------------------
+//
+// The header bar names the *document*; the product names itself elsewhere. That
+// split is the whole point of issue #59, and it is spread across three files
+// with nothing but convention holding it together, so pin it here.
+
+/** Pull every `<button>` out of the markup, tag open to tag close. */
+const buttonsIn = (markup) =>
+    [...markup.matchAll(/<button\b([^>]*)>([\s\S]*?)<\/button>/g)].map((m) => ({
+        attrs: m[1],
+        inner: m[2],
+        id: m[1].match(/\bid="([^"]+)"/)?.[1] ?? null,
+        // An accessible name is the visible text once decorative children are
+        // gone, or an explicit aria-label. `<svg>` contributes nothing to the
+        // name -- which is exactly why an icon-only button needs the label.
+        text: m[2].replace(/<svg[\s\S]*?<\/svg>/g, "").replace(/<[^>]*>/g, "").replace(/\s+/g, " ").trim(),
+        ariaLabel: m[1].match(/\baria-label="([^"]+)"/)?.[1] ?? null,
+        title: m[1].match(/\btitle="([^"]+)"/)?.[1] ?? null,
+    }));
+
+test("the product name says the same thing in all three places that carry it", async () => {
+    // `<title>` is the browser/tab name, the picker `<h1>` is the no-document
+    // headline, and `PRODUCT` in app.js rebuilds `document.title` once a
+    // document is open. Three copies of one string: left unpinned, a rename
+    // lands in one or two of them and the product answers to two names.
+    const [script, markup] = await Promise.all([read("app.js"), read("index.html")]);
+
+    const title = markup.match(/<title>([^<]*)<\/title>/)?.[1]?.trim();
+    const h1 = markup.match(/<h1\b[^>]*\bid="productName"[^>]*>([^<]*)<\/h1>/)?.[1]?.trim();
+    const constant = script.match(/const\s+PRODUCT\s*=\s*"([^"]*)"/)?.[1];
+
+    assert.ok(title, "index.html has no <title>");
+    assert.ok(h1, 'index.html has no <h1 id="productName">, so the picker names nothing');
+    assert.ok(constant, "app.js no longer defines PRODUCT, so document.title cannot name the product");
+    assert.equal(h1, title, "the picker headline and <title> disagree about the product's name");
+    assert.equal(constant, title, "app.js PRODUCT and <title> disagree about the product's name");
+});
+
+test("the header bar names the document, not the product", async () => {
+    // The bug this fixes: `docName` preferred the docx metadata `title`, so a
+    // fixture whose properties said "Word Canvas Fixture" made the viewer look
+    // like a product of that name. `doc.name` is the filename.
+    const script = await read("app.js");
+    const assignment = script.match(/el\.docName\.textContent\s*=\s*([^;]+);/)?.[1]?.trim();
+
+    assert.ok(assignment, "app.js never sets docName.textContent");
+    assert.equal(assignment, "doc.name", "the header bar must show the filename, not a metadata title");
+});
+
+test("the Change... button is gone from the markup and from the wiring", async () => {
+    // Removing only the markup leaves `$("changeDoc")` returning null and the
+    // listener attach throwing on load -- which takes the whole UI with it. Both
+    // sides have to go, so ask both files.
+    const [script, markup] = await Promise.all([read("app.js"), read("index.html")]);
+
+    assert.ok(!markup.includes("changeDoc"), "index.html still carries the changeDoc button");
+    assert.ok(!script.includes("changeDoc"), "app.js still references changeDoc, which is now null");
+});
+
+test("every button has an accessible name", async () => {
+    const markup = await read("index.html");
+    const buttons = buttonsIn(markup);
+
+    // A guard against the extraction matching nothing: an empty set would pass
+    // every assertion below while measuring no button at all.
+    assert.ok(buttons.length >= 6, `expected the markup to define buttons, found ${buttons.length}`);
+
+    for (const b of buttons) {
+        const named = b.text || b.ariaLabel;
+        assert.ok(named, `button ${b.id ?? b.attrs.trim()} has no accessible name`);
+        // Icon-only is allowed, but then the label carries the name and the
+        // title carries the same thing for a sighted pointer user.
+        if (!b.text) {
+            assert.ok(b.ariaLabel, `icon-only button ${b.id} needs aria-label`);
+            assert.ok(b.title, `icon-only button ${b.id} needs title`);
+        }
+    }
+});
+
+test("button icons are decorative and stay out of the accessibility tree", async () => {
+    // The icons repeat the label they sit beside. Left exposed, a screen reader
+    // reads the button twice; left focusable, an SVG becomes a tab stop in IE-
+    // derived engines. Both are one attribute each.
+    const markup = await read("index.html");
+    const buttons = buttonsIn(markup);
+    const withIcons = buttons.filter((b) => b.inner.includes("<svg"));
+
+    assert.ok(withIcons.length >= 5, `expected the toolbar and change bar to carry icons, found ${withIcons.length}`);
+
+    for (const b of withIcons) {
+        for (const svg of b.inner.match(/<svg\b[^>]*>/g) ?? []) {
+            assert.match(svg, /aria-hidden="true"/, `the icon in ${b.id} is not aria-hidden`);
+            assert.match(svg, /focusable="false"/, `the icon in ${b.id} is focusable`);
+        }
+    }
+});
+
+test("keyboard focus stays visible", async () => {
+    // The restyle replaced the buttons' backgrounds and borders. A hover-only
+    // affordance would leave a keyboard user with nothing, and `outline: none`
+    // is the classic way that happens by accident while chasing a cleaner look.
+    const css = await read("app.css");
+    const rule = css.match(/:focus-visible\s*\{([^}]*)\}/);
+
+    assert.ok(rule, "app.css defines no :focus-visible rule");
+    assert.match(rule[1], /outline\s*:\s*\d/, ":focus-visible must draw an outline with a width");
+    assert.ok(!/outline\s*:\s*(none|0)\b/.test(rule[1]), ":focus-visible removes the outline");
+});
+

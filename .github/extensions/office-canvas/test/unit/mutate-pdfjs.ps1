@@ -302,6 +302,58 @@ $mutants = @(
        from = '    display: none !important;'
        to   = '    display: none;' }
 
+    # --- the viewer's chrome: naming, the removed button, the icons -----------
+    #
+    # These are the arms of issue #59. Each mutant is a regression someone could
+    # plausibly commit, not a syntactic dent: a rename that lands in one file of
+    # three, the old metadata-title preference restored, the removed button
+    # coming back by either half, an icon-only button that forgot its label, an
+    # icon that leaked into the accessibility tree, and a focus ring chased away
+    # in pursuit of a cleaner look.
+
+    @{ name = 'the product is renamed in one place and not the other two'
+       file = 'src/ui/index.html'
+       from = '<title>Word Document Viewer</title>'
+       to   = '<title>Word Viewer</title>' }
+
+    @{ name = 'the header bar prefers the docx metadata title again'
+       file = 'src/ui/app.js'
+       from = '        el.docName.textContent = doc.name;'
+       to   = '        el.docName.textContent = doc.title || doc.name;' }
+
+    # Both halves of the removal, because they regress independently: the wiring
+    # can come back under markup that no longer has the element (a null reference
+    # at load), and the markup can come back with nothing listening to it.
+    @{ name = 'the script looks up the removed button again'
+       file = 'src/ui/app.js'
+       from = '    reload: $("reload"),'
+       to   = '    reload: $("reload"),
+    changeDoc: $("changeDoc"),' }
+
+    @{ name = 'the removed button returns to the toolbar'
+       file = 'src/ui/index.html'
+       from = '                <button type="button" id="reload" class="btn" title="Re-render from disk">'
+       to   = '                <button type="button" id="changeDoc" class="btn">Change...</button>
+                <button type="button" id="reload" class="btn" title="Re-render from disk">' }
+
+    @{ name = 'a button goes icon-only without gaining a label'
+       file = 'src/ui/index.html'
+       from = '                    Reload
+                </button>'
+       to   = '                </button>' }
+
+    @{ name = 'a decorative icon is exposed to the accessibility tree'
+       file = 'src/ui/index.html'
+       from = '<svg class="icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                        <path d="M13.5 8A5.5 5.5 0 1 1 8 2.5" />'
+       to   = '<svg class="icon" viewBox="0 0 16 16" focusable="false">
+                        <path d="M13.5 8A5.5 5.5 0 1 1 8 2.5" />' }
+
+    @{ name = 'the keyboard focus ring is removed'
+       file = 'src/ui/app.css'
+       from = '    outline: 2px solid var(--color-focus-outline, #0969da);'
+       to   = '    outline: none;' }
+
     # --- which pages get marked -----------------------------------------------
 
     # The defect found in the running viewer: every candidate marked before

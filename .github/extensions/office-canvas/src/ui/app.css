@@ -73,9 +73,31 @@ body {
     text-align: left;
 }
 
+/* Does not shrink while the meta line still has space to give: measured at
+   560px, proportional shrink clipped `report.docx` by a single sub-pixel and
+   the ellipsis fired anyway, turning a short filename into "report.do...".
+   `max-width` is what keeps that safe -- a genuinely long filename is still
+   capped at the bar and ellipsizes, rather than overflowing into the buttons.
+   The 8px is the flex gap, which the meta element occupies even at zero width. */
 .doc-name {
+    flex: 0 0 auto;
+    max-width: calc(100% - 8px);
     font-weight: var(--font-weight-semibold, 600);
     white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* The meta line now carries the docx `title` property, which is free text of
+   unbounded length. Without a shrink rule it would push the action buttons off
+   the bar instead of ellipsizing.
+
+   The weighting is the point, not decoration. The name refuses to shrink, so
+   the meta line is what absorbs a narrow bar; a shrink factor of 100 keeps it
+   yielding ahead of anything else that might later join this row. */
+.doc-meta {
+    flex: 0 100 auto;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
 }
@@ -89,20 +111,50 @@ body {
 
 /* --- buttons ------------------------------------------------------------ */
 
+/* Every button in this UI is one shape: an optional inline-SVG icon, then its
+   label. Icon-and-label rather than icon-only, so the accessible name is the
+   visible text and no button depends on an `aria-label` staying in sync with a
+   glyph. `.btn-quiet` in the change bar differs only in weight, so the toolbar
+   and the change bar read as the same control at two volumes. */
 .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
     font: inherit;
     font-size: var(--text-body-small, 12px);
-    padding: 3px 10px;
+    font-weight: var(--font-weight-medium, 500);
+    padding: 4px 9px;
     border-radius: 6px;
     border: 1px solid var(--border-color-default, #d1d9e0);
-    background: transparent;
+    background: rgba(127, 127, 127, 0.06);
     color: inherit;
     cursor: pointer;
     white-space: nowrap;
+    transition:
+        background-color 0.12s ease,
+        border-color 0.12s ease;
+}
+
+/* Sized in `em` so an icon tracks the label it sits beside. Stroked in
+   `currentColor`, which is what lets one set of paths serve the default
+   button, the accent-coloured quiet button and the filled primary. */
+.icon {
+    flex: 0 0 auto;
+    width: 1.16em;
+    height: 1.16em;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
 }
 
 .btn:hover:not(:disabled) {
     background: var(--bb-11-10, rgba(127, 127, 127, 0.12));
+}
+
+.btn:active:not(:disabled) {
+    background: rgba(127, 127, 127, 0.2);
 }
 
 .btn:disabled {
@@ -110,6 +162,8 @@ body {
     cursor: default;
 }
 
+/* Focus stays a ring the button's own background cannot swallow: drawn outside
+   the border box, and never traded for the hover tint. */
 .btn:focus-visible,
 input:focus-visible {
     outline: 2px solid var(--color-focus-outline, #0969da);
@@ -118,11 +172,28 @@ input:focus-visible {
 
 .btn.primary {
     border-color: var(--true-color-blue, #0969da);
-    color: var(--true-color-blue, #0969da);
+    background: var(--true-color-blue, #0969da);
+    color: #ffffff;
 }
 
+.btn.primary:hover:not(:disabled) {
+    border-color: var(--true-color-blue, #0969da);
+    background: var(--true-color-blue, #0969da);
+    filter: brightness(1.1);
+}
+
+/* The Contents toggle is the one button with a state, and it carries
+   `aria-pressed` to say so; this is that state made visible. */
 .btn.active {
-    background: var(--bb-11-10, rgba(127, 127, 127, 0.16));
+    border-color: var(--fgColor-accent, #0969da);
+    background: var(--true-color-blue-muted, rgba(9, 105, 218, 0.12));
+    color: var(--fgColor-accent, #0969da);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .btn {
+        transition: none;
+    }
 }
 
 /* --- status strip ------------------------------------------------------- */
@@ -172,9 +243,19 @@ input:focus-visible {
     white-space: nowrap;
 }
 
+/* Quiet, not different: same geometry and same icon treatment as `.btn`, with
+   the border and fill dropped so the change bar stays a bar and not a row of
+   chips. It is the product's headline affordance -- it must read as reachable
+   without shouting over the sentence beside it. */
 .btn-quiet {
     border-color: transparent;
+    background: transparent;
     color: var(--fgColor-accent, #0969da);
+}
+
+.btn-quiet:hover:not(:disabled) {
+    border-color: transparent;
+    background: var(--true-color-blue-muted, rgba(9, 105, 218, 0.12));
 }
 
 /* --- layout ------------------------------------------------------------- */
