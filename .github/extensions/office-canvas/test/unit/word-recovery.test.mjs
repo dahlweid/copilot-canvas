@@ -23,6 +23,9 @@
 // the tail of that -- after the quit, while the child is still going away -- the
 // host answers `The Word host has been shut down.` That is the sentence the
 // canvas showed and, once #45 discarded it, the bare `Tool execution failed`.
+// Earlier in the window the failure is a different one: the command is never
+// answered and is rejected on child exit as `The Word host exited (code N,
+// signal S)`. These tests exercise the tail, which is the one #61 reported.
 //
 // For a tool call that is a bad half-minute. What made it *stick* was the panel:
 // `ViewerInstance` kept the reference it was constructed with, and `open` reuses
