@@ -22,10 +22,17 @@
 //
 // What this is NOT. Node's `EventSource` is undici's, not Chromium's. Same
 // specification, different implementation, so this is evidence about the
-// mechanism and not a measurement of the webview. Nothing in this repo reaches
-// the webview: `app.js` cannot be imported under Node -- it resolves pdf.js from
-// an absolute `/vendor/` URL and dies there -- and no browser harness exists.
-// The gap is real and is stated rather than papered over.
+// mechanism and not a measurement of the webview.
+//
+// This paragraph used to go on: "Nothing in this repo reaches the webview:
+// `app.js` cannot be imported under Node -- it resolves pdf.js from an absolute
+// `/vendor/` URL and dies there -- and no browser harness exists." That was true
+// when this probe was written and is not any more. #76 and #85 built
+// `test/unit/ui-harness.mjs`, and `test/unit/connection-lost.test.mjs` now
+// drives the committed `app.js` against the committed markup and asserts the
+// panel's own `#status` element goes to the terminal message. So the untested
+// span has narrowed to Chromium itself: this probe owns the real-`EventSource`
+// end, that test owns the rendering end, and neither claims a webview.
 
 import { ViewerInstance } from "../../../.github/extensions/office-canvas/src/server.mjs";
 import {
