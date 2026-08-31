@@ -35,6 +35,10 @@ const el = {
     emptyState: $("emptyState"),
     engineNote: $("engineNote"),
     toggleSidebar: $("toggleSidebar"),
+    zoomOut: $("zoomOut"),
+    zoomIn: $("zoomIn"),
+    fitWidth: $("fitWidth"),
+    fitHeight: $("fitHeight"),
     reload: $("reload"),
     openInWord: $("openInWord"),
     changeBar: $("changeBar"),
@@ -141,8 +145,7 @@ async function showPdf(page = currentPage, { force = false } = {}) {
     if (!force && loadedPdfUrl === state.pdfUrl) {
         showChange();
         return;
-    }
-    loadedPdfUrl = state.pdfUrl;
+    }    loadedPdfUrl = state.pdfUrl;
     try {
         await view.load(state.pdfUrl);
         showChange();
@@ -150,6 +153,35 @@ async function showPdf(page = currentPage, { force = false } = {}) {
     } catch (err) {
         loadedPdfUrl = null;
         setStatus(`Could not display the document: ${err.message}`, { error: true });
+    }
+    syncZoom();
+}
+
+/**
+ * Makes the zoom cluster say what the view is actually doing (#106).
+ *
+ * Called after every load and after every press, including the presses that do
+ * nothing: `PdfView` clamps, so zooming in at 4x leaves the scale where it was,
+ * and a button that stayed enabled would be a control that answers a press with
+ * silence. It also runs on the presses that *change mode*, because pressing
+ * zoom ends a fit -- the fit is only true while nothing else has moved it.
+ *
+ * A resize can change the scale too, but not the mode: a fit that refits is
+ * still that fit, and the clamp bounds only matter to the zoom buttons, which a
+ * fit does not press. So this does not need to run from a resize.
+ */
+function syncZoom() {
+    const loaded = view.pageCount > 0;
+    el.zoomOut.disabled = !loaded || !view.canZoomOut;
+    el.zoomIn.disabled = !loaded || !view.canZoomIn;
+    for (const [mode, button] of [
+        ["width", el.fitWidth],
+        ["height", el.fitHeight],
+    ]) {
+        const on = loaded && view.fitMode === mode;
+        button.disabled = !loaded;
+        button.classList.toggle("active", on);
+        button.setAttribute("aria-pressed", String(on));
     }
 }
 
@@ -389,6 +421,26 @@ el.toggleSidebar.addEventListener("click", () => {
         loadOutline();
         el.searchInput.focus();
     }
+});
+
+el.zoomOut.addEventListener("click", () => {
+    view.zoomOut();
+    syncZoom();
+});
+
+el.zoomIn.addEventListener("click", () => {
+    view.zoomIn();
+    syncZoom();
+});
+
+el.fitWidth.addEventListener("click", () => {
+    view.fitWidth();
+    syncZoom();
+});
+
+el.fitHeight.addEventListener("click", () => {
+    view.fitHeight();
+    syncZoom();
 });
 
 el.copyPath.addEventListener("click", async () => {

@@ -137,6 +137,50 @@ class StubIntersectionObserver {
     enter(...elements) {
         this.callback(elements.map((target) => ({ target, isIntersecting: true })));
     }
+
+    /** Reports them as having left, which is what a scroll the other way does. */
+    leave(...elements) {
+        this.callback(elements.map((target) => ({ target, isIntersecting: false })));
+    }
+}
+
+/**
+ * The panel-resize watcher (#106).
+ *
+ * `fire()` is the whole point: a fit is only a fit if it recomputes when the
+ * panel changes size, and there is no way to assert that without something that
+ * can deliver the resize. It records `options` too, because observing the
+ * content box rather than the border box is a live oscillation risk -- a fit
+ * that shrinks the pages because a scrollbar appeared can remove the scrollbar.
+ */
+class StubResizeObserver {
+    static instances = [];
+
+    constructor(callback) {
+        this.callback = callback;
+        this.targets = [];
+        this.options = null;
+        this.disconnected = 0;
+        StubResizeObserver.instances.push(this);
+    }
+
+    observe(target, options) {
+        this.targets.push(target);
+        this.options = options;
+    }
+
+    unobserve(target) {
+        this.targets = this.targets.filter((element) => element !== target);
+    }
+
+    disconnect() {
+        this.disconnected += 1;
+    }
+
+    /** Delivers a resize, as dragging the panel edge would. */
+    fire() {
+        this.callback(this.targets.map((target) => ({ target })), this);
+    }
 }
 
 const RESPONSE = Symbol("stub response");
@@ -195,6 +239,7 @@ export async function loadApp({ state = null, routes = {}, pdfDocuments = {}, cl
 
     StubEventSource.instances.length = 0;
     StubIntersectionObserver.instances.length = 0;
+    StubResizeObserver.instances.length = 0;
 
     const navigatorStub = {};
     if (!clipboard.absent) {
@@ -212,6 +257,7 @@ export async function loadApp({ state = null, routes = {}, pdfDocuments = {}, cl
         navigator: navigatorStub,
         EventSource: StubEventSource,
         IntersectionObserver: StubIntersectionObserver,
+        ResizeObserver: StubResizeObserver,
     });
 
     const pdfjs = await import(stubPdfjsUrl);
@@ -240,6 +286,9 @@ export async function loadApp({ state = null, routes = {}, pdfDocuments = {}, cl
         get observers() {
             return StubIntersectionObserver.instances;
         },
+        get resizeObservers() {
+            return StubResizeObserver.instances;
+        },
         settle,
         restore,
     };
@@ -254,8 +303,13 @@ export async function loadApp({ state = null, routes = {}, pdfDocuments = {}, cl
 export async function loadPdfView() {
     const { document } = createDocument([]);
     StubIntersectionObserver.instances.length = 0;
+    StubResizeObserver.instances.length = 0;
 
-    const restore = installGlobals({ document, IntersectionObserver: StubIntersectionObserver });
+    const restore = installGlobals({
+        document,
+        IntersectionObserver: StubIntersectionObserver,
+        ResizeObserver: StubResizeObserver,
+    });
     const pdfjs = await import(stubPdfjsUrl);
     pdfjs.reset();
     const { PdfView } = await import(new URL("../../src/ui/pdf-view.mjs", import.meta.url).href);
@@ -265,8 +319,13 @@ export async function loadPdfView() {
         document,
         pdfjs,
         container: new StubElement("div"),
+        /** So a test can build the `.viewer` the fits measure against. */
+        StubElement,
         get observers() {
             return StubIntersectionObserver.instances;
+        },
+        get resizeObservers() {
+            return StubResizeObserver.instances;
         },
         settle,
         restore,

@@ -93,6 +93,14 @@ body {
     padding-inline: 6px;
 }
 
+/* The zoom cluster (#106). Four icon-only buttons that do one job between them,
+   spaced tighter than `.bar-actions`' own gap so they read as one control
+   rather than as four more buttons in the row. */
+.zoom-group {
+    display: flex;
+    gap: 2px;
+}
+
 .btn.icon-only .icon {
     margin: 0;
 }
@@ -387,7 +395,10 @@ input[type="text"] {
     flex: 1 1 auto;
     min-width: 0;
     display: none;
-    overflow-y: auto;
+    /* Both axes, not just y (#106). A page zoomed past the panel is wider than
+       this box, and with `overflow-x: visible` the excess simply spills with no
+       way to reach it. */
+    overflow: auto;
     background: var(--bb-11-10, #f6f8fa);
 }
 
@@ -395,10 +406,23 @@ input[type="text"] {
     display: block;
 }
 
+/* `align-items: center` centres each page, and a centred flex item wider than
+   its line overflows *both* ends -- but only the end-edge overflow is
+   scrollable, so the left edge of a zoomed page was unreachable. Measured in
+   spikes/viewer-zoom: at scale 2.178 in a 885px viewer the page's left edge sat
+   at -223.5px with scrollLeft already at its floor of 0, and scrollWidth
+   reported 1109 for a 1332px page.
+
+   `min-width: max-content` makes this box at least as wide as its widest child,
+   so a wide page grows the scrollable area instead of overflowing it, and the
+   centring only does anything while the page still fits. Chosen over
+   `align-items: safe center`, which fixes the same thing but only where the
+   `safe` keyword is supported. */
 .pages {
     display: flex;
     flex-direction: column;
     align-items: center;
+    min-width: max-content;
     gap: 16px;
     padding: 16px;
 }

@@ -104,6 +104,8 @@ export class StubElement {
         this.style = new StubStyle();
         this.attributes = new Map();
         this.listeners = new Map();
+        /** Set by `append`, so `closest` has a chain to walk. */
+        this.parentElement = null;
         /** What `getBoundingClientRect` answers. Tests set it when it matters. */
         this.rect = { top: 0, left: 0, width: 0, height: 0 };
         this.scrolledIntoView = 0;
@@ -142,7 +144,9 @@ export class StubElement {
 
     append(...nodes) {
         for (const node of nodes) {
-            this.children.push(typeof node === "string" ? new StubText(node) : node);
+            const child = typeof node === "string" ? new StubText(node) : node;
+            if (child instanceof StubElement) child.parentElement = this;
+            this.children.push(child);
         }
     }
 
@@ -196,8 +200,24 @@ export class StubElement {
         return { defaultPrevented };
     }
 
-    /** Always null: nothing here has a parent, so no ancestor can be found. */
-    closest() {
+    /**
+     * Walks up the `append` chain for a `.class`, `#id` or tag selector.
+     *
+     * Returned null unconditionally until #106, which was fine while nothing
+     * asked -- but the viewer's fit modes measure `container.closest(".viewer")`,
+     * and a `closest` that cannot find anything would have made every fit fall
+     * back to its no-ancestor branch and asserted nothing about the branch that
+     * actually runs in the panel.
+     */
+    closest(selector) {
+        const matches = (element) => {
+            if (selector.startsWith(".")) return element.classList.contains(selector.slice(1));
+            if (selector.startsWith("#")) return element.id === selector.slice(1);
+            return element.tagName === selector.toUpperCase();
+        };
+        for (let node = this; node; node = node.parentElement) {
+            if (matches(node)) return node;
+        }
         return null;
     }
 

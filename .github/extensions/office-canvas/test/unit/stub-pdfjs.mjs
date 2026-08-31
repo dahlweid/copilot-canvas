@@ -128,6 +128,8 @@ function makePage(number, items, spec) {
     return {
         pageNumber: number,
         renders: 0,
+        renderCancels: 0,
+        renderScales: [],
         cleanups: 0,
         getViewport({ scale }) {
             return {
@@ -142,7 +144,19 @@ function makePage(number, items, spec) {
         render(options) {
             this.renders += 1;
             this.lastRender = options;
-            return { promise: Promise.resolve(), cancel() {} };
+            // The scale each paint was given, in order. A canvas holds a bitmap
+            // rasterised at one scale, so "did the page repaint at the new
+            // scale" is not answerable from a count -- #106's first trap is a
+            // re-scale that resizes the boxes and leaves the bitmaps alone,
+            // which a count cannot tell from a correct one.
+            this.renderScales.push(options.viewport.scale);
+            const task = {
+                promise: Promise.resolve(),
+                cancel: () => {
+                    this.renderCancels += 1;
+                },
+            };
+            return task;
         },
         async getTextContent() {
             return { items };

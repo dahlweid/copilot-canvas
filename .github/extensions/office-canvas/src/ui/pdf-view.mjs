@@ -18,6 +18,18 @@
 // document is one PDF fetched once: measured, pdf.js issues a single unranged
 // GET and zero Range requests, and forcing ranged mode cost 14 round trips to
 // save nothing on files this size.
+//
+// ## Scale, and what a *fit* is (#106)
+//
+// The scale is one number for the whole document, and it is either a standing
+// fit -- recomputed whenever the panel changes size -- or a scale the reader
+// picked with a zoom button. `#fitMode` is what tells those apart; without it a
+// resize would either discard the reader's zoom or leave a fit fitted to a panel
+// width that no longer exists.
+//
+// A re-scale is not a resize of the boxes. Every page is reset and repainted,
+// because a canvas holds a bitmap rasterised at one scale and stretching it is
+// exactly the soft text this viewer exists not to have.
 
 import * as pdfjs from "/vendor/pdf.min.mjs";
 import { candidatePages, planChangeMarks } from "./change-plan.mjs";
@@ -28,17 +40,61 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/vendor/pdf.worker.min.mjs";
 /** How far outside the viewport a page is painted, as a fraction of its height. */
 const RENDER_AHEAD = "150% 0px";
 
+/** The zoom range, and the factor one press of a zoom button moves by. */
+const MIN_SCALE = 0.2;
+const MAX_SCALE = 4;
+const ZOOM_STEP = 1.25;
+
+/**
+ * `.pages`'s own padding, on both axes, which a fit has to leave room for.
+ *
+ * Named because both fits now read it and the number belongs to `app.css`. A fit
+ * that ignored it would size the page to the box it sits in rather than to the
+ * space inside that box, and fit-width would produce a horizontal scrollbar --
+ * which is the one thing fit-width is for not having.
+ */
+const PAGE_GUTTER = 32;
+
+const clampScale = (value) => Math.max(MIN_SCALE, Math.min(MAX_SCALE, value));
+
 export class PdfView {
     #container;
     #doc = null;
     #pages = [];
     #observer = null;
+    /**
+     * Watches the panel so a fit stays fitted.
+     *
+     * This field was declared and never assigned until #106. A fit computed once
+     * at load is "fit to whatever the width was when the document opened", which
+     * is not what the word means the moment the panel is dragged.
+     */
     #scaleObserver = null;
     #onPageChange;
     #scale = 1;
+    /**
+     * Which fit the reader is in, or `null` once they have zoomed by hand.
+     *
+     * A fit is a *standing* instruction -- recompute on every resize -- and an
+     * explicit zoom is a one-off. Holding only the number could not tell the two
+     * apart, so a resize would either always refit (discarding a zoom) or never
+     * refit (leaving a fit stale).
+     */
+    #fitMode = "width";
     #change = null;
     /** Bumped on every load so a render that outlives its document can bail. */
     #generation = 0;
+    /**
+     * Bumped whenever what a paint would produce changes -- a load *or* a
+     * re-scale.
+     *
+     * `#generation` cannot serve here: a re-scale must not make an in-flight
+     * `load()` destroy its own document, which is what bumping that field means.
+     * And a paint that survived a re-scale is just as wrong as one that survived
+     * a document: it draws the old scale's bitmap into the new scale's box, and
+     * builds a text layer on a viewport nothing else is using any more.
+     */
+    #epoch = 0;
 
     constructor(container, { onPageChange = () => {} } = {}) {
         this.#container = container;
@@ -47,6 +103,23 @@ export class PdfView {
 
     get pageCount() {
         return this.#doc?.numPages ?? 0;
+    }
+
+    get scale() {
+        return this.#scale;
+    }
+
+    /** `"width"`, `"height"`, or `null` when the reader has zoomed by hand. */
+    get fitMode() {
+        return this.#fitMode;
+    }
+
+    get canZoomIn() {
+        return this.#scale < MAX_SCALE;
+    }
+
+    get canZoomOut() {
+        return this.#scale > MIN_SCALE;
     }
 
     /**
@@ -58,6 +131,7 @@ export class PdfView {
      */
     async load(url) {
         const generation = ++this.#generation;
+        this.#epoch++;
         await this.#teardown();
 
         const task = pdfjs.getDocument({ url });
@@ -68,7 +142,10 @@ export class PdfView {
         }
         this.#doc = doc;
 
-        this.#scale = this.#fitWidthScale(await doc.getPage(1));
+        // A document opens fitted to the width of the panel it opens in, and
+        // stays fitted until the reader says otherwise.
+        this.#fitMode = "width";
+        this.#scale = this.#fitScaleFor(await doc.getPage(1), "width") ?? 1;
         this.#container.style.setProperty("--total-scale-factor", String(this.#scale));
 
         for (let number = 1; number <= doc.numPages; number++) {
@@ -90,6 +167,37 @@ export class PdfView {
     }
 
     /**
+     * Draws the document at `value`, clamped, and leaves whatever fit was on.
+     *
+     * The clamp is the same 0.2--4 the fit has always applied, so a zoom cannot
+     * reach a scale a fit could not.
+     */
+    setScale(value) {
+        this.#fitMode = null;
+        this.#rescale(value);
+    }
+
+    zoomIn() {
+        this.setScale(this.#scale * ZOOM_STEP);
+    }
+
+    zoomOut() {
+        this.setScale(this.#scale / ZOOM_STEP);
+    }
+
+    /** Fits the page width to the panel, and keeps it fitted as the panel moves. */
+    fitWidth() {
+        this.#fitMode = "width";
+        this.#refit();
+    }
+
+    /** Fits a whole page into the panel's height, and keeps it fitted. */
+    fitHeight() {
+        this.#fitMode = "height";
+        this.#refit();
+    }
+
+    /**
      * Shows -- or clears -- the marker for what the last operation changed.
      *
      * Accepts a record, never an address. An address is a coordinate into one
@@ -104,6 +212,7 @@ export class PdfView {
 
     async destroy() {
         this.#generation++;
+        this.#epoch++;
         await this.#teardown();
     }
 
@@ -112,6 +221,8 @@ export class PdfView {
     async #teardown() {
         this.#observer?.disconnect();
         this.#observer = null;
+        this.#scaleObserver?.disconnect();
+        this.#scaleObserver = null;
         for (const page of this.#pages) {
             page.renderTask?.cancel();
             page.textLayer?.cancel();
@@ -124,11 +235,100 @@ export class PdfView {
         if (doc) await doc.destroy().catch(() => {});
     }
 
-    #fitWidthScale(page) {
-        const unscaled = page.getViewport({ scale: 1 });
-        const available = this.#container.clientWidth - 32;
-        if (!(available > 0)) return 1;
-        return Math.max(0.2, Math.min(4, available / unscaled.width));
+    /**
+     * The scrolling box the pages sit in, or `null` when there is none.
+     *
+     * `.pages` is the container this view writes into; `.viewer` is what the
+     * reader actually sees through, and it is the box a fit must be fitted to.
+     * Measuring the container instead would make fit-width self-referential --
+     * `.pages` is as wide as its widest page once a page overflows, so a
+     * fit-width taken from it would fit the pages to themselves.
+     */
+    #viewport() {
+        return this.#container.closest(".viewer");
+    }
+
+    /**
+     * The scale that fits `proxy` to the panel, or `null` when it cannot be
+     * measured.
+     *
+     * `null` rather than 1: a panel reporting no size is a panel that has not
+     * been laid out yet -- hidden, or mid-open -- and snapping a reader's zoom
+     * to 1 because of it would be a visible jump with no cause. `load()` has
+     * nothing to keep, so it reads `null` as 1; a later fit reads it as "leave
+     * this alone".
+     */
+    #fitScaleFor(proxy, mode) {
+        const unscaled = proxy.getViewport({ scale: 1 });
+        const box = this.#viewport() ?? this.#container;
+        const available = (mode === "height" ? box.clientHeight : box.clientWidth) - PAGE_GUTTER;
+        if (!(available > 0)) return null;
+        return clampScale(available / (mode === "height" ? unscaled.height : unscaled.width));
+    }
+
+    /** Recomputes the standing fit, if there is one, against the panel as it is now. */
+    #refit() {
+        if (!this.#doc || !this.#fitMode) return;
+        const proxy = this.#pages[0]?.proxy;
+        if (!proxy) return;
+        const scale = this.#fitScaleFor(proxy, this.#fitMode);
+        if (scale !== null) this.#rescale(scale);
+    }
+
+    /**
+     * Redraws the whole document at a new scale.
+     *
+     * Every page is *reset*, not merely resized. `#renderPage` early-returns on
+     * `page.rendered`, so resizing the boxes alone leaves each bitmap at the
+     * scale it was painted at -- which looks right on a fresh load and wrong the
+     * moment the reader zooms a second time.
+     *
+     * The repaint is driven from here rather than left to the
+     * `IntersectionObserver`, because that observer reports a *change* of
+     * intersection. A page that was on screen before the re-scale and is still
+     * on screen after it has not changed, so no entry is delivered and nothing
+     * would repaint it. `page.visible` is what the observer last said, and it is
+     * the only record of that.
+     */
+    #rescale(value) {
+        const scale = clampScale(value);
+        if (!Number.isFinite(scale) || scale === this.#scale || this.#pages.length === 0) return;
+
+        // The page under the top of the viewport, which is where the reader is
+        // reading. Taken before the boxes move, restored after.
+        const anchor = this.#visiblePage();
+
+        this.#scale = scale;
+        this.#epoch++;
+        // Non-negotiable. pdf.js's own text-layer stylesheet sizes every span
+        // with `round(down, var(--total-scale-factor) * Npx, ...)`; with the
+        // property missing the declaration is invalid and the layer collapses,
+        // taking text selection and the change overlay with it.
+        this.#container.style.setProperty("--total-scale-factor", String(scale));
+
+        for (const page of this.#pages) {
+            this.#resetPage(page);
+            this.#sizeToScale(page);
+        }
+
+        this.#applyChange();
+        this.goToPage(anchor);
+        for (const page of this.#pages) {
+            if (page.visible) this.#renderPage(page).catch(() => {});
+        }
+    }
+
+    /** Returns a painted page to an empty box, cancelling whatever is in flight. */
+    #resetPage(page) {
+        page.renderTask?.cancel();
+        page.renderTask = null;
+        page.textLayer?.cancel();
+        page.textLayer = null;
+        page.textLayerDiv.replaceChildren();
+        page.rendered = false;
+        // `page.items` is kept on purpose: the extracted text is the same text
+        // at any scale, and the overlay needs it to re-place its boxes before
+        // the page has finished repainting.
     }
 
     #createPagePlaceholder(number) {
@@ -147,14 +347,29 @@ export class PdfView {
         overlay.hidden = true;
 
         root.append(canvas, textLayerDiv, overlay);
-        return { number, root, canvas, textLayerDiv, overlay, proxy: null, rendered: false };
+        return {
+            number,
+            root,
+            canvas,
+            textLayerDiv,
+            overlay,
+            proxy: null,
+            rendered: false,
+            /** What the `IntersectionObserver` last said about this page. */
+            visible: false,
+        };
     }
 
     /** Sizes the placeholder without painting it. */
     async #measure(page) {
         const proxy = await this.#doc.getPage(page.number);
         page.proxy = proxy;
-        const viewport = proxy.getViewport({ scale: this.#scale });
+        this.#sizeToScale(page);
+    }
+
+    /** The half of `#measure` a re-scale can do without fetching anything. */
+    #sizeToScale(page) {
+        const viewport = page.proxy.getViewport({ scale: this.#scale });
         page.viewport = viewport;
         page.root.style.width = `${Math.floor(viewport.width)}px`;
         page.root.style.height = `${Math.floor(viewport.height)}px`;
@@ -166,28 +381,42 @@ export class PdfView {
                 for (const entry of entries) {
                     const page = this.#pages[Number(entry.target.dataset.page) - 1];
                     if (!page) continue;
+                    page.visible = entry.isIntersecting;
                     if (entry.isIntersecting) this.#renderPage(page).catch(() => {});
                 }
                 this.#reportVisiblePage();
             },
-            { root: this.#container.closest(".viewer") ?? null, rootMargin: RENDER_AHEAD },
+            { root: this.#viewport(), rootMargin: RENDER_AHEAD },
         );
         for (const page of this.#pages) this.#observer.observe(page.root);
+
+        // What makes a fit a fit. Observed on the **border** box: the content
+        // box shrinks when a scrollbar appears, and a fit that shrank the pages
+        // because a scrollbar appeared could remove the scrollbar, grow them
+        // back, and oscillate. The border box does not move when a scrollbar
+        // does, so the loop has no way to start.
+        this.#scaleObserver = new ResizeObserver(() => this.#refit());
+        this.#scaleObserver.observe(this.#viewport() ?? this.#container, { box: "border-box" });
     }
 
     #reportVisiblePage() {
+        this.#onPageChange(this.#visiblePage());
+    }
+
+    /** The last page whose top has passed the top of the viewport, within 8px. */
+    #visiblePage() {
         const viewerTop = this.#container.getBoundingClientRect().top;
         let best = 1;
         for (const page of this.#pages) {
             if (page.root.getBoundingClientRect().top - viewerTop <= 8) best = page.number;
         }
-        this.#onPageChange(best);
+        return best;
     }
 
     async #renderPage(page) {
         if (page.rendered || !page.proxy) return;
         page.rendered = true;
-        const generation = this.#generation;
+        const epoch = this.#epoch;
 
         // Paint at device resolution. Without this the canvas is upscaled by the
         // browser and the text is visibly soft, which on a page-accurate viewer
@@ -200,29 +429,40 @@ export class PdfView {
         page.canvas.style.height = `${Math.floor(viewport.height)}px`;
 
         const context = page.canvas.getContext("2d", { alpha: false });
-        page.renderTask = page.proxy.render({
+        // Held locally as well as on the page. A re-scale that lands mid-paint
+        // replaces `page.renderTask`, and awaiting the field rather than the
+        // task would then await the *replacement* -- so this paint would carry
+        // on believing it had finished its own.
+        const renderTask = page.proxy.render({
             canvasContext: context,
             viewport,
             transform: ratio === 1 ? null : [ratio, 0, 0, ratio, 0, 0],
         });
+        page.renderTask = renderTask;
         try {
-            await page.renderTask.promise;
+            await renderTask.promise;
         } catch (err) {
             if (err?.name !== "RenderingCancelledException") throw err;
             return;
         }
-        if (generation !== this.#generation) return;
+        if (epoch !== this.#epoch) return;
 
         const textContent = await page.proxy.getTextContent();
-        if (generation !== this.#generation) return;
+        if (epoch !== this.#epoch) return;
         page.items = textContent.items;
 
-        page.textLayer = new pdfjs.TextLayer({
+        // Cleared here as well as in `#resetPage`: a cancelled text layer can
+        // have appended spans before it stopped, and they would otherwise sit
+        // under the new ones at the old scale.
+        page.textLayerDiv.replaceChildren();
+        const textLayer = new pdfjs.TextLayer({
             textContentSource: textContent,
             container: page.textLayerDiv,
             viewport,
         });
-        await page.textLayer.render();
+        page.textLayer = textLayer;
+        await textLayer.render();
+        if (epoch !== this.#epoch) return;
 
         // A page can be painted after the record arrived -- lazily, that is the
         // normal case for a change below the fold. Ask the planner which pages
