@@ -32,6 +32,7 @@ import { promisify } from "node:util";
 import { RenderCache } from "../../src/render-cache.mjs";
 import { WordHost } from "../../src/word/word-host.mjs";
 import { assertNoLeakedWord, ownedWordLedger, wordPids } from "./word-pids.mjs";
+import { acquireWordSuiteLock } from "./word-suite-lock.mjs";
 
 const execFileAsync = promisify(execFile);
 const results = [];
@@ -198,6 +199,10 @@ const spec = {
 
 const workRoot = await mkdtemp(path.join(tmpdir(), "word-create-test-"));
 const docs = path.join(workRoot, "docs");
+// Before the census, never after: every pid assertion below diffs against it,
+// and a neighbour's Word starting in between lands inside the window. See
+// word-suite-lock.mjs. Released when this process exits.
+await acquireWordSuiteLock("create-smoke");
 const pidsBefore = await wordPids();
 
 const cache = new RenderCache({

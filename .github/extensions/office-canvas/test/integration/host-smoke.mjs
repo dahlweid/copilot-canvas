@@ -15,6 +15,7 @@ import assert from "node:assert/strict";
 import { WordHost } from "../../src/word/word-host.mjs";
 import { codepoints } from "./docx-zip.mjs";
 import { assertNoLeakedWord, killOwnedWord, ownedWordLedger, wordPids } from "./word-pids.mjs";
+import { acquireWordSuiteLock } from "./word-suite-lock.mjs";
 
 const execFileAsync = promisify(execFile);
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -35,6 +36,10 @@ function check(name, fn) {
 
 const workRoot = await mkdtemp(path.join(tmpdir(), "word-canvas-test-"));
 const fixture = path.join(workRoot, "fixture.docx");
+// Before the census, never after: every pid assertion below diffs against it,
+// and a neighbour's Word starting in between lands inside the window. See
+// word-suite-lock.mjs. Released when this process exits.
+await acquireWordSuiteLock("host-smoke");
 const pidsBefore = await wordPids();
 
 process.stderr.write("generating fixture...\n");

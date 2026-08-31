@@ -1346,12 +1346,49 @@ measurements, that Word's shutdown contends on per-user state, and that one run
 had a Word survive a **30 s** poll and exit on its own. 90 s is generous — free
 on green runs, so there is no reason to shave it — not proven sufficient. The
 distinction is load-bearing: the assertion is not immune to other sessions, so
-a residual false red is possible — that is #37 — and anyone shortening that
+a residual false red is possible — that was #37 — and anyone shortening that
 deadline or widening the capture window on the strength of "background churn
 cannot enter it" would be acting on a mechanism that does not exist. The
 property that matters holds either way, and it is the one the census lacked:
 **it can go red for a real leak**, because a Word we minted and dropped is
 still alive at 90 s.
+
+#37 then measured how much of that residual red the deadline is actually
+absorbing, and the answer reallocates the blame. Eighteen runs of `read-smoke`
+on the pre-lock tree, against a neighbour process looping `make-fixture.ps1`
+(a real `Word.Application` … `Quit()`, which is what a sibling suite does),
+went green **1 time in 18** (`probe-suite-contention.mjs`). All 17 reds failed
+`read-smoke:157` — *"a missing file is reported without starting Word"* — and
+exactly **one** of those 17 *also* failed `assertNoLeakedWord`. So the poll
+above is doing its job; what had nothing was the bare `newWordPids` census two
+lines away. Read that as a rule rather than a statistic: `assertNoLeakedWord`
+asserts a **state at a deadline**, which a poll can wait out, while
+`read-smoke:157` asserts an **absence over an interval**, for which there is no
+later moment at which "no Word appeared" becomes true. A deadline cannot rescue
+the second kind, and adding one there would only make the check take longer to
+be wrong.
+
+The fix is therefore not a better deadline but exclusion:
+`test/integration/word-suite-lock.mjs` is a machine-wide lock every Word suite
+takes **before** its `wordPids()` census — before, or a neighbour's Word slips
+between the lock and the sample and lands in the window anyway. Same eighteen
+runs with it in place, against a lock-aware neighbour: **18/18**. Two limits
+are worth carrying forward. It serialises only *lock-aware* runs, so a probe, a
+branch predating the file, the user's own Word and the external producer #34
+found are all still inside the window; and a lock timeout deliberately warns
+and proceeds **unlocked** rather than failing, because converting "a neighbour
+was busy" into a red suite would rebuild the disease it was written to cure.
+The pid check itself is untouched and still falsifiable: with the lock held, a
+Word that starts is still reported (`probe-suite-lock.mjs`).
+
+Both arms ran on a machine with **uncontrolled sibling load** — other sessions
+were running unit suites and validators throughout, confirmed by census during
+the after arm. That is why the contention is *manipulated* rather than
+observed: the neighbour is the independent variable and ambient churn sits on
+top of it, which is also why 1/18 is harsher than the 17/18 originally
+reported and is not a re-measurement of it. Note which way the uncontrolled
+variable pushes: sibling Words were outside the lock, so they could only have
+made the after arm *worse*, never better.
 
 **An API that answers "was your instruction accepted" is not answering "is the
 world now in that state".** Third instance in this repo, each in different

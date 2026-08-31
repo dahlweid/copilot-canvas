@@ -42,6 +42,7 @@ import { ViewerInstance } from "../../src/server.mjs";
 import { locateText, normalizeText } from "../../src/ui/locate-text.mjs";
 import { planChangeMarks } from "../../src/ui/change-plan.mjs";
 import { assertNoLeakedWord, newWordPids, wordPids } from "./word-pids.mjs";
+import { acquireWordSuiteLock } from "./word-suite-lock.mjs";
 
 const execFileAsync = promisify(execFile);
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -81,6 +82,10 @@ const makeFixture = (out, chapters) =>
 
 const workRoot = await mkdtemp(path.join(tmpdir(), "word-pdfjs-test-"));
 const fixture = path.join(workRoot, "report.docx");
+// Before the census, never after: every pid assertion below diffs against it,
+// and a neighbour's Word starting in between lands inside the window. See
+// word-suite-lock.mjs. Released when this process exits.
+await acquireWordSuiteLock("pdfjs-smoke");
 const pidsBefore = await wordPids();
 
 process.stderr.write("generating fixture...\n");

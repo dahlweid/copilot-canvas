@@ -33,6 +33,7 @@ import { fileRevisionToken, tokensMatch } from "../../src/revision-token.mjs";
 import { toolFailure } from "../../src/tool-error.mjs";
 import { codepoints, documentPlainText, documentXml } from "./docx-zip.mjs";
 import { assertNoLeakedWord, ownedWordLedger, wordPids } from "./word-pids.mjs";
+import { acquireWordSuiteLock } from "./word-suite-lock.mjs";
 
 const execFileAsync = promisify(execFile);
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -171,6 +172,10 @@ async function holdFile(target, share) {
 const workRoot = await mkdtemp(path.join(tmpdir(), "word-edit-test-"));
 const docs = path.join(workRoot, "docs");
 const fixture = path.join(docs, "editable.docx");
+// Before the census, never after: every pid assertion below diffs against it,
+// and a neighbour's Word starting in between lands inside the window. See
+// word-suite-lock.mjs. Released when this process exits.
+await acquireWordSuiteLock("edit-smoke");
 const pidsBefore = await wordPids();
 
 process.stderr.write("generating fixture...\n");
