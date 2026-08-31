@@ -39,7 +39,8 @@ $ctx = $null
 try {
     Rep "POWERPNT pids before" ($(if (Get-PptPids) { (Get-PptPids) -join ',' } else { '(none)' }))
     # --- C1: cold start of a fresh instance ----------------------------------
-    # Word's first export in a fresh process cost 4547 ms of one-off engine load.
+    # The prior Word figure is omitted: it included process activation and is
+    # not a reproducible operation cost.
     # Measure the equivalent: process creation through first PDF on disk.
     $coldSw = [Diagnostics.Stopwatch]::StartNew()
     $ctx = New-OwnedPowerPoint
