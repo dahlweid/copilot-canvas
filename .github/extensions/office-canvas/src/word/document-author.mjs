@@ -33,11 +33,14 @@
 //
 // Autocorrect
 // -----------
-// Autocorrect is a correctness problem rather than a cosmetic one, because it
-// rewrites inserted text and reports nothing. The suppression itself lives in the
-// host, on the Word instance (`Suppress-AutoCorrect`); what lives here is that
-// its outcome is *reported* rather than assumed, so a caller — including a test —
-// can assert it through the tool boundary instead of trusting a comment.
+// Autocorrect is NOT suppressed, and this module no longer reports on it. It
+// once did: the host disabled five settings around authoring, and the outcome
+// crossed the tool boundary as a result field so a test could assert it. Both
+// are gone. The settings persist for the user rather than being per-process,
+// and they were measured not to affect any insertion path this code uses — see
+// the block above `Initialize-Word` in `word-host.ps1`. What replaces the
+// reported field is a bait assertion in `test/integration/create-smoke.mjs`,
+// which checks the text itself rather than a claim about a setting.
 
 import { stat } from "node:fs/promises";
 import path from "node:path";
@@ -105,39 +108,6 @@ export const CREATABLE = new Set([".docx"]);
 
 /** The creatable extensions as prose, for tool descriptions and messages. */
 export const creatableList = () => [...CREATABLE].join(", ");
-
-/**
- * The single place that decides which autocorrect fields cross into a tool
- * result.
- *
- * This shape was previously written out as an object literal at each of its
- * three call sites, listing `suppressed` and `reason`. When the host grew
- * `restored` -- the field that carries the user-safety claim, since these
- * settings persist for the user and a disable we fail to undo is permanent --
- * every site kept forwarding the old two and dropped it. The value arrived at
- * this boundary and stopped, and the host-side result was correct throughout.
- *
- * That is the same failure as the tool boundary rendering only `code`, `message`
- * and `data`: a field set below a boundary that nothing above it can observe.
- * It was caught because create-smoke asserts on the tool result rather than on
- * the host response -- an assertion one layer lower would have passed while no
- * caller could see the field.
- *
- * So the list lives here once and the call sites derive from it. Adding a field
- * to the host and forgetting a site is no longer possible.
- */
-function reportedAutoCorrect(result) {
-    const ac = result?.autoCorrect ?? {};
-    return {
-        suppressed: Boolean(ac.suppressed),
-        reason: ac.reason ?? null,
-        restored: Boolean(ac.restored),
-        restoreReason: ac.restoreReason ?? null,
-        settings: ac.settings ?? null,
-        restoreSettings: ac.restoreSettings ?? null,
-        prior: ac.prior ?? null,
-    };
-}
 
 /**
  * Maps the host's structured status onto typed errors.
@@ -326,11 +296,6 @@ export class DocumentAuthor {
                 {
                     created: null,
                     cause,
-                    // Rides along for the same reason it does on
-                    // `document_unreadable`: a document may have been
-                    // authored on this path, so the question the tool
-                    // description tells callers to ask still has a subject.
-                    autoCorrect: reportedAutoCorrect(result),
                 },
             );
         }
@@ -353,18 +318,9 @@ export class DocumentAuthor {
                 `${path.basename(docPath)} was created and saved, but reading it back afterwards failed ` +
                     `(${err.message}). Do not repeat the call — the file exists. Read it with read_document to get ` +
                     `its addresses.`,
-                // `autoCorrect` rides along here and nowhere else among the
-                // failures, because this is the only one where a document was
-                // actually authored. The tool description tells callers to check
-                // that field to learn whether text was written verbatim; on this
-                // path there is a document to ask the question about, so dropping
-                // it would make the description true only on success. Reaching
-                // `data`, which is what the agent sees, is the constructor's job
-                // and no longer this call site's.
                 {
                     created: true,
                     cause: err.code ?? null,
-                    autoCorrect: reportedAutoCorrect(result),
                 },
             );
         }
@@ -390,11 +346,6 @@ export class DocumentAuthor {
 
         return {
             created: { path: docPath, description: describeSpec(spec), blocks: spec.blocks.length },
-            // Whether autocorrect was switched off on the instance that authored
-            // this, whether the user's own settings were put back afterwards, and
-            // if either failed, why. Surfaced so a caller can assert it rather
-            // than take it on trust.
-            autoCorrect: reportedAutoCorrect(result),
             // No predicted paragraph count is reported. An earlier version
             // returned one and it was wrong by construction: it modelled Word's
             // COM `Paragraphs.Count`, which counts a row-end mark per table row,

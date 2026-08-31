@@ -123,6 +123,18 @@ re-renders exactly once.
   not the exact scroll offset.
 - **First render costs a few seconds.** Word's PDF engine loads on first use (~4 s);
   later renders are typically well under a second.
+- **Your Word settings are never changed.** Creating or editing a document does not
+  read or write any of your Word options, on any instance. Text goes in verbatim
+  because it is assigned to a range rather than typed, and autocorrect is a typing
+  feature — measured with baits taken from this machine's own replacement list, with
+  every autocorrect setting switched on. This used to be untrue: five autocorrect
+  settings were switched off around each authoring call and switched back afterwards.
+  Those settings are per-user and persist, and whichever Word exits cleanly last
+  decides the stored value, so that was a best effort against shared state rather
+  than a guarantee — measured in
+  `spikes/isolation/probes/probe-autocorrect-concurrency.mjs`. The suppression was
+  removed rather than hardened, because the same measurements showed it prevented
+  nothing on any path this extension uses.
 - **Read-only.** Editing is deliberately out of scope for v1.
 
 ## Development
