@@ -7,9 +7,9 @@ PDFs.
 
 ## 1. The plan's prediction was wrong in both halves
 
-`docs/repo-restructure.md` §3.2 predicted the pdf.js **worker would fit** the C4
-envelope and the **binary font files would be the blocker**. Measurement inverted
-both.
+The restructure plan this work was scoped against predicted the pdf.js **worker
+would fit** the C4 envelope and the **binary font files would be the blocker**.
+Measurement inverted both.
 
 **Fonts are a non-issue.** The Word-exported PDF measured — `demo.docx`, one
 document — embedded everything it used:

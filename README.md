@@ -177,16 +177,18 @@ if a `WINWORD.EXE` is left behind.
 | `src/store.mjs` | Recents, under the user's Copilot home |
 | `src/ui/` | The viewer front-end |
 | `test/integration/` | Needs Word installed |
-| `test/unit/` | Office-free; the suites CI can run (empty — see below) |
+| `test/unit/` | Office-free; the suites CI runs |
 
 Application-specific code lives under `src/<app>/`; everything above it is
 application-agnostic. `render-cache.mjs` still imports `word/word-host.mjs` directly, and
 that import is the seam PowerPoint will have to break — deliberately left visible rather than
 abstracted away before there is a second implementation to abstract over.
 
-`test/unit/` is empty, which is the current blocker for CI: every existing suite drives Word
-through `powershell.exe`, so no hosted runner can run any of them
-([`docs/repo-restructure.md`](docs/repo-restructure.md) §4.4).
+The Office-free unit tests are what CI runs:
+[`.github/workflows/validate.yml`](.github/workflows/validate.yml) expands
+`test/unit/*.test.mjs` and hands the files to `node --test` on `ubuntu-latest`, for pushes to
+`main` and for every pull request. The integration suites drive Word through `powershell.exe`
+and need an installed, licensed Word, so they are a local gate by necessity, not by neglect.
 
 The `spikes/` directory sits at the repository root rather than inside the extension, because
 `install_extension` copies an extension folder wholesale and the spike carries 300 KB of
