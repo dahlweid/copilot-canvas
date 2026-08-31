@@ -1123,6 +1123,15 @@ function Cmd-Open($a) {
 # re-measure rather than trust it. What remains instrument-backed is the walk
 # being unaffordable, which is the reason this function does not walk.
 #
+# Both figures were lifted from a document this repo has since deleted, so the
+# source is pinned to a commit rather than a path, which cannot dangle:
+#     git show 93c3536:spikes/isolation/PLAN.md   # section 18.1
+# That blob is the file's FINAL revision -- nothing edited it between there and
+# its deletion -- so a reader who checks it is not reading a superseded draft.
+# Note that section 18.1 attributes its whole three-strategy table to the probe
+# named above; the probe only ever implemented the walk, so the table over-claims
+# and this comment deliberately does not repeat that attribution.
+#
 # The markup goes to a file rather than back through the protocol: it is
 # routinely 100 KB and can be megabytes, and JSON-escaping that onto a single
 # stdio line is pure overhead when the reader is on the same machine.

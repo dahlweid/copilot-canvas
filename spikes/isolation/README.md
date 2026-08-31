@@ -6,7 +6,17 @@ editing?
 
 `PLAN.md`, the 2,059-line write-up, has been **removed** (#103). It was the build plan for
 the design this spike falsified, and the product went another way. What it had measured is
-summarised below; the file itself is recoverable from git history at `v0.1.0` (`93c3536`).
+summarised below; the file itself is pinned to a commit rather than a tag, so the reference
+cannot dangle and cannot drift:
+
+```
+git show 93c3536:spikes/isolation/PLAN.md
+```
+
+That blob is the file's **final** revision — the last edit to it (`a874aab`) is an ancestor
+of `93c3536`, and nothing touched it between there and its deletion. So a reader who follows
+this pointer is not reading a superseded draft, and the summary below cannot be contradicted
+by a later version that no longer exists.
 
 ## Conclusion in one line
 
@@ -40,6 +50,11 @@ One figure in the addressing row is **not** instrument-backed: the **289 ms** `C
 read that the 3724 ms walk was compared against came from a bulk-read arm the restored probe
 does not contain, and no committed script measures it. `word-host.ps1` says so at the site
 rather than letting a named probe imply a backing it does not provide.
+
+The over-claim did not start here: section 18.1 of the removed plan attributed its whole
+three-strategy table to that one probe, and the probe only ever implemented the walk. So the
+289 ms and 6 ms `Content.Text` figures were already unbacked on `main`; this retirement makes
+that visible instead of inheriting it silently.
 
 Two figures are deliberately **not** carried over: the 4547 ms first export in a fresh Word
 process and the 228 ms open-edit-save-close round trip. Both are activation-inclusive —

@@ -21,6 +21,13 @@
 //
 // A SHA-256 prefix rather than mtime+size, because a script that regenerates a
 // document can easily reproduce both while changing every word.
+//
+// The table above was lifted from a design document this repo has since deleted
+// (#103). The probe named above is the live instrument and is the thing to
+// re-run; the original write-up is pinned to a commit rather than a path, so the
+// reference cannot dangle:
+//     git show 93c3536:spikes/isolation/PLAN.md   // section 18.3
+// That blob is the file's final revision, so it cannot be a superseded draft.
 
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
