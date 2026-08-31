@@ -62,6 +62,7 @@ const view = new PdfView(el.pages, {
         currentPage = page;
         api("/api/page", { method: "POST", body: JSON.stringify({ page }) }).catch(() => {});
     },
+    onScaleChange: () => syncZoom(),
 });
 
 /** The URL currently loaded into the view, so a redundant reload is skipped. */
@@ -166,9 +167,19 @@ async function showPdf(page = currentPage, { force = false } = {}) {
  * silence. It also runs on the presses that *change mode*, because pressing
  * zoom ends a fit -- the fit is only true while nothing else has moved it.
  *
- * A resize can change the scale too, but not the mode: a fit that refits is
- * still that fit, and the clamp bounds only matter to the zoom buttons, which a
- * fit does not press. So this does not need to run from a resize.
+ * And it runs from `onScaleChange`, because a resize refits with no button
+ * pressed. An earlier version of this comment argued that it need not: a refit
+ * keeps its mode, and the clamp bounds "only matter to the zoom buttons, which
+ * a fit does not press". The second half does not follow -- the bounds gate
+ * whether those buttons are *enabled*, and a refit crosses them unpressed.
+ * Fit-width in a very narrow panel clamps to `MIN_SCALE` and disables zoom-out;
+ * widening the panel refits above the clamp, and without this the button stayed
+ * disabled until some unrelated press resynced it.
+ *
+ * The presses still call this directly as well, and that is not redundant:
+ * `#rescale` early-returns when the scale is unchanged, so pressing fit-width
+ * while already at exactly that scale fires no `onScaleChange` even though the
+ * mode -- and so which button reads as pressed -- has just changed.
  */
 function syncZoom() {
     const loaded = view.pageCount > 0;

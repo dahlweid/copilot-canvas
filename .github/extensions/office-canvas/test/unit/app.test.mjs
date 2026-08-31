@@ -590,3 +590,33 @@ test("a panel resize keeps the standing fit fitted without a press", async (t) =
     assert.equal(pages.children[0].style.width, "300px", "the fit did not follow the panel");
     assert.equal(app.el("fitWidth").getAttribute("aria-pressed"), "true", "the resize cleared the standing fit");
 });
+
+test("a resize-driven refit that crosses a clamp bound re-syncs the zoom buttons", async (t) => {
+    // The zoom cluster is only truthful if it resyncs on every scale change, and
+    // a resize changes the scale with nothing pressed. The clamp bounds gate
+    // whether the zoom buttons are *enabled*, so a refit that crosses one and
+    // does not resync leaves a live control lying: zoom-out reads as disabled
+    // while the scale sits well above the floor, until some unrelated press
+    // happens to fix it.
+    const app = await loadApp({ state: READY, pdfDocuments: { "/pdf/k1.pdf": { pages: 1, width: 600, height: 800 } } });
+    t.after(app.restore);
+
+    const pages = app.el("pages");
+    assert.equal(app.el("zoomOut").disabled, false, "zoom out was not live at the opening scale");
+
+    // (60 - 32) / 600 is 0.047, far below MIN_SCALE, so fit-width clamps to the
+    // floor -- reached by dragging the panel, not by pressing anything.
+    pages.clientWidth = 60;
+    app.resizeObservers.at(-1).fire();
+    await app.settle();
+
+    assert.equal(app.el("zoomOut").disabled, true, "zoom out stayed live at the bottom of the range");
+
+    // And back out again: (632 - 32) / 600 is scale 1, clear of the floor.
+    pages.clientWidth = 632;
+    app.resizeObservers.at(-1).fire();
+    await app.settle();
+
+    assert.equal(pages.children[0].style.width, "600px", "the fit did not follow the panel back out");
+    assert.equal(app.el("zoomOut").disabled, false, "zoom out was left disabled at a scale it would change");
+});

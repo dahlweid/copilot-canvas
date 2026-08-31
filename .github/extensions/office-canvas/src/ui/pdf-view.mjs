@@ -71,6 +71,16 @@ export class PdfView {
      */
     #scaleObserver = null;
     #onPageChange;
+    /**
+     * Announces a scale the caller did not ask for.
+     *
+     * A resize refits without anyone pressing a button, and the clamp bounds
+     * gate whether those buttons are *enabled*, so a caller that only resynced
+     * after its own presses would go stale: fit-width in a very narrow panel
+     * clamps to `MIN_SCALE` and correctly disables zoom-out, then widening the
+     * panel refits above the clamp with no press to resync from.
+     */
+    #onScaleChange;
     #scale = 1;
     /**
      * Which fit the reader is in, or `null` once they have zoomed by hand.
@@ -96,9 +106,10 @@ export class PdfView {
      */
     #epoch = 0;
 
-    constructor(container, { onPageChange = () => {} } = {}) {
+    constructor(container, { onPageChange = () => {}, onScaleChange = () => {} } = {}) {
         this.#container = container;
         this.#onPageChange = onPageChange;
+        this.#onScaleChange = onScaleChange;
     }
 
     get pageCount() {
@@ -316,6 +327,11 @@ export class PdfView {
         for (const page of this.#pages) {
             if (page.visible) this.#renderPage(page).catch(() => {});
         }
+
+        // Every scale change in the class funnels through here, including the
+        // ones nobody pressed a button for, so this is the one place that can
+        // tell a caller its zoom controls are out of date.
+        this.#onScaleChange(scale);
     }
 
     /** Returns a painted page to an empty box, cancelling whatever is in flight. */

@@ -372,6 +372,12 @@ const MEASURE = function measure() {
     const scrollLeft = viewer.scrollLeft;
     const viewerBox = viewer.getBoundingClientRect();
     const pageBox = page.getBoundingClientRect();
+    // The *content* box's left edge. `getBoundingClientRect` returns the border
+    // box, whose right edge sits outside the vertical scrollbar -- measuring a
+    // right margin against it reports every centred page as 15px off-centre,
+    // which is a scrollbar and not a layout fault. Measured once the naive way
+    // and it made all six narrow rows look wrong by exactly the same 15px.
+    const contentLeft = viewerBox.left + viewer.clientLeft;
 
     return {
         scale: Number(getComputedStyle(pages).getPropertyValue("--total-scale-factor")),
@@ -383,7 +389,11 @@ const MEASURE = function measure() {
         canvasBitmapWidth: canvas.width,
         scrollLeftAtStart: round(scrollLeft),
         scrollWidth: pages.scrollWidth,
-        leftReach: round(pageBox.left - viewerBox.left),
+        leftReach: round(pageBox.left - contentLeft),
+        // The other margin. Equal to `leftReach` is centred; a `flex-start` fix
+        // for the overflow would cure `leftReach` and leave this one carrying
+        // the whole difference.
+        rightReach: round(contentLeft + viewer.clientWidth - pageBox.right),
         textSpans: layer.querySelectorAll("span").length,
         // Zero would mean the text layer collapsed, which is what a missing
         // `--total-scale-factor` does to it.
@@ -444,6 +454,18 @@ async function main() {
         await settle();
         await step("fit-width");
 
+        // Below the container width, which is the case `min-width: max-content`
+        // must *not* disturb. Two presses off a fit is 0.64 of it, so the page
+        // is comfortably narrower than the viewer and there is a real margin on
+        // both sides to compare.
+        await browser.evaluate(press("zoomOut"));
+        await settle();
+        await browser.evaluate(press("zoomOut"));
+        await settle();
+        await step("zoom out below fit");
+
+        await browser.evaluate(press("fitWidth"));
+        await settle();
         await browser.resize(NARROW);
         await settle();
         await step(`fitted, resize to ${NARROW.width}`);
@@ -481,6 +503,7 @@ async function main() {
         ["scrollW", (row) => row[1].scrollWidth],
         ["scrollLeft", (row) => row[1].scrollLeftAtStart],
         ["leftReach", (row) => row[1].leftReach],
+        ["rightReach", (row) => row[1].rightReach],
         ["spans", (row) => row[1].textSpans],
         ["layer w", (row) => row[1].textLayerWidth],
     ];
@@ -511,6 +534,24 @@ async function main() {
             "centring alone puts the left edge out of reach, so the rule is load-bearing",
             control.naive.leftReach < -0.5 && control.fixed.leftReach >= -0.5,
             `${control.naive.leftReach} without it, ${control.fixed.leftReach} with it`,
+        ],
+        [
+            // The other half of question 1, and the failure mode a `flex-start`
+            // fix would introduce: it cures the overflow and silently loses
+            // centring for every page narrower than the panel, which at a
+            // default fit is most of them.
+            "a page narrower than the viewer is still centred, not flushed left",
+            (() => {
+                const narrow = rows.filter(([, m]) => m.pageCssWidth < m.viewerClientWidth - 2);
+                return (
+                    narrow.length > 0 &&
+                    narrow.every(([, m]) => Math.abs(m.leftReach - m.rightReach) <= 1 && m.leftReach > 1)
+                );
+            })(),
+            rows
+                .filter(([, m]) => m.pageCssWidth < m.viewerClientWidth - 2)
+                .map(([label, m]) => `${label}: ${m.leftReach} left / ${m.rightReach} right`)
+                .join(", ") || "no row had a page narrower than its viewer",
         ],
         [
             "the canvas bitmap is repainted at each new scale",

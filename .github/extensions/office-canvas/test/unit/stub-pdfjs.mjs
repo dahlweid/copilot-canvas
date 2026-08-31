@@ -130,6 +130,8 @@ function makePage(number, items, spec) {
         renders: 0,
         renderCancels: 0,
         renderScales: [],
+        // Render tasks handed out and not yet settled, when `deferRender` is on.
+        inFlight: [],
         cleanups: 0,
         getViewport({ scale }) {
             return {
@@ -150,12 +152,46 @@ function makePage(number, items, spec) {
             // re-scale that resizes the boxes and leaves the bitmaps alone,
             // which a count cannot tell from a correct one.
             this.renderScales.push(options.viewport.scale);
+            if (!spec.deferRender) {
+                const task = {
+                    promise: Promise.resolve(),
+                    cancel: () => {
+                        this.renderCancels += 1;
+                    },
+                };
+                return task;
+            }
+            // A paint that stays in flight until the test settles it, so a
+            // re-scale can land *during* one. Both endings are reachable on
+            // purpose, because the view has to survive each:
+            //
+            //   `cancel()`       -- pdf.js rejects the task's promise with a
+            //                       RenderingCancelledException, which is the
+            //                       ending `#renderPage` names explicitly.
+            //   `finishAnyway()` -- the paint completed in the window between
+            //                       the cancel and its own continuation
+            //                       resuming. Nothing rejects, so the only
+            //                       thing standing between it and stamping
+            //                       stale results is the epoch fence.
+            let settle;
+            const promise = new Promise((resolve, reject) => {
+                settle = { resolve, reject };
+            });
+            // The view is entitled to walk away from a cancelled paint without
+            // observing the rejection; an unhandled one would fail the run for
+            // the wrong reason.
+            promise.catch(() => {});
             const task = {
-                promise: Promise.resolve(),
+                promise,
                 cancel: () => {
                     this.renderCancels += 1;
+                    const err = new Error("cancelled");
+                    err.name = "RenderingCancelledException";
+                    settle.reject(err);
                 },
+                finishAnyway: () => settle.resolve(),
             };
+            this.inFlight.push(task);
             return task;
         },
         async getTextContent() {
