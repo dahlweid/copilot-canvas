@@ -2,7 +2,7 @@ name: release
 
 # Runs on a tag, on ubuntu-latest, with no Office — same envelope as
 # validate.yml. Everything here is file layout and hashing, so nothing in it
-# needs Word (docs/repo-restructure.md §1, constraint C5).
+# needs Word.
 #
 # `workflow_dispatch` runs every step except publishing, so the packaging path
 # can be exercised without cutting a release.
@@ -49,7 +49,7 @@ jobs:
       # `version` in copilot-extension.json is the *manifest format* version and
       # must be the integer 1 — install_extension parses it as a u32. The product
       # version lives in `productVersion`, which the installer tolerates as an
-      # unknown key (both measured against the running app; see docs §3.3).
+      # unknown key (both measured against the running app).
       - name: Resolve version
         id: version
         run: |
@@ -162,7 +162,7 @@ jobs:
             echo "on repo-folder installs as well as gists)."
             echo
             echo "Rendering is verified by a human running \`test/integration/\` locally before a"
-            echo "release; no hosted runner has Word (constraint C5)."
+            echo "release; no hosted runner has Word."
           } > notes.md
           gh release create "$TAG" \
             --title "office-canvas ${VERSION}" \

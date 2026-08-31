@@ -503,3 +503,120 @@ test("clearing the error draws the document that was withheld", async (t) => {
     assert.equal(app.el("viewer").classList.contains("visible"), true);
     assert.equal(app.el("status").hidden, true, "the cleared error is still on screen");
 });
+
+// --- the zoom cluster (#106) -----------------------------------------------
+
+/** A page proxy's paint history, for asserting a re-scale actually repainted. */
+const scalesOn = (app, number) => app.pdfjs.opened.at(-1).doc.pages.get(number).renderScales;
+
+test("the zoom buttons re-scale the document and repaint what is on screen", async (t) => {
+    const app = await loadApp({ state: READY, pdfDocuments: { "/pdf/k1.pdf": { pages: 3 } } });
+    t.after(app.restore);
+
+    app.observers.at(-1).enter(app.el("pages").children[0]);
+    await app.settle();
+    assert.deepEqual(scalesOn(app, 1), [1]);
+
+    app.el("zoomIn").dispatch("click");
+    await app.settle();
+    assert.deepEqual(scalesOn(app, 1), [1, 1.25], "Zoom in resized the box without repainting the page");
+
+    app.el("zoomOut").dispatch("click");
+    await app.settle();
+    assert.deepEqual(scalesOn(app, 1), [1, 1.25, 1], "Zoom out resized the box without repainting the page");
+});
+
+test("the fit buttons are modes: exactly one is pressed, and zooming by hand presses neither", async (t) => {
+    // `aria-pressed` is the only thing that says a fit is *standing* -- that it
+    // will be recomputed on the next panel resize. A plain button could not.
+    const app = await loadApp({ state: READY, pdfDocuments: { "/pdf/k1.pdf": { pages: 3 } } });
+    t.after(app.restore);
+
+    const pressed = () => [
+        app.el("fitWidth").getAttribute("aria-pressed"),
+        app.el("fitHeight").getAttribute("aria-pressed"),
+    ];
+    assert.deepEqual(pressed(), ["true", "false"], "a document did not open fitted to the panel's width");
+    assert.equal(app.el("fitWidth").classList.contains("active"), true);
+
+    app.el("fitHeight").dispatch("click");
+    await app.settle();
+    assert.deepEqual(pressed(), ["false", "true"], "both fits claimed to be on at once");
+    assert.equal(app.el("fitHeight").classList.contains("active"), true);
+    assert.equal(app.el("fitWidth").classList.contains("active"), false);
+
+    app.el("zoomIn").dispatch("click");
+    await app.settle();
+    assert.deepEqual(pressed(), ["false", "false"], "a hand-picked zoom left a fit claiming to be standing");
+});
+
+test("a zoom button that would do nothing is disabled", async (t) => {
+    // The scale is clamped, so at either end of the range the press is a control
+    // that answers with silence. Reflecting the clamp is what makes it visible.
+    const app = await loadApp({ state: READY, pdfDocuments: { "/pdf/k1.pdf": { pages: 3 } } });
+    t.after(app.restore);
+
+    assert.equal(app.el("zoomIn").disabled, false);
+    assert.equal(app.el("zoomOut").disabled, false);
+
+    // 1 * 1.25^7 > 4, so seven presses is past the top with room to spare.
+    for (let press = 0; press < 8; press++) app.el("zoomIn").dispatch("click");
+    await app.settle();
+    assert.equal(app.el("zoomIn").disabled, true, "Zoom in stayed live at the top of the range");
+    assert.equal(app.el("zoomOut").disabled, false);
+
+    for (let press = 0; press < 16; press++) app.el("zoomOut").dispatch("click");
+    await app.settle();
+    assert.equal(app.el("zoomOut").disabled, true, "Zoom out stayed live at the bottom of the range");
+    assert.equal(app.el("zoomIn").disabled, false);
+});
+
+test("a panel resize keeps the standing fit fitted without a press", async (t) => {
+    // The `ResizeObserver` end of #106, through `app.js`. The panel this canvas
+    // runs in is dragged, and a fit that only held at load is not a fit.
+    const app = await loadApp({ state: READY, pdfDocuments: { "/pdf/k1.pdf": { pages: 1, width: 600, height: 800 } } });
+    t.after(app.restore);
+
+    const pages = app.el("pages");
+    assert.equal(pages.children[0].style.width, "600px", "the pages were not laid out at scale 1");
+
+    // The viewer is not an ancestor of `.pages` in this stub DOM, so the view
+    // falls back to measuring its own container -- which is the branch that runs
+    // when the markup is not what it expects, and is worth exercising too.
+    pages.clientWidth = 332;
+    app.resizeObservers.at(-1).fire();
+    await app.settle();
+
+    assert.equal(pages.children[0].style.width, "300px", "the fit did not follow the panel");
+    assert.equal(app.el("fitWidth").getAttribute("aria-pressed"), "true", "the resize cleared the standing fit");
+});
+
+test("a resize-driven refit that crosses a clamp bound re-syncs the zoom buttons", async (t) => {
+    // The zoom cluster is only truthful if it resyncs on every scale change, and
+    // a resize changes the scale with nothing pressed. The clamp bounds gate
+    // whether the zoom buttons are *enabled*, so a refit that crosses one and
+    // does not resync leaves a live control lying: zoom-out reads as disabled
+    // while the scale sits well above the floor, until some unrelated press
+    // happens to fix it.
+    const app = await loadApp({ state: READY, pdfDocuments: { "/pdf/k1.pdf": { pages: 1, width: 600, height: 800 } } });
+    t.after(app.restore);
+
+    const pages = app.el("pages");
+    assert.equal(app.el("zoomOut").disabled, false, "zoom out was not live at the opening scale");
+
+    // (60 - 32) / 600 is 0.047, far below MIN_SCALE, so fit-width clamps to the
+    // floor -- reached by dragging the panel, not by pressing anything.
+    pages.clientWidth = 60;
+    app.resizeObservers.at(-1).fire();
+    await app.settle();
+
+    assert.equal(app.el("zoomOut").disabled, true, "zoom out stayed live at the bottom of the range");
+
+    // And back out again: (632 - 32) / 600 is scale 1, clear of the floor.
+    pages.clientWidth = 632;
+    app.resizeObservers.at(-1).fire();
+    await app.settle();
+
+    assert.equal(pages.children[0].style.width, "600px", "the fit did not follow the panel back out");
+    assert.equal(app.el("zoomOut").disabled, false, "zoom out was left disabled at a scale it would change");
+});

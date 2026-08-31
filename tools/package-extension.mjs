@@ -2,23 +2,23 @@
 // Produces the installable artefact for one extension folder.
 //
 // C2 + C3 mean this repository has no conventional build: the runtime loads the
-// committed source directly, so packaging is copy-and-verify, not bundle
-// (docs/repo-restructure.md §3.1). What is left for a packager to do is
-// therefore narrow and worth stating:
+// committed source directly, so packaging is copy-and-verify, not bundle. What
+// is left for a packager to do is therefore narrow and worth stating:
 //
 //   1. decide what is *not* part of the artefact, and say why;
 //   2. emit the two shapes the two distribution channels accept —
 //      a folder (C3) and a gist payload (C4);
 //   3. prove the artefact is still valid by running the validator on it,
 //      rather than by asserting the same invariants a second time;
-//   4. report size against the C4 budget, so the headroom that a later layer
-//      spends on vendored assets (§3.2) stays visible.
+//   4. report size against the C4 budget, so the headroom that the vendored
+//      pdf.js worker spends stays visible.
 //
 // One measured correction shapes all of this: the C4 limits are enforced by
 // `install_extension` on **every** source it accepts, repo folder as well as
 // gist, and they are decimal — 1,000,000 bytes per file and 5,000,000 in
-// total. docs/repo-restructure.md §3.2 previously held that repo-folder
-// install had no such limit.
+// total. The restructure plan this repository was built to had held that
+// repo-folder install carried no such limit; measurement against the running
+// app said otherwise.
 //
 // Run: node tools/package-extension.mjs [name] [--out dist] [--expect-version v1.0.0]
 
@@ -61,14 +61,14 @@ export const EXCLUSIONS = [
         why:
             "Development-only. Nothing under src/ or extension.mjs imports it (the validator's C3 " +
             "import graph would say so otherwise), test/integration/ drives Word through COM and " +
-            "cannot run on an installed copy anyway (C5), and make-fixture.ps1 generates a fixture " +
+            "cannot run on an installed copy anyway, and make-fixture.ps1 generates a fixture " +
             "no user has a use for.",
         match: (rel) => segments(rel).includes("test"),
     },
     {
         id: "spikes",
         why:
-            "Throwaway exploration, already moved out of the extension folder in §3. It carried " +
+            "Throwaway exploration, already moved out of the extension folder. It carried " +
             "300 KB of JPEG screenshots that C4 refuses outright, so this rule exists to stop a " +
             "returning spike from silently re-entering the artefact.",
         match: (rel) => segments(rel).includes("spikes"),
@@ -428,7 +428,7 @@ async function main() {
         }
     }
 
-    // §3.2 spends this headroom on vendored assets. Printing it every time is
+    // The vendored pdf.js worker spends this headroom. Printing it every time is
     // the point: it should shrink visibly, not be discovered empty. Both
     // limits bind every install path, not just gist sharing.
     const { budget } = report;

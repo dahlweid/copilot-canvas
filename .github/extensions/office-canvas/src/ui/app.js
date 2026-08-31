@@ -35,6 +35,10 @@ const el = {
     emptyState: $("emptyState"),
     engineNote: $("engineNote"),
     toggleSidebar: $("toggleSidebar"),
+    zoomOut: $("zoomOut"),
+    zoomIn: $("zoomIn"),
+    fitWidth: $("fitWidth"),
+    fitHeight: $("fitHeight"),
     reload: $("reload"),
     openInWord: $("openInWord"),
     changeBar: $("changeBar"),
@@ -58,6 +62,7 @@ const view = new PdfView(el.pages, {
         currentPage = page;
         api("/api/page", { method: "POST", body: JSON.stringify({ page }) }).catch(() => {});
     },
+    onScaleChange: () => syncZoom(),
 });
 
 /** The URL currently loaded into the view, so a redundant reload is skipped. */
@@ -141,8 +146,7 @@ async function showPdf(page = currentPage, { force = false } = {}) {
     if (!force && loadedPdfUrl === state.pdfUrl) {
         showChange();
         return;
-    }
-    loadedPdfUrl = state.pdfUrl;
+    }    loadedPdfUrl = state.pdfUrl;
     try {
         await view.load(state.pdfUrl);
         showChange();
@@ -150,6 +154,54 @@ async function showPdf(page = currentPage, { force = false } = {}) {
     } catch (err) {
         loadedPdfUrl = null;
         setStatus(`Could not display the document: ${err.message}`, { error: true });
+    }
+    syncZoom();
+}
+
+/**
+ * Makes the zoom cluster say what the view is actually doing (#106).
+ *
+ * Called after every load and after every press, including the presses that do
+ * nothing: `PdfView` clamps, so zooming in at 4x leaves the scale where it was,
+ * and a button that stayed enabled would be a control that answers a press with
+ * silence. It also runs on the presses that *change mode*, because pressing
+ * zoom ends a fit -- the fit is only true while nothing else has moved it.
+ *
+ * And it runs from `onScaleChange`, because a resize refits with no button
+ * pressed. An earlier version of this comment argued that it need not: a refit
+ * keeps its mode, and the clamp bounds "only matter to the zoom buttons, which
+ * a fit does not press". The second half does not follow -- the bounds gate
+ * whether those buttons are *enabled*, and a refit crosses them unpressed.
+ * Fit-width in a very narrow panel clamps to `MIN_SCALE` and disables zoom-out;
+ * widening the panel refits above the clamp, and without this the button stayed
+ * disabled until some unrelated press resynced it.
+ *
+ * The presses still call this directly as well, and that is not redundant:
+ * `#rescale` early-returns when the scale is unchanged, so pressing fit-width
+ * while already at exactly that scale fires no `onScaleChange` even though the
+ * mode -- and so which button reads as pressed -- has just changed.
+ *
+ * That early return cannot hide a *resize* the same way, and the reason is the
+ * body below rather than a claim about resizes. This reads exactly three
+ * things: `pageCount`, the two `can*` flags, and `fitMode`. The flags are pure
+ * functions of the scale (`scale < MAX`, `scale > MIN`); a resize loads nothing,
+ * so `pageCount` is fixed; and `#refit` reads `#fitMode` without ever writing it
+ * -- only `setScale`, `fitWidth` and `fitHeight` write it, and each is a press.
+ * So on a resize the scale is the only input that can move, and a refit that
+ * recomputes to the same scale leaves every control exactly as it found them.
+ */
+function syncZoom() {
+    const loaded = view.pageCount > 0;
+    el.zoomOut.disabled = !loaded || !view.canZoomOut;
+    el.zoomIn.disabled = !loaded || !view.canZoomIn;
+    for (const [mode, button] of [
+        ["width", el.fitWidth],
+        ["height", el.fitHeight],
+    ]) {
+        const on = loaded && view.fitMode === mode;
+        button.disabled = !loaded;
+        button.classList.toggle("active", on);
+        button.setAttribute("aria-pressed", String(on));
     }
 }
 
@@ -389,6 +441,26 @@ el.toggleSidebar.addEventListener("click", () => {
         loadOutline();
         el.searchInput.focus();
     }
+});
+
+el.zoomOut.addEventListener("click", () => {
+    view.zoomOut();
+    syncZoom();
+});
+
+el.zoomIn.addEventListener("click", () => {
+    view.zoomIn();
+    syncZoom();
+});
+
+el.fitWidth.addEventListener("click", () => {
+    view.fitWidth();
+    syncZoom();
+});
+
+el.fitHeight.addEventListener("click", () => {
+    view.fitHeight();
+    syncZoom();
 });
 
 el.copyPath.addEventListener("click", async () => {

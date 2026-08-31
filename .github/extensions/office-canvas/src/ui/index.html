@@ -38,6 +38,75 @@
                     server and fetches nothing off the machine.
                 -->
                 <!--
+                    Zoom and fit (#106). Four icon-only controls, grouped so
+                    they read as one cluster rather than four unrelated buttons.
+                    Each carries both `title` and `aria-label`: a tooltip alone
+                    is not keyboard-reachable, and with no visible text the
+                    label is the only accessible name there is.
+
+                    The two fits are `aria-pressed`, not plain buttons, because a
+                    fit is a mode that stays on -- it survives a panel resize --
+                    and a button that does not say it is pressed cannot express
+                    that. `app.js` clears both the moment the reader zooms by
+                    hand, which is exactly when the fit stops being true.
+                -->
+                <div class="zoom-group" role="group" aria-label="Zoom">
+                    <button
+                        type="button"
+                        id="zoomOut"
+                        class="btn icon-only"
+                        title="Zoom out"
+                        aria-label="Zoom out"
+                    >
+                        <svg class="icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                            <circle cx="7" cy="7" r="4.5" />
+                            <path d="M10.4 10.4 14 14" />
+                            <path d="M5 7h4" />
+                        </svg>
+                    </button>
+                    <button
+                        type="button"
+                        id="zoomIn"
+                        class="btn icon-only"
+                        title="Zoom in"
+                        aria-label="Zoom in"
+                    >
+                        <svg class="icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                            <circle cx="7" cy="7" r="4.5" />
+                            <path d="M10.4 10.4 14 14" />
+                            <path d="M5 7h4M7 5v4" />
+                        </svg>
+                    </button>
+                    <button
+                        type="button"
+                        id="fitWidth"
+                        class="btn icon-only"
+                        title="Fit width"
+                        aria-label="Fit width"
+                        aria-pressed="false"
+                    >
+                        <svg class="icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                            <rect x="4.5" y="2.5" width="7" height="11" rx="1" />
+                            <path d="M1.5 8h2.5M12 8h2.5" />
+                            <path d="M2.8 6.7 1.5 8l1.3 1.3M13.2 6.7 14.5 8l-1.3 1.3" />
+                        </svg>
+                    </button>
+                    <button
+                        type="button"
+                        id="fitHeight"
+                        class="btn icon-only"
+                        title="Fit page"
+                        aria-label="Fit page"
+                        aria-pressed="false"
+                    >
+                        <svg class="icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                            <rect x="2.5" y="4.5" width="11" height="7" rx="1" />
+                            <path d="M8 1.5V4M8 12v2.5" />
+                            <path d="M6.7 2.8 8 1.5l1.3 1.3M6.7 13.2 8 14.5l1.3-1.3" />
+                        </svg>
+                    </button>
+                </div>
+                <!--
                     Where the absolute path went (#71). The old full-width row
                     spent a line of a narrow panel restating what its own
                     tooltip said. The path is now the name's tooltip *and* this

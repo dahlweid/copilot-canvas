@@ -692,10 +692,11 @@ behaviour, and cannot on a runner without Office.** This is structural, not an
 outage. `.github/workflows/validate.yml` runs `ubuntu-latest`, and its own
 header states the constraint:
 
-> Everything here must run without Office installed. The integration suite
-> drives Word through COM and cannot run on a hosted runner (see
-> docs/repo-restructure.md §1, constraint C5) — it stays a local gate until a
-> self-hosted Windows runner with an Office licence exists.
+> Everything here must run without Office installed. The unit suite under
+> .github/extensions/office-canvas/test/unit/ is Office-free and runs below; the
+> integration suite drives Word through powershell.exe and cannot run on a
+> hosted runner — it stays a local gate until a self-hosted Windows runner with
+> an Office licence exists.
 
 Three validation steps run behind that tick, after a checkout and a Node setup:
 packaging invariants (`validate-extensions.mjs`), citation resolution
