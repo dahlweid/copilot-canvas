@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // Checks the invariants that make an extension folder installable.
 //
-// These are not style rules. Each corresponds to a documented constraint in
-// docs/repo-restructure.md §1, and each has a failure mode that otherwise only
+// These are not style rules. Each is a constraint the extension runtime or
+// `install_extension` imposes, stated inline at the check that enforces it
+// (C1-C4 below), and each has a failure mode that otherwise only
 // shows up at install time or as a silently dead extension process.
 //
 // Run: node tools/validate-extensions.mjs
