@@ -1,10 +1,9 @@
 // The revision token: a hash of the file, returned with a structure map and
 // required by any edit.
 //
-// Measured behaviour, which is exactly what optimistic concurrency needs. The
-// isolation spike that recorded it has been retired, so the measurement is
-// reproduced here rather than cited: a SHA-256 prefix over the file, computed
-// in 3 ms.
+// Measured behaviour, which is exactly what optimistic concurrency needs
+// (`spikes/isolation/probes/probe-addressing.ps1`, arm S3): a SHA-256 prefix
+// over the file, computed in 3 ms.
 //
 //   | our own edit and save          | token changes     |
 //   | save with nothing dirty        | token unchanged   |

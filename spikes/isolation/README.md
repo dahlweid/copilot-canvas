@@ -18,9 +18,11 @@ screen-reader accessibility.
 ## What the plan had measured
 
 The numbers that outlived it. Where a probe is named below it still ships and can be re-run.
-The two lock rows and the addressing row name none: the scripts that produced them were cited
-by the plan and by nothing else, so they were removed with it. Their conclusions are what
-survive, in ADR 0005 and in `word-host.ps1`; the scripts are in git history at `v0.1.0`.
+The two lock rows name none: the scripts that produced them were cited by the plan and by
+nothing else, so they were removed with it, and their conclusions survive in ADR 0005. The
+addressing and revision-token rows were in that position too, until review established that
+the probe behind them was the only instrument for two claims quoted in shipped source — it
+is restored and named below.
 
 | Finding | Where it lives now |
 | --- | --- |
@@ -28,11 +30,16 @@ survive, in ADR 0005 and in `word-host.ps1`; the scripts are in git history at `
 | Word raises **no** content-change event; polling `doc.Saved` costs 1.14 ms (`probe-events.ps1`) | the file watcher |
 | Holding the original document open **blocks**: all three external write patterns fail with sharing violations, a second Word opening the same path hangs indefinitely with `DisplayAlerts` already off, and `~$` appears in the user's folder | ADR 0005 |
 | So the lock must be transient, and "already open" must be detected without calling `Documents.Open` — by taking a write handle, 4 ms when held, 9 ms when free | ADR 0005, `Test-FileWritable` |
-| A structural read must not walk paragraphs: on 219 paragraphs, per-paragraph `Range.Text`/`OutlineLevel` cost **3724 ms** against **289 ms** for one `Content.WordOpenXML` that returns strictly more | inlined at `Cmd-Structure` in `word-host.ps1` |
-| The revision token, a SHA-256 prefix computed in 3 ms, changes on our own save and on external regeneration but **not** on a save with nothing dirty | inlined in `revision-token.mjs` |
+| A structural read must not walk paragraphs: on 219 paragraphs, per-paragraph `Range.Text`/`OutlineLevel` cost **3724 ms**, and the cost scales with length (`probe-addressing.ps1`, arm S1) | inlined and cited at `Cmd-Structure` in `word-host.ps1` |
+| The revision token, a SHA-256 prefix computed in 3 ms, changes on our own save and on external regeneration but **not** on a save with nothing dirty (`probe-addressing.ps1`, arm S3) | inlined and cited in `revision-token.mjs` |
 | Style IDs inside the markup are **localized** — the first heading came back as `Überschrift1`, not `Heading1` | ADR 0006, and the structure parser |
 | "Unreadable" is two conditions and both runtimes tell them apart by type — `EBUSY`/`IOException` against `EPERM`/`UnauthorizedAccessException` (`probe-errno-mapping.mjs`) | ADR 0006, `document-reader.mjs` |
 | `Quit(<arg>)` does not bind under Windows PowerShell 5.1: it throws, the swallowing catch hides it, and process exit does not reap the survivor (`probe-quit0-leak.ps1`) | `quit-argument.test.mjs`, which pins it in the tree |
+
+One figure in the addressing row is **not** instrument-backed: the **289 ms** `Content.WordOpenXML`
+read that the 3724 ms walk was compared against came from a bulk-read arm the restored probe
+does not contain, and no committed script measures it. `word-host.ps1` says so at the site
+rather than letting a named probe imply a backing it does not provide.
 
 Two figures are deliberately **not** carried over: the 4547 ms first export in a fresh Word
 process and the 228 ms open-edit-save-close round trip. Both are activation-inclusive —

@@ -1108,13 +1108,20 @@ function Cmd-Open($a) {
 
 # One `Content.WordOpenXML` call, written to a file, document closed at once.
 #
-# Measured on a 219-paragraph document: walking Paragraphs and
-# touching Range.Text / OutlineLevel per paragraph cost 3724 ms, because every
-# property touch is a cross-process COM call; one WordOpenXML call cost 289 ms
-# and returned strictly more -- text, style and full markup. A per-paragraph
-# property walk is a defect, not a slow path. The cost of the walk scales with
-# document length, so a 1000-paragraph document would take about 17 seconds,
-# and read-then-address requires reads to be routine.
+# Measured on a 219-paragraph document (`spikes/isolation/probes/probe-addressing.ps1`,
+# arm S1): walking Paragraphs and touching Range.Text / OutlineLevel per
+# paragraph cost 3724 ms, because every property touch is a cross-process COM
+# call. The cost scales with document length, so a 1000-paragraph document would
+# take about 17 seconds, and read-then-address requires reads to be routine. A
+# per-paragraph property walk is a defect, not a slow path.
+#
+# The comparison that made this call the replacement -- one WordOpenXML read at
+# 289 ms returning strictly more (text, style and full markup) -- came from a
+# bulk-read arm that is NOT part of the probe above and is no longer committed
+# anywhere. The 289 ms figure is therefore an uninstrumented historical number:
+# it is recorded here for provenance, and anything that turns on it should
+# re-measure rather than trust it. What remains instrument-backed is the walk
+# being unaffordable, which is the reason this function does not walk.
 #
 # The markup goes to a file rather than back through the protocol: it is
 # routinely 100 KB and can be megabytes, and JSON-escaping that onto a single
