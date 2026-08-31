@@ -1,6 +1,6 @@
 {
   "name": "office-canvas",
   "version": 1,
-  "productVersion": "1.0.0",
+  "productVersion": "0.1.0",
   "description": "Page-accurate display of Microsoft Office documents in a Copilot side canvas, rendered by the Office application itself."
 }
