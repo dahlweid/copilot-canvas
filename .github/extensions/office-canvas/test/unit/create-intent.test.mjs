@@ -354,21 +354,25 @@ test("the handler forwards unknown arguments so the validator can refuse them", 
     rejects({ blocks: [para()], title: "Report" }, "invalid_spec");
 });
 
-test("the create_document description does not claim autocorrect is always off", () => {
-    // Suppression is conditional and deliberately so: on a Word this tool
-    // started it is switched off, but on one the host attached to it is left
-    // alone, because those are the user's settings and AutoCorrect is
-    // per-application (measured -- toggled on a hidden instance and read back
-    // as unchanged from a second process). The description asserted the
-    // unconditional version, which is a promise the code does not keep on the
-    // attached path. It must point at the reported outcome instead.
+test("the create_document description does not claim autocorrect is switched off", () => {
+    // The description twice promised something the code did not do. First it
+    // said autocorrect is unconditionally switched off, which was false on the
+    // attached-instance path. It was then corrected to "switched off on a Word
+    // this tool started" plus a reported outcome -- and that is now false too,
+    // because nothing is switched off any more, on any instance.
+    //
+    // The claim that is true, and the one the description must make, is about
+    // the insertion mechanism rather than about a setting: text is assigned to
+    // a range, not typed, and autocorrect is a typing feature. So neither the
+    // suppression prose nor the `autoCorrect` result field may reappear here.
     const source = createToolSource();
-    assert.match(source, /autoCorrect/, "the description does not name the field reporting what happened");
+    assert.doesNotMatch(source, /autoCorrect/, "the description names a result field that no longer exists");
     assert.doesNotMatch(
         source,
-        /autocorrect is switched off on the instance/i,
-        "the description asserts suppression unconditionally",
+        /autocorrect is switched off/i,
+        "the description claims a suppression the host does not perform",
     );
+    assert.match(source, /verbatim/i, "the description no longer says text is written verbatim");
 });
 
 test("the create_document schema derives its block kinds from BLOCK_KINDS", () => {

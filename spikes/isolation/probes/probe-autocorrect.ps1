@@ -474,8 +474,8 @@ try {
         # every setting ON, so a verbatim bait is a forward guard, not proof of
         # suppression.
         #
-        # The sequential measurement lives in probe-autocorrect-restore.mjs,
-        # which also proves the restore persists for the user's next Word.
+        # The sequential measurement lives in probe-autocorrect-untouched.mjs,
+        # which also proves the tool leaves the user's next Word unchanged.
         'C' {
             $key = 'HKCU:\Software\Microsoft\Office\16.0\Word\Options'
             function Show-Registry([string] $label) {

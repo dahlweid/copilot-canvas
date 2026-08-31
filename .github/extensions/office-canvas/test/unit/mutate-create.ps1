@@ -104,29 +104,6 @@ $mutants = @(
        from  = '        if (await isExistingFile(docPath)) failFromStatus({ status: "file_exists" }, docPath);'
        to    = '        if (false) failFromStatus({ status: "file_exists" }, docPath);' }
 
-    # Re-anchored. The original anchored on an object literal at a call site;
-    # the three literals were replaced by one `reportedAutoCorrect` helper, so
-    # the anchor stopped matching and the runner reported MISSING -- the mutant
-    # silently stopped being evidence while still being listed. Anchoring in the
-    # helper is also stronger: it mutates all three call sites at once.
-    @{ name = 'autocorrect outcome reported as always suppressed'
-       file = 'src/word/document-author.mjs'
-       from  = '        suppressed: Boolean(ac.suppressed),
-        reason: ac.reason ?? null,'
-       to    = '        suppressed: true,
-        reason: null,' }
-
-    # The restore half of the same defect. `suppressed` was pinned in both
-    # directions by two fixtures and `restored` in neither, so this mutant
-    # survived every unit test until an all-fields-populated fixture was added.
-    # Suppression proven and restoration unproven is the same defect one step
-    # later, and that is true of the mutants as well as of the code.
-    @{ name = 'autocorrect restore outcome reported as never restored'
-       file = 'src/word/document-author.mjs'
-       from  = '        restored: Boolean(ac.restored),
-        restoreReason: ac.restoreReason ?? null,'
-       to    = '        restored: false,
-        restoreReason: null,' }
 
     @{ name = 'lock release never flagged'
        file = 'src/word/document-author.mjs'
@@ -192,37 +169,40 @@ export function paragraphsIn(spec) { return spec.blocks.length; }
        from  = '        throw new Error(`no block kind takes'
        to    = '        return ""; throw new Error(`no block kind takes' }
 
-    @{ name = 'description claims autocorrect is unconditionally off'
+    # Re-anchored twice, and the reason is the same both times: the anchor is
+    # the prose the description actually carries, and that prose changed when
+    # the claim behind it changed. It first said suppression was unconditional,
+    # then that it happened on an instance we started; it now says nothing about
+    # suppression at all, because nothing is suppressed.
+    @{ name = 'description claims autocorrect is switched off'
        file = 'extension.mjs'
-       from  = '        "Text is written verbatim. Autocorrect is switched off first on a Word this tool started, so",'
-       to    = '        "Text is written verbatim ' + $dash + ' Word' + "'" + 's autocorrect is switched off on the instance that authors it, so",' }
+       from  = '        "Text is written verbatim: it is assigned to a range rather than typed, so Word' + "'" + 's autocorrect and",'
+       to    = '        "Text is written verbatim. Autocorrect is switched off on the instance that authors it, so",' }
+
+    # The other direction of the same rule: the tool result must not grow back a
+    # field reporting a suppression that no longer happens.
+    @{ name = 'the autocorrect result field reintroduced'
+       file = 'src/word/document-author.mjs'
+       from  = '            tableCount: result.tableCount ?? 0,'
+       to    = '            autoCorrect: result.autoCorrect ?? null,
+            tableCount: result.tableCount ?? 0,' }
+
+    # And the host half: the suppression itself put back where it used to live.
+    @{ name = 'autocorrect suppression reintroduced in the host'
+       file = 'src/word/word-host.ps1'
+       from  = '    try { $script:App.Visible = $false } catch { }'
+       to    = '    try { $script:App.Visible = $false } catch { }
+    $script:App.AutoCorrect.ReplaceText = $false' }
 
     # Round 1 flagged the missing floors; auditing the whole boundary rather than
     # the flagged fields found the text length undeclared as well, on all three
-    # string-bearing fields, and the autoCorrect outcome invisible on the one
-    # failure path where a document really was authored.
+    # string-bearing fields.
 
     @{ name = 'text length enforced but not declared to the model'
        file = 'extension.mjs'
        from  = '            maxLength: MAX_TEXT_LENGTH,
 '
        to    = '' }
-
-    # Anchored on the `cause:` line above the block, not on the block alone.
-    # `create_unverified` carries an identical `autoCorrect` line, so the shorter
-    # anchor matched twice and the runner reported AMBIGUOUS -- it would have
-    # deleted the field from both failures while claiming to test one. That is
-    # now truer than when it was written: the literal became a shared
-    # `reportedAutoCorrect(result)` call appearing at three sites, so the one
-    # distinguishing line is `cause: err.code ?? null` -- `create_unverified`
-    # uses the shorthand `cause,`.
-    @{ name = 'autoCorrect dropped from the one failure that still authored a document'
-       file = 'src/word/document-author.mjs'
-       from  = '                    cause: err.code ?? null,
-                    autoCorrect: reportedAutoCorrect(result),
-'
-       to    = '                    cause: err.code ?? null,
-' }
 
     @{ name = 'a directory refused as an existing file, shadowing the host classifier'
        file = 'src/word/document-author.mjs'
@@ -269,7 +249,7 @@ $ambiguous = @()
 # run of this script reported 16 of 16 killed while one test was throwing ENOENT
 # on a mistyped path -- the suite was red before any mutant was applied, so every
 # "kill" was the same pre-existing failure. Refuse to run at all in that state.
-& node --test 'test/unit/create-intent.test.mjs' 'test/unit/document-author.test.mjs' *> $null
+& node --test 'test/unit/create-intent.test.mjs' 'test/unit/document-author.test.mjs' 'test/unit/autocorrect-not-suppressed.test.mjs' *> $null
 if ($LASTEXITCODE -ne 0) {
     Write-Host 'Baseline is red. Fix the suite before mutating; a red baseline kills every mutant.' -ForegroundColor Red
     exit 1
@@ -301,7 +281,7 @@ foreach ($m in $mutants) {
 
     [IO.File]::WriteAllText($file, $original.Replace($m.from, $m.to))
     try {
-        & node --test 'test/unit/create-intent.test.mjs' 'test/unit/document-author.test.mjs' *> $null
+        & node --test 'test/unit/create-intent.test.mjs' 'test/unit/document-author.test.mjs' 'test/unit/autocorrect-not-suppressed.test.mjs' *> $null
         $red = $LASTEXITCODE -ne 0
     } finally {
         [IO.File]::WriteAllText($file, $original)

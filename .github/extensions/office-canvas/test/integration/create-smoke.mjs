@@ -13,11 +13,11 @@
 //     `Range.Style = 'Heading 1'`, `= 'Überschrift 1'` and the OOXML id
 //     `= 'berschrift1'` all throw InvalidCastException. Measured in
 //     spikes/isolation/probes/probe-authoring-save.ps1.
-//   * Text goes in verbatim. Autocorrect rewrites inserted text with no error
-//     raised, so an unsuppressed instance produces a document that says
-//     something other than what was asked for. Only three baits are asserted --
-//     see the comment on VERBATIM_BAITS, which is the part of this file most
-//     likely to be "improved" into a vacuous pass.
+//   * Text goes in verbatim, with autocorrect left entirely alone. The host
+//     assigns to `Range.Text` rather than typing, and autocorrect is a typing
+//     feature: measured, all baits survive with every setting ON. Only three
+//     baits are asserted -- see the comment on VERBATIM_BAITS, which is the part
+//     of this file most likely to be "improved" into a vacuous pass.
 //   * Word does not overwrite. The refusal is checked against a file that
 //     exists, because the interesting failure is a silent overwrite.
 //   * No WINWORD.EXE is left behind.
@@ -93,10 +93,13 @@ async function check(name, fn) {
  * bait through Range.Text and through Selection.TypeText, whole and character by
  * character, with every autocorrect setting ON, and rewrite 0 of 6. The only arm
  * that rewrites anything is an explicit Content.AutoFormat(), which this host
- * never calls. So no insertion path the product uses can trigger a substitution
- * today, and a green here is not evidence that suppression works -- the evidence
- * for that is the separate settings read-back check. What this guards is a
- * *future* insertion path that does trigger autocorrect.
+ * never calls. probe-autocorrect-necessity.ps1 re-ran that with baits proven
+ * live in this machine's own 402-entry German list -- 8 baits, 0 rewritten, and
+ * the same AutoFormat control rewriting 3 of them in the same process. So no
+ * insertion path the product uses can trigger a substitution today, and that
+ * measurement is why the host no longer suppresses anything: there was nothing
+ * for the suppression to prevent. What this guards is a *future* insertion path
+ * that does trigger autocorrect.
  *
  * THE ANCHOR IS LOAD-BEARING, AND ITS ABSENCE MADE THE GUARD UNABLE TO GUARD.
  * Each bait paragraph opens with an anchor and is located by it. That is not
@@ -249,76 +252,24 @@ try {
         assert.ok(created.revisionToken, "no revision token was returned");
     });
 
-    await check("autocorrect was suppressed on the instance that authored it", () => {
-        // Asserted rather than assumed, and `suppressed` is a READ-BACK: the host
-        // records the prior values, writes false, then reads all five and
-        // compares. It used to mean "five assignments did not throw", which is a
-        // write reporting itself as a read and could not have gone red if Word
-        // had accepted an assignment without applying it.
-        //
-        // RETRACTED, and this comment is the reason the retraction matters. It
-        // used to say the settings are per-*process* -- switched off on instance
-        // A, a second process reads them still on -- and concluded suppression
-        // cannot reach the user's Word. The observation reproduces; the
-        // conclusion is false. That probe read B **while A was still alive**, and
-        // a concurrent reader sees the pre-write value, so it cannot tell
-        // isolation from persistence-with-lag. Re-measured
-        // sequentially (set, QUIT, read a fresh instance) all five come back
-        // changed: they persist for the user.
-        //
-        // So the host now captures and restores around the authoring call, and
-        // the assertion below has two halves. `restored` is the one carrying the
-        // user-safety claim -- a suppression proven and a restoration unproven is
-        // the same defect one step later.
-        //
-        // What this check CANNOT see, stated so it is not mistaken for full
-        // cover: this machine's found state is already all-false, which is also
-        // what suppression writes, so prior == target and a skipped write leaves
-        // the right value behind. Both halves were proven falsifiable by
-        // mutating to a *wrong* value rather than a no-op -- `not_applied
-        // (CorrectInitialCaps)` and `not_restored (ReplaceText)` -- but the case
-        // the restore actually exists for is a user whose autocorrect is ON, and
-        // that case cannot occur here. It is manufactured in
-        // spikes/isolation/probes/probe-autocorrect-restore.mjs, which sets all
-        // five ON, runs this tool, and reads a fresh instance afterwards.
-        // Both messages name the settings the host reported, not just the reason.
-        // A red that says only `not_applied` proves the check can fail; it does
-        // not prove it failed for the thing it is watching, and those are
-        // different claims. The list is taken from the report rather than
-        // restated here, so it cannot drift from what the host actually checks.
-        const naming = (label, why, settings) =>
-            `${label}: ${why ?? "no reason given"}${settings?.length ? ` (${settings.join(", ")})` : ""}`;
-
-        assert.equal(
-            created.autoCorrect.suppressed,
-            true,
-            naming("not suppressed", created.autoCorrect.reason, created.autoCorrect.settings),
-        );
-        assert.equal(
-            created.autoCorrect.restored,
-            true,
-            naming("not restored", created.autoCorrect.restoreReason, created.autoCorrect.restoreSettings),
-        );
-
-        // The capture is what makes a restore possible at all, so its absence is
-        // a distinct failure from a restore that ran and did not take.
-        assert.ok(created.autoCorrect.prior, "no prior values were captured");
-        assert.equal(
-            Object.keys(created.autoCorrect.prior).length,
-            5,
-            `captured ${Object.keys(created.autoCorrect.prior).length} prior values, expected all 5`,
-        );
-    });
-
     await check("text goes in verbatim, with no autocorrect substitution", async () => {
-        // This check CANNOT discriminate, and the name reads as though it can.
-        // Measured (probe-autocorrect.ps1 arms A, B, E, F, G): with every
-        // setting ON, these baits are rewritten 0 of 6 through every insertion
-        // path this host uses. So it is green whether or not suppression
-        // applied, and it is a forward guard against a future insertion path,
-        // never evidence that autocorrect was off. The evidence for that is the
-        // settings read-back check above, which is the acceptance criterion's
-        // real test. Full reasoning in the file header.
+        // This is now the ONLY in-suite evidence on the subject, and its status
+        // changed when the suppression was removed. It used to sit beside a
+        // settings read-back check and be explicitly *not* the evidence that
+        // autocorrect was off; there is nothing to be off any more, so what it
+        // asserts is the property the product actually promises -- the text on
+        // disk is the text that was asked for.
+        //
+        // It still cannot discriminate, and the name still reads as though it
+        // can. Measured (probe-autocorrect.ps1 arms A, B, E, F, G, and
+        // probe-autocorrect-necessity.ps1 arm C): with every setting ON, these
+        // baits are rewritten 0 of 6 -- 0 of 8 in the later probe, with 4 baits
+        // proven live in this machine's own replacement list -- through every
+        // insertion path this host uses. So it is green on a machine whose
+        // autocorrect is fully on and doing its worst, which is exactly the
+        // measurement that made suppressing it unnecessary. What it guards is a
+        // *future* insertion path that does trigger autocorrect. Full reasoning
+        // in the file header.
         const map = await cache.readStructure(target, { limit: 0 });
         const texts = map.paragraphs.map((p) => p.text);
         for (const bait of VERBATIM_BAITS) {

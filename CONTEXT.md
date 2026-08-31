@@ -1418,7 +1418,8 @@ a platform-wide default. Verified independently from the coordinator with a
 read-only check -- no assignments in it, so it could not perturb what it
 measured.
 
-Three rules come out of it.
+Three rules came out of it, and all three still hold as rules even though the
+code they were written for is gone.
 
 **Cleanup belongs inside the operation that made the mess, not in the teardown
 that may be skipped.** Save-and-restore at quit was the obvious repair and is
@@ -1438,8 +1439,129 @@ proven against a forced failure, every time** -- because the passing case and
 the broken case are the same observation. Both autocorrect checks that turned
 out to be unable to go red were in this one area, and that is why: suppression
 working and suppression silently failing look identical unless something is
-made to fail on purpose. The mutation must exist for the **restore** as well as
-the suppression, since the restore is what now carries the user-safety claim.
+made to fail on purpose.
+
+### Two Words alive at once: whichever exits cleanly last decides the value
+
+The retraction above left one thing open, and #51 named it: capture-and-restore
+is a save/restore against a store that a *second* Word is also holding a copy
+of. If the flush is last-writer-wins, a correct restore can still lose to a
+user's Word flushing its own stale copy afterwards. Measured rather than
+reasoned about, in `spikes/isolation/probes/probe-autocorrect-concurrency.mjs`
+-- seven arms, each seeding the store to all-five-ON, and each reading the
+result from a **fresh** instance started only after every Word it created had
+left the process list.
+
+| what the arm did | a fresh instance afterwards reads |
+| --- | --- |
+| lone writer wrote OFF and quit (the control) | **OFF** |
+| host killed, its Word still up | **ON** |
+| that orphan then killed | **ON** |
+| writer's Word killed outright | **ON** |
+| user's Word up first, writer quit, user quit last | **ON** |
+| user's Word up first and quit first, writer quit last | **OFF** |
+| `create_document`, user's Word quitting after it | **ON** |
+| user's Word opened *mid-suppression*, quit after our restore | **ON** |
+
+Three answers, only one of which was the question.
+
+**Last clean exit wins.** Arms 4 and 5 are the same two instances in the two
+orders and they disagree, which is the whole finding: the value a user's next
+Word sees is the one held by whichever instance exited cleanly last. So
+capture-and-restore was never a guarantee here. It was a best effort against
+shared state, and the case it loses -- a user's Word that was already open and
+exits after us -- is the ordinary one, not a corner.
+
+**A killed Word persists nothing.** Our restore lived in a `finally` that a host
+crash skips, so the obvious repair was a durable ledger of priors, written
+before the suppression and replayed at the next start. It was never needed: what
+a killed Word was holding is discarded, so a crash mid-authoring left the user's
+stored settings exactly as they were. The crash path was safe because it never
+reached the store, not because anything cleaned up after it. This contradicted
+the brief that commissioned the work, which named the kill path as the residual
+hole no restore could cover.
+
+**A concurrent reader sees the store, not the other instance.** Arm 7 was
+written expecting the dangerous ordering -- a user opening Word *during* our
+suppression, reading our OFF, and carrying it out past our restore -- and it
+went red against a correct product, because that Word reads the stored ON
+instead. The live value in our instance is not visible to it.
+
+No mechanism is claimed by any of this. Every row is a reading, and the arms
+that would distinguish "flushed at exit" from "flushed earlier and read from a
+cache" were not run because nothing turns on the answer. Asserting the flush as
+though it had been measured is the exact error that produced the retraction
+above, and it is easy to make twice.
+
+Also measured, incidentally: an orphaned Word whose host was **killed** does not
+exit on its own. It was still in the process list 45 s later and had to be
+reaped by hand. This does not contradict the account at `word-host.ps1`'s quit
+site, which concerns a host that *exited normally* after releasing its COM
+reference -- that Word did go. The distinction is the kill: a terminated process
+runs no release. The pid ledger is load-bearing on the kill path, not
+belt-and-braces.
+
+### The strongest fix was to stop writing the settings at all
+
+Everything above is about managing a hazard. The measurement that removed it is
+`spikes/isolation/probes/probe-autocorrect-necessity.ps1`, and its result is
+that the suppression bought nothing on any path this host uses.
+
+**Autocorrect and autoformat-as-you-type are typing features, and this host
+never types.** Every character reaches a document through `Set-ParagraphText` ->
+`Range.Text` assignment; there is no `Selection.TypeText` anywhere in
+`word-host.ps1`. Eight baits, all five settings ON, inserted through exactly
+that path: all eight came back verbatim. `Content.AutoFormat()` in the same
+process rewrote three of them, so the instrument can see a rewrite.
+
+**The scepticism that had to be answered first was about the baits, not the
+result.** The earlier "0 of 6 rewritten with every setting on" read stronger
+than it was, because its positive control only rewrote 3 of 6 and the probe
+itself raised the reason: a German Word ships a German AutoCorrect list, and
+`teh` -> `the` is an English entry. Enumerating `AutoCorrect.Entries` on this
+machine settled it -- **402 entries, German, and `teh` is not among them**. That
+bait was inert. It measured nothing, which is the same instrument defect as the
+retraction above, found in the same place twice. The replacement baits were
+drawn from the machine's own list (`(c)` -> `©`, `abeiten` -> `arbeiten`,
+`adnere` -> `andere`, `adneren` -> `anderen`) so they are provably live here.
+
+**Coverage, stated per feature, because the five are not one mechanism.**
+
+| setting | covered by a live bait? |
+| --- | --- |
+| `AutoCorrect.ReplaceText` | **yes** — four triggers read out of this machine's own list |
+| `Options.AutoFormatAsYouTypeReplaceQuotes` | **yes** — `Content.AutoFormat()` rewrote its bait in the same run |
+| `Options.AutoFormatAsYouTypeReplaceSymbols` | **yes** — same |
+| `AutoCorrect.CorrectSentenceCaps` | **no** |
+| `AutoCorrect.CorrectInitialCaps` | **no** |
+
+The last two are keystroke handlers with no programmatic trigger of any kind, so
+their baits went in verbatim but nothing available here can show they *could*
+have been rewritten. That is a gap in the evidence and is written down as one
+rather than argued away.
+
+**What actually settles it is about this codebase rather than about Word.**
+`Cmd-Edit` has never suppressed anything. Every `edit_document` writes through
+the identical `Range.Text` assignment with all five settings ON, and
+`test/integration/edit-smoke.mjs` already asserts the text lands verbatim on
+that path. The repo already depended on this measurement everywhere except one
+function. Suppressing in `Cmd-Create` alone was half-bought insurance whose only
+distinctive effect was editing the user's Word.
+
+So `Disable-AutoCorrect`, `Restore-AutoCorrect`, the `$acState` plumbing and the
+`autoCorrect` result field are all gone, and the safety rule in the file header
+went back to the simple form it should never have left: **these settings are
+never written, on any instance.** The guard is
+`test/unit/autocorrect-not-suppressed.test.mjs`, which is a source assertion and
+therefore has to prove its own detectors can fire -- each one is run against a
+synthetic source containing the thing it looks for, in the same test, because
+"this string is absent" is the exact shape that passes vacuously.
+
+**The general lesson is the one worth carrying.** A safety mechanism protecting
+against a risk that was never measured is not free: this one bought nothing and
+cost shared mutable state with the user's own application, plus two retracted
+claims and four rounds of work. Before hardening a mitigation, measure whether
+the thing it mitigates can happen on the paths you actually use.
 
 ### What survives a rebase is decided by what the artefact measures
 

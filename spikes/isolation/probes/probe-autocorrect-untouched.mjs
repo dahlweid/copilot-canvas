@@ -1,39 +1,41 @@
-// Does create_document put the user's autocorrect settings back?
+// Does create_document leave the user's autocorrect settings alone?
 //
-// Run: node spikes/isolation/probes/probe-autocorrect-restore.mjs
+// Run: node spikes/isolation/probes/probe-autocorrect-untouched.mjs
 // Requires Word. Perturbs the user's Word settings and puts them back; the
 // found state is captured first and restored in a `finally`.
 //
-// WHY THIS EXISTS, AND WHY THE SMOKE TEST CANNOT REPLACE IT
+// WHAT THIS ASKED BEFORE, AND WHY THE QUESTION CHANGED
 //
+// This file used to ask whether create_document RESTORED the five settings it
+// suppressed. It no longer suppresses them, so the question is now the simpler
+// and stronger one: does it touch them at all?
+//
+// The history is worth keeping because the file only exists because of it.
 // `probe-autocorrect.ps1` arm C concluded these settings are per-process. That
 // is RETRACTED: it read instance B while A was still alive, and a concurrent
-// reader sees the pre-write value, so it cannot tell
-// isolation from persistence-with-lag. They persist for the user. So
-// create_document now captures, disables, and restores around the authoring
-// call, and `suppressed`/`restored` are read-backs rather than "the assignment
-// did not throw".
+// reader sees the pre-write value, so it cannot tell isolation from
+// persistence-with-lag. They persist for the user. The response at the time was
+// capture-and-restore around the authoring call, and this probe was written to
+// prove the restore, because the smoke test could not:
 //
-// The read-backs are mutation-checked in create-smoke by assigning a wrong
-// value, and both go red naming the setting. But there is a gap that mutation
-// cannot close, and it is the reason for this file:
+//   On this machine the found state was all-`False`, which was also the value
+//   suppression wrote. So prior == target, and a write that was SKIPPED
+//   ENTIRELY left the correct value behind and every read-back stayed green.
+//   The case the restore existed for -- a user whose autocorrect is ON -- could
+//   not occur in the suite at all.
 //
-//   On this machine the found state is already all-`False`, which is also the
-//   value suppression writes. So prior == target, and a write that is SKIPPED
-//   ENTIRELY leaves the correct value behind and both read-backs stay green.
+// That manufacture is exactly what is still needed, so it is kept verbatim: set
+// all five ON first, standing in for the user we are protecting, and only then
+// run the tool. What changed is the assertion at the end. A restore that puts
+// back what it captured and a tool that never wrote anything are
+// indistinguishable from the outside -- which is the point. The user's next
+// Word must read ON either way, and now nothing has to go right for that to
+// happen.
 //
-// That vacuity is benign for suppression -- if the setting is already off, not
-// writing it is not a defect. It is NOT benign for the restore, because the
-// case the restore exists for is a user whose autocorrect is ON: there prior
-// != target, a skipped restore leaves our `False` on their machine, and that is
-// precisely the defect the whole redesign was for. On an all-`False` machine
-// the smoke can never enter that case.
-//
-// So this probe manufactures it. It sets all five ON first -- standing in for
-// the user we are protecting -- and only then runs the tool. Now prior !=
-// target in both directions, both read-backs are falsifiable, and the final
-// check reads a FRESH instance so it observes what was actually persisted
-// rather than what the authoring instance held in memory.
+// The final read is from a FRESH instance, which is the whole point: an
+// instance running alongside the writer reads the pre-write value, so it
+// observes what was persisted rather than what the authoring instance held in
+// memory.
 //
 // It is a probe rather than a smoke check because it deliberately writes the
 // user's real settings, and a suite that dies mid-run would leave them changed.
@@ -56,9 +58,8 @@ const extension = path.resolve(here, "../../../.github/extensions/office-canvas"
 // a URL scheme.
 const { RenderCache } = await import(pathToFileURL(path.join(extension, "src/render-cache.mjs")).href);
 
-// The five, listed once. Every pass below derives from this, for the same
-// reason $script:AC_SETTINGS exists in word-host.ps1: a setting added to one
-// pass and not another reads as handled while being unchecked.
+// The five, listed once. Every pass below derives from this: a setting added to
+// one pass and not another reads as handled while being unchecked.
 const SETTINGS = [
     ["AutoCorrect", "ReplaceText"],
     ["AutoCorrect", "CorrectSentenceCaps"],
@@ -145,21 +146,18 @@ try {
         await cache.dispose?.().catch(() => {});
     }
 
-    const ac = created.autoCorrect ?? {};
-    step("the tool reports it suppressed autocorrect", ac.suppressed === true, `${ac.reason ?? ""} ${(ac.settings ?? []).join(",")}`);
-    step("the tool reports it restored the settings", ac.restored === true, `${ac.restoreReason ?? ""} ${(ac.restoreSettings ?? []).join(",")}`);
-
-    // The captured prior is what the restore writes back, so if it did not
-    // observe the ON state the restore cannot be correct even when it claims
-    // success -- it would faithfully put back the wrong values.
+    // Nothing about autocorrect crosses the tool boundary any more, and that is
+    // asserted rather than assumed: a reappearing report field is the visible
+    // symptom of a reappearing suppression.
     step(
-        "it captured the ON values, not the values it was about to write",
-        ac.prior && names.every((n) => ac.prior[n] === true),
-        JSON.stringify(ac.prior ?? null),
+        "the tool reports nothing about autocorrect",
+        created.autoCorrect === undefined,
+        JSON.stringify(created.autoCorrect ?? null),
     );
 
     // The load-bearing check. A fresh instance sees what was persisted, so this
-    // is the user's next Word, not ours.
+    // is the user's next Word, not ours. It reads ON because the tool never
+    // wrote anything -- not because a restore put it back.
     const after = await readFresh();
     step("a fresh instance still reads all five ON after the tool ran", all(after, true), show(after));
 } finally {

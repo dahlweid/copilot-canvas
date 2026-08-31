@@ -727,6 +727,15 @@ justification, list renumbering, field updates, repagination - and every disagre
 visible snap-back. Worse, **autocorrect is on by default and TypeText triggers it**, so Word
 rewrites text under the overlay as a matter of routine, not as an edge case.
 
+> **Correction (issue #51).** The second half of that sentence was asserted, not measured,
+> and it does not hold on this machine. `probe-autocorrect.ps1` arms E and F drive
+> `Selection.TypeText` — whole and character by character — with every autocorrect setting
+> ON, and rewrite 0 of 6 baits; `probe-autocorrect-necessity.ps1` repeats it with 4 baits
+> proven live in this Word's own 402-entry German replacement list and rewrites 0 of 8. The
+> only arm that rewrites anything is an explicit `Content.AutoFormat()`. The overlay finding
+> above stands on the frame-latency measurement alone, which is why this correction does not
+> revive section 5.3.
+
 Credit where due: **undo granularity holds.** 5 characters via one TypeText = 1 undo step,
 and document length restored exactly. Section 5.4 stands.
 

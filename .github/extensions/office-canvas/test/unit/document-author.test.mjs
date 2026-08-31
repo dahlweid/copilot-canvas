@@ -110,7 +110,6 @@ const goodHost = (extra = {}) => ({
             status: "created",
             paragraphCount: 2,
             tableCount: 0,
-            autoCorrect: { suppressed: true },
             buildMs: 40,
             saveMs: 120,
             releaseMs: 0,
@@ -136,93 +135,6 @@ test("a document is authored and described back to the caller", async () => {
         // immediately without reading first.
         assert.equal(result.revisionToken, await fileRevisionToken(doc));
         assert.equal(result.lockReleased, true);
-    });
-});
-
-test("autocorrect suppression is reported, not assumed", async () => {
-    // Autocorrect rewrites inserted text and raises nothing, so "we switch it
-    // off" is only a claim until the result says so. This is the property a
-    // smoke test can assert without reading a comment.
-    //
-    // Asserted as a WHOLE-SHAPE deep-equal on purpose. These fields are what the
-    // agent sees, and the defect this pins is a field being added host-side and
-    // silently dropped on the way out: `restored` was written into the host
-    // report and lost at three object literals in document-author.mjs, which is
-    // the same class as the tool boundary carrying only part of an error. A
-    // property-by-property assertion cannot see an omission; this can.
-    await withTemp(async (dir) => {
-        const doc = path.join(dir, "report.docx");
-
-        const on = new DocumentAuthor({ reader: stubReader(doc), host: goodHost() });
-        assert.deepEqual((await on.create(doc, spec)).autoCorrect, {
-            suppressed: true,
-            reason: null,
-            restored: false,
-            restoreReason: null,
-            settings: null,
-            restoreSettings: null,
-            prior: null,
-        });
-
-        await rm(doc, { force: true });
-
-        // An instance we attached to rather than started is the user's own Word.
-        // The original reason given here was that the settings are per-process,
-        // citing probe-autocorrect.ps1 arm C. That is RETRACTED: arm C read a
-        // second instance while the first was still alive, and a concurrent
-        // reader sees the pre-write value, so it cannot tell
-        // isolation from persistence-with-lag. Measured sequentially they
-        // persist for the user, which makes declining on an attached instance
-        // MORE important rather than less -- the change would outlive us.
-        const off = new DocumentAuthor({
-            reader: stubReader(doc),
-            host: goodHost({ autoCorrect: { suppressed: false, reason: "attached_instance" } }),
-        });
-        assert.deepEqual((await off.create(doc, spec)).autoCorrect, {
-            suppressed: false,
-            reason: "attached_instance",
-            restored: false,
-            restoreReason: null,
-            settings: null,
-            restoreSettings: null,
-            prior: null,
-        });
-
-        await rm(doc, { force: true });
-
-        // Both arms above leave six of the seven fields at their default -- five
-        // `null` and `restored: false` -- so each is asserted only in the
-        // direction the helper would produce anyway if it hardcoded it. A
-        // `restored: false` or `settings: null` written into reportedAutoCorrect
-        // survives both of them, which is the suppression/restoration asymmetry
-        // one level down: `suppressed` is pinned in both directions by the two
-        // arms above and nothing else was.
-        //
-        // So this arm carries a value in EVERY field, all distinct from the
-        // defaults. Any field the helper stops forwarding changes here.
-        const full = new DocumentAuthor({
-            reader: stubReader(doc),
-            host: goodHost({
-                autoCorrect: {
-                    suppressed: true,
-                    reason: "verified",
-                    restored: true,
-                    restoreReason: "verified",
-                    settings: ["ReplaceText"],
-                    restoreSettings: ["ReplaceText"],
-                    prior: { ReplaceText: true },
-                },
-            }),
-        });
-        assert.deepEqual((await full.create(doc, spec)).autoCorrect, {
-            suppressed: true,
-            reason: "verified",
-            restored: true,
-            restoreReason: "verified",
-            settings: ["ReplaceText"],
-            restoreSettings: ["ReplaceText"],
-            prior: { ReplaceText: true },
-        });
     });
 });
 
@@ -436,7 +348,6 @@ test("a file that cannot be read back is not reported as one that was never writ
                 create: async () => ({
                     status: "created",
                     released: true,
-                    autoCorrect: { suppressed: false, reason: "attached_instance" },
                 }),
             },
         });
@@ -448,17 +359,6 @@ test("a file that cannot be read back is not reported as one that was never writ
         assert.match(text, /"created":null/, "a read that only failed was reported as proof of absence");
         assert.match(text, /Do not create it again/);
         assert.doesNotMatch(text, /there is no file at that path/);
-        // Asserted through the boundary, because this is a path where a document
-        // may exist and the description tells callers to check the field. Whole
-        // shape again: an error path is where a field is most likely to be
-        // dropped, since the success path is the one people look at.
-        assert.ok(
-            text.includes(
-                '"autoCorrect":{"suppressed":false,"reason":"attached_instance","restored":false,' +
-                    '"restoreReason":null,"settings":null,"restoreSettings":null,"prior":null}',
-            ),
-            `the autocorrect outcome did not cross whole:\n${text}`,
-        );
     });
 });
 
@@ -486,40 +386,6 @@ test("a document that cannot be read back is still reported as created", async (
         assert.match(text, /"cause":"word_timeout"/);
         assert.match(text, /Do not repeat the call/);
         assert.equal(await readFile(doc, "utf8"), "AUTHORED", "the created document was deleted");
-    });
-});
-
-test("the autocorrect outcome survives to the caller on the failure that still authored a document", async () => {
-    // The tool description tells callers to check `autoCorrect` to learn whether
-    // their text was written verbatim. That has to be true on the paths where
-    // there is a document to ask about -- and this is the only failure where
-    // there is one. Everywhere else the create did not happen and the question
-    // is meaningless.
-    //
-    // Asserted *through* `toolFailure`, the boundary the agent actually reads.
-    // A check one layer beneath it would happily confirm a property no caller
-    // can observe; that has bitten this stack three times, most recently in #45
-    // where it hid the whole defect.
-    //
-    // The unsuppressed case specifically, because it is the one that carries
-    // information: `suppressed: true` is the default assumption a caller would
-    // make anyway.
-    await withTemp(async (dir) => {
-        const doc = path.join(dir, "report.docx");
-        const author = new DocumentAuthor({
-            reader: {
-                read: async () => {
-                    throw Object.assign(new Error("Word did not respond"), { code: "word_timeout" });
-                },
-            },
-            host: goodHost({ autoCorrect: { suppressed: false, reason: "attached_instance" } }),
-        });
-
-        const text = throughToolBoundary(await failed(author, doc));
-
-        assert.match(text, /document_unreadable/);
-        assert.match(text, /"suppressed":false/, "the autocorrect outcome is dropped at the tool boundary");
-        assert.match(text, /"reason":"attached_instance"/);
     });
 });
 
