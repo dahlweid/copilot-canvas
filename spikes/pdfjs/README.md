@@ -35,6 +35,20 @@ surface the canvas actually uses, and no Chrome is installed on this machine
 anyway. It asserts a rendered page is non-blank by counting non-white pixels
 rather than trusting that `render()` resolved.
 
+`probe-range-requests.mjs` takes a PDF path, prints a URL, and exits by itself
+once the page reports back — you do not have to interrupt it. Its exit code is
+the answer, because its headline finding is a negative:
+
+| Exit | Meaning |
+| --- | --- |
+| 0 | pdf.js finished; the range table is a measurement, and the verdict line is printed. |
+| 1 | pdf.js failed in the browser; the verdict is `INCONCLUSIVE` and the browser's error is printed. |
+| 2 | the page never reported at all — never opened, closed early, or the in-page script died before its catch. |
+
+Only exit 0 may print `suffix-form ranges (bytes=-N): NONE`. Before issue #109
+every one of those three exited 0 and any of them could print that line, so a
+broken instrument and a clean negative were the same bytes on stdout.
+
 ## Why the split lives in vendoring, not packaging
 
 `pdf.worker.min.mjs` is 1,262,398 bytes against a 1,000,000-byte per-file
