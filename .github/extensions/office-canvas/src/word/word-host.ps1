@@ -574,11 +574,27 @@ function Resolve-Doc($docId) {
 #   ...ReplaceQuotes            COVERED. Content.AutoFormat() rewrote both baits
 #   ...ReplaceSymbols           in the same run, so they can demonstrably be
 #                               rewritten and going in verbatim means something.
-#   CorrectSentenceCaps         NOT COVERED, and said plainly rather than left to
-#   CorrectInitialCaps          be discovered. Both are keystroke handlers with no
-#                               programmatic trigger of any kind, so their baits
-#                               went in verbatim but nothing available here can
-#                               show they COULD have been rewritten.
+#   CorrectSentenceCaps         NOT COVERED BY THE PROBE, and said plainly rather
+#   CorrectInitialCaps          than left to be discovered. Both are keystroke
+#                               handlers with no programmatic trigger of any kind,
+#                               so their baits went in verbatim but nothing
+#                               available here can show they COULD have been
+#                               rewritten.
+#                               They are nevertheless UNREACHABLE, which is a
+#                               separate and stronger argument, and one about this
+#                               codebase rather than about Word: every character of
+#                               document text goes in through the single function
+#                               Set-ParagraphText (:1531), whose only write is
+#                               (Get-TextRange $para).Text = $text (:1532). Its
+#                               seven callers cover paragraphs, headings, list
+#                               items and table cells; the only other '.Text ='
+#                               assignments in this file are Find.Text (:1250,
+#                               :1323), which is a SEARCH string and is never
+#                               inserted. No keystroke API is called anywhere.
+#                               Guarded by the "the host never types" test in
+#                               test/unit/autocorrect-not-suppressed.test.mjs, so
+#                               an edit that reaches for one reddens rather than
+#                               silently making these two live again.
 #
 # The older "0 of 6 bait lines rewritten with every setting on" still holds but
 # read stronger than it was: its list bait was 'teh' -> 'the', an ENGLISH entry,
