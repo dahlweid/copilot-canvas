@@ -37,7 +37,7 @@
 // Every Word involved is created and quit by make-fixture.ps1 itself.
 
 import { spawn } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -185,5 +185,29 @@ for (const r of results) for (const name of r.failed) byCheck.set(name, (byCheck
 
 console.log(`\npass rate: ${green}/${runs}   neighbour: ${neighbour}`);
 for (const [name, n] of byCheck) console.log(`  failed ${n}x: ${name}`);
+
+// The duration distribution, not just the pass rate. `maxHoldMs` in
+// word-suite-lock.mjs is the age at which a *live* holder gets reclaimed from
+// underneath it, so it has to be justified by how long a suite actually runs
+// under contention. An earlier arm measured 36 such durations and printed them
+// to a console nobody redirected, so the numbers were gone by the time they were
+// needed -- hence the file below. A measurement that is not persisted was not
+// really taken.
+const secs = results.map((r) => r.seconds).sort((a, b) => a - b);
+const pct = (p) => secs[Math.min(secs.length - 1, Math.floor((p / 100) * secs.length))];
+console.log(
+    `duration s: min ${secs[0].toFixed(1)}  median ${pct(50).toFixed(1)}  ` +
+        `p90 ${pct(90).toFixed(1)}  max ${secs[secs.length - 1].toFixed(1)}`,
+);
+
+const logPath = path.join(
+    process.cwd(),
+    `probe-suite-contention.${neighbour}.${new Date().toISOString().replace(/[:.]/g, "-")}.json`,
+);
+await writeFile(
+    logPath,
+    JSON.stringify({ suite: SUITE, runs, neighbour, green, results }, null, 2),
+);
+console.log(`run log: ${logPath}`);
 await rm(path.join(tmpdir(), "never"), { force: true }).catch(() => {});
 process.exit(0);

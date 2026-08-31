@@ -1386,9 +1386,26 @@ were running unit suites and validators throughout, confirmed by census during
 the after arm. That is why the contention is *manipulated* rather than
 observed: the neighbour is the independent variable and ambient churn sits on
 top of it, which is also why 1/18 is harsher than the 17/18 originally
-reported and is not a re-measurement of it. Note which way the uncontrolled
-variable pushes: sibling Words were outside the lock, so they could only have
-made the after arm *worse*, never better.
+reported and is not a re-measurement of it. An earlier draft also argued that
+sibling load could only have biased the after arm *downward*, so the result was
+safe. That argument is withdrawn: the same census that identified the siblings
+found them to be `--test` and validator runs, **none of which start Word**, so
+no sibling Word ever entered the differencing window and the protective bias was
+never exercised. It was a property the rig would have had, not one it showed.
+The comparison stands on the manipulated variable alone, which is the stronger
+claim anyway.
+
+A nearer explanation was tested first and does not account for the flake.
+`read-smoke` samples `pidsBefore` and *then* calls `make-fixture.ps1`, which
+does `New-Object -ComObject Word.Application` — so the suite mints its own
+fixture Word **inside its own differencing window**, and `Quit()` returns before
+the process goes. No lock can exclude that, because the offending Word belongs
+to the locked suite itself. `probe-fixture-word-tail.mjs` measured it directly:
+the fixture's Word survived into the assertion window in **0 of 6** runs. The
+18/18 after arm bounds the residual further — whatever the fixture tail
+contributes, it is small enough not to have produced a single red in eighteen
+serialised runs — but the bound is an upper one from a modest sample, not a
+proof that the tail is zero.
 
 **An API that answers "was your instruction accepted" is not answering "is the
 world now in that state".** Third instance in this repo, each in different

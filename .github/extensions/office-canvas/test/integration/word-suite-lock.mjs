@@ -49,7 +49,7 @@
 // Losing the OS's automatic release is the cost, and it is paid explicitly
 // below: a lock whose owner is gone is reclaimed.
 
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -122,49 +122,123 @@ function parseOwner(raw) {
 }
 
 /**
- * Re-judges the lock and takes it away from a dead owner. Returns whether the
- * caller is now entitled to create its own.
+ * Runs `fn` with the lock file's mutation baton held, or returns `null` if the
+ * baton could not be taken.
  *
- * ## Why every step of this is synchronous
+ * ## Why every mutation goes through here, not just reclamation
  *
- * The obvious shape -- read the owner, decide it is stale, then rename -- is
- * wrong, and wrong in the direction that matters. Each `await` between the read
- * and the rename is a point where another waiter runs, and a waiter that
- * *already* judged the old owner stale will happily rename away the lock of the
- * live holder that has since replaced it, then create its own on top. Two
- * holders, which is precisely the "two suites in Word at once" this file
- * exists to prevent. Measured: with the read and the rename separated by
- * awaits, 8 waiters racing one abandoned lock produced overlapping holds
- * every time (`word-suite-lock.test.mjs`, "two waiters racing ...").
+ * Three versions of this file got this wrong, each time by assuming that
+ * *narrowing* the race was the same as closing it. The measurements are in
+ * `probe-suite-lock.mjs` part 4, 6 processes racing one abandoned lock under CPU
+ * load, counting rounds in which two processes genuinely held at once:
  *
- * Synchronous calls make the judge-then-take pair atomic with respect to this
- * process's event loop, so a decision cannot go stale before it is acted on.
+ * | shape | rounds with a double hold |
+ * | --- | --- |
+ * | read, judge, rename, create -- all `await`ed | 10/25, 8/25, 13/25 |
+ * | the same, made synchronous | 1/25, 1/25, 0/25 |
+ * | the same, plus a baton around *reclaimers only* | 0/25, 1/25, 0/25 |
+ * | this: a baton around *every* mutation | 0/25 x 10 reps, 250 rounds |
  *
- * ## Why the direction of the rename matters
+ * The last row is only worth reading because the instrument that produced it
+ * still goes red: re-run in the same session, under the same load, against the
+ * first shape, it reported 3/25, 4/25 and 5/25 with a worst overlap of 160 ms
+ * against a 150 ms hold -- a whole concurrent hold, not clock skew.
  *
- * The lock path is the rename's **source**, moved aside to a name unique to
- * this caller. Exactly one waiter can move a given file, so the losers get
- * ENOENT and go back to waiting. The inverse -- each waiter renaming its own
- * temp *onto* the lock -- looks equivalent and is not: on Windows a rename onto
- * an existing target replaces it and succeeds for every caller, so every waiter
- * would believe it had won.
+ * The middle two are the instructive ones. Making the sequence synchronous
+ * closes the in-process interleaving and nothing else -- another process is not
+ * on this event loop, and the OS will preempt between any two instructions. A
+ * baton that only reclaimers take is better and still wrong, because the
+ * surviving trace does not need two reclaimers:
  *
- * ## The residual window, stated rather than hidden
+ * 1. R reads the lock and sees owner H, which is alive, so far so good.
+ * 2. R is descheduled.
+ * 3. H releases the lock and **exits**.
+ * 4. W, an ordinary waiter, creates the now-free lock and holds it.
+ * 5. R resumes and judges H by pid -- H is dead now, so the lock looks
+ *    abandoned -- and installs over W. Two holders.
  *
- * Across processes the pair is two syscalls rather than one, so a holder that
- * acquires between our read and our rename could still be moved. That needs a
- * third party to have emptied the path in the same instant, and it is closed
- * further by verifying what the rename actually captured and putting it back if
- * it turns out to be live. What is left is a genuine but far narrower race than
- * the one above, and it fails safe: the restore uses `wx`, so it can never
- * overwrite a lock someone else legitimately created.
+ * R's judgement was true when it was made and false when it was acted on, and
+ * no amount of re-reading fixes that, because the re-read has the same problem.
+ * What fixes it is denying step 4: if creating the lock also requires the baton,
+ * W cannot appear inside R's window at all, and R's rename-away is safe to undo
+ * because nobody can have taken the path in the meantime.
+ *
+ * The baton is held for the microseconds of a decision, never for the duration
+ * of a suite; the lock file remains the long-lived thing. So contention on it is
+ * negligible, and a holder dying while holding it is a microsecond target rather
+ * than the minutes-long one the lock itself presents.
  */
-function takeIfStale(lockPath, { maxHoldMs, alive }) {
+function withBaton(lockPath, fn) {
+    const baton = `${lockPath}.baton`;
+    const BATON_MAX_MS = 60_000;
+    const mine = JSON.stringify({ pid: process.pid, at: Date.now() });
+
+    try {
+        writeFileSync(baton, mine, { flag: "wx" });
+    } catch {
+        // Either a decision is in progress -- microseconds, so just come back --
+        // or a process died mid-decision and left it. Only age tells them apart,
+        // and the gate is 60 s against a hold measured in microseconds, so a
+        // live baton is never mistaken for an abandoned one except under a
+        // four-order-of-magnitude stall.
+        let abandoned = false;
+        try {
+            abandoned = Date.now() - statSync(baton).mtimeMs > BATON_MAX_MS;
+        } catch {
+            return null;
+        }
+        if (!abandoned) return null;
+        try {
+            // Exactly one waiter can move a given file; the losers get ENOENT.
+            renameSync(baton, `${baton}.${process.pid}.${randomUUID()}.stale`);
+            writeFileSync(baton, mine, { flag: "wx" });
+        } catch {
+            return null;
+        }
+    }
+
+    try {
+        return fn();
+    } finally {
+        try {
+            unlinkSync(baton);
+        } catch {}
+    }
+}
+
+/**
+ * Takes the lock if it is free or abandoned. Runs under the baton, so no other
+ * process can create, reclaim or otherwise mutate the lock path while it works.
+ */
+function takeLocked(lockPath, payload, { maxHoldMs, alive }) {
+    try {
+        writeFileSync(lockPath, payload, { flag: "wx" });
+        return true;
+    } catch (err) {
+        // EEXIST is the ordinary "someone holds it". It is not the only way that
+        // presents on Windows: a create against a file another process has just
+        // unlinked, while a handle to it is still open, is refused with EPERM
+        // until the last handle closes -- the delete-pending state. Measured by
+        // `probe-suite-lock.mjs` part 4 before this branch existed: 2 of 150
+        // child acquisitions under CPU load died with an uncaught EPERM here,
+        // which the probe scored as a patient waiter rather than a crash until
+        // it was taught to tell them apart.
+        //
+        // Rethrowing a genuine permission fault would be no better. The caller
+        // is a poll loop with a deadline, so returning "did not take it" retries
+        // a transient refusal and lets a permanent one fall through to the
+        // warn-and-proceed path, which is already the designed answer for a lock
+        // that cannot be used.
+        if (err.code !== "EEXIST" && err.code !== "EPERM" && err.code !== "EACCES" && err.code !== "EBUSY") {
+            throw err;
+        }
+        if (err.code !== "EEXIST") return false;
+    }
+
     let raw;
     try {
         raw = readFileSync(lockPath, "utf8");
     } catch {
-        // Already gone. Nothing to reclaim; the caller retries its create.
         return false;
     }
 
@@ -172,9 +246,9 @@ function takeIfStale(lockPath, { maxHoldMs, alive }) {
     if (owner) {
         if (!isStaleOwner(owner, { maxHoldMs, alive })) return false;
     } else {
-        // An unreadable payload is not by itself abandonment: `writeFile`
-        // creates then writes, so a waiter can catch the file empty
-        // microseconds after a legitimate acquisition. Only age settles it.
+        // An unreadable payload is not by itself abandonment: a create-then-write
+        // can be caught with the file empty microseconds after a legitimate
+        // acquisition. Only age settles it.
         try {
             if (Date.now() - statSync(lockPath).mtimeMs <= maxHoldMs) return false;
         } catch {
@@ -182,6 +256,9 @@ function takeIfStale(lockPath, { maxHoldMs, alive }) {
         }
     }
 
+    // Move it aside rather than deleting it, so a misjudgement is recoverable.
+    // Under the baton nobody can take the path while it is briefly empty, which
+    // is what makes the undo below sound rather than merely likely.
     const aside = `${lockPath}.${process.pid}.${randomUUID()}.stale`;
     try {
         renameSync(lockPath, aside);
@@ -189,9 +266,6 @@ function takeIfStale(lockPath, { maxHoldMs, alive }) {
         return false;
     }
 
-    // We now hold `aside` exclusively, whatever it turned out to be. If it is
-    // not what we judged, put it back rather than keeping a lock we were not
-    // entitled to.
     let captured;
     try {
         captured = readFileSync(aside, "utf8");
@@ -200,14 +274,9 @@ function takeIfStale(lockPath, { maxHoldMs, alive }) {
     }
     const capturedOwner = parseOwner(captured);
     if (capturedOwner && !isStaleOwner(capturedOwner, { maxHoldMs, alive })) {
+        // Not what we judged. Put it back exactly as it was.
         try {
-            writeFileSync(lockPath, captured, { flag: "wx" });
-        } catch {
-            // Someone else already holds the path. Theirs stands; ours is not
-            // restored, and we are not entitled either way.
-        }
-        try {
-            unlinkSync(aside);
+            renameSync(aside, lockPath);
         } catch {}
         return false;
     }
@@ -215,7 +284,12 @@ function takeIfStale(lockPath, { maxHoldMs, alive }) {
     try {
         unlinkSync(aside);
     } catch {}
-    return true;
+    try {
+        writeFileSync(lockPath, payload, { flag: "wx" });
+        return true;
+    } catch {
+        return false;
+    }
 }
 
 /**
@@ -277,37 +351,34 @@ export async function acquireWordSuiteLock(
         JSON.stringify({ token, pid: process.pid, label, host: hostname(), startedAt: Date.now() });
 
     let announced = false;
-    for (;;) {
-        try {
-            await writeFile(lockPath, payload(), { flag: "wx" });
-            const waitedMs = Date.now() - startedAt;
-            if (announced) log(`[word-lock] acquired after ${(waitedMs / 1000).toFixed(1)}s\n`);
-            const handle = {
-                held: true,
-                token,
-                lockPath,
-                waitedMs,
-                release: () => releaseWordSuiteLock(lockPath, token),
-            };
-            if (onExit) {
-                const hook = () => releaseWordSuiteLock(lockPath, token);
-                process.on("exit", hook);
-                handle.detach = () => process.off("exit", hook);
-            }
-            return handle;
-        } catch (err) {
-            if (err.code !== "EEXIST") throw err;
+    const grant = () => {
+        const waitedMs = Date.now() - startedAt;
+        if (announced) log(`[word-lock] acquired after ${(waitedMs / 1000).toFixed(1)}s\n`);
+        const handle = {
+            held: true,
+            token,
+            lockPath,
+            waitedMs,
+            release: () => releaseWordSuiteLock(lockPath, token),
+        };
+        if (onExit) {
+            const hook = () => releaseWordSuiteLock(lockPath, token);
+            process.on("exit", hook);
+            handle.detach = () => process.off("exit", hook);
         }
+        return handle;
+    };
 
-        // Advisory only: used to say who we are waiting for. The decision to
-        // reclaim is re-taken synchronously inside `takeIfStale`, because a
-        // judgement made out here would be stale by the time it was acted on.
-        const owner = await readOwner(lockPath);
-        if (takeIfStale(lockPath, { maxHoldMs, alive })) {
-            const who = owner ? `pid ${owner.pid} (${owner.label})` : "an unreadable lock file";
-            log(`[word-lock] reclaimed the lock from ${who}\n`);
-            continue;
-        }
+    for (;;) {
+        // Every mutation of the lock path goes through the baton, including the
+        // ordinary create. That is the point: a create that bypassed it could
+        // land inside a reclaimer's window, which is the trace that survived
+        // the two previous versions of this file.
+        const took = withBaton(lockPath, () => takeLocked(lockPath, payload(), { maxHoldMs, alive }));
+        if (took) return grant();
+
+        // Advisory only: used to say who we are waiting for.
+        const owner = took === null ? null : await readOwner(lockPath);
 
         if (!announced) {
             announced = true;
