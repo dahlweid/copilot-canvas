@@ -60,8 +60,8 @@ try {
     if ($null -ne $word) {
         # Quit(), never Quit(<arg>). Under Windows PowerShell 5.1 -- the runtime
         # this is spawned under -- the argument form does not bind: it throws and
-        # the Word survives, and process exit does not reap it either (PLAN.md 20,
-        # probe-quit0-leak.ps1). The no-argument form takes the same default,
+        # the Word survives, and process exit does not reap it either
+        # (probe-quit0-leak.ps1). The no-argument form takes the same default,
         # since wdSaveChanges is only consulted for a dirty document.
         #
         # The outcome goes to a note file beside the pid file, and the parent

@@ -131,8 +131,8 @@ if (-not (Test-Path $docPath)) {
     # $seedPid is NOT sound attribution: $before is snapshotted *after*
     # New-Object, so the instance this block created is usually already in it and
     # $seedPid picks up whatever WINWORD appeared next -- which on this machine is
-    # measurably often a Word belonging to a concurrent session (PLAN.md census
-    # control: 2 appeared in a 40 s window with nothing launched). This used to
+    # measurably often a Word belonging to a concurrent session (census control:
+    # 2 appeared in a 40 s window with nothing launched). This used to
     # Stop-Process -Force that pid, which destroys unsaved work with no prompt.
     # It is now polled and reported, never killed: #25's rule is that a Word which
     # cannot be attributed must not be killed, and a reported orphan beats a

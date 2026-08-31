@@ -1,8 +1,10 @@
 // The revision token: a hash of the file, returned with a structure map and
 // required by any edit.
 //
-// Measured behaviour (spikes/isolation/PLAN.md §18.3), which is exactly what
-// optimistic concurrency needs:
+// Measured behaviour, which is exactly what optimistic concurrency needs. The
+// isolation spike that recorded it has been retired, so the measurement is
+// reproduced here rather than cited: a SHA-256 prefix over the file, computed
+// in 3 ms.
 //
 //   | our own edit and save          | token changes     |
 //   | save with nothing dirty        | token unchanged   |
@@ -10,7 +12,13 @@
 //
 // The "nothing dirty" row is the important one: Word skips writing a document
 // it considers clean, so merely inspecting a document does not churn the token
-// and force a re-read.
+// and force a re-read. The first row is what lets an edit response hand back a
+// fresh token, so the agent is forced to re-read after somebody else's edit and
+// never after its own.
+//
+// That is the whole concurrency story for transient locking: we hold nothing
+// between operations, so we cannot assume anything stayed put, and the token is
+// what converts that from a hazard into a detectable, refusable condition.
 //
 // A SHA-256 prefix rather than mtime+size, because a script that regenerates a
 // document can easily reproduce both while changing every word.

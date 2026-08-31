@@ -125,7 +125,7 @@ try {
     #
     # WARNING 2: this launches Word with NO document. The OBJID_NATIVEOM bind is not
     # reliable in that state - it fails E_FAIL for 20+ consecutive attempts. Launch with a
-    # document path if you need COM. See PLAN.md section 13.
+    # document path if you need COM.
     Set-ItemProperty -Path $themeKey -Name 'UI Theme' -Value 5 -Type DWord
     Rep "UI Theme forced to" 5
 

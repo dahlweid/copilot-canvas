@@ -1108,11 +1108,13 @@ function Cmd-Open($a) {
 
 # One `Content.WordOpenXML` call, written to a file, document closed at once.
 #
-# Measured (PLAN.md §18.1) on a 219-paragraph document: walking Paragraphs and
+# Measured on a 219-paragraph document: walking Paragraphs and
 # touching Range.Text / OutlineLevel per paragraph cost 3724 ms, because every
 # property touch is a cross-process COM call; one WordOpenXML call cost 289 ms
 # and returned strictly more -- text, style and full markup. A per-paragraph
-# property walk is a defect, not a slow path.
+# property walk is a defect, not a slow path. The cost of the walk scales with
+# document length, so a 1000-paragraph document would take about 17 seconds,
+# and read-then-address requires reads to be routine.
 #
 # The markup goes to a file rather than back through the protocol: it is
 # routinely 100 KB and can be megabytes, and JSON-escaping that onto a single

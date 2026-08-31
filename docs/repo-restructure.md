@@ -135,8 +135,9 @@ surface is decided — it will not be a page renderer.
 ### 3.1 The shared-code problem, which is the real decision
 
 Word, Excel and PowerPoint canvases will share most of their substance: the loopback server,
-the render cache, the hidden-COM host pattern, the file watcher, and the pdf.js viewer from
-`PLAN.md` §15.5. But C1 and C3 require each extension folder to be self-contained — a
+the render cache, the hidden-COM host pattern, the file watcher, and the pdf.js viewer the
+isolation spike's plan settled on. But C1 and C3 require each extension folder to be
+self-contained — a
 top-level `shared/` is neither copied by `install_extension` nor resolvable at runtime from
 inside `.github/extensions/<name>/`. A relative import such as `../../../shared/x.mjs` works
 in a git checkout and breaks the moment the folder is installed on its own.
@@ -186,9 +187,9 @@ honest shape of it under C2.
 
 ### 3.2 A packaging constraint that lands on the pdf.js decision
 
-`PLAN.md` §15.5 commits to vendoring pdf.js, and this section originally *predicted* where
-C4 would bite. Both halves of the prediction turned out to be wrong, so what follows is the
-measurement that replaced it.
+The isolation spike's plan, since retired, committed to vendoring pdf.js, and this section
+originally *predicted* where C4 would bite. Both halves of the prediction turned out to be
+wrong, so what follows is the measurement that replaced it.
 
 **The caps are decimal and they apply to every install path.** `install_extension` is
 implemented in the app binary, not in `copilot-sdk/`. Pushing deliberately oversized inputs

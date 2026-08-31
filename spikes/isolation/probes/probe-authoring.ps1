@@ -303,7 +303,7 @@ try {
         # Quit(), never Quit(<arg>). Under Windows PowerShell 5.1 -- the runtime
         # every .ps1 here runs under -- the argument form does not bind, so it
         # throws and the Word survives; process exit does not reap it either
-        # (PLAN.md 20, probe-quit0-leak.ps1). The no-argument form takes the same
+        # (probe-quit0-leak.ps1). The no-argument form takes the same
         # default, since wdSaveChanges is only consulted for a dirty document.
         # Reporting, not swallowing: an empty catch is what turned this from a
         # hard failure into a leak nobody could see. Step writes the trace file

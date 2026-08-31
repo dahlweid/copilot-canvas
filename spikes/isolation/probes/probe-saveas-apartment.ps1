@@ -111,7 +111,7 @@ try {
     if ($null -ne $w) {
         # Quit(), never Quit(<arg>). Under Windows PowerShell 5.1 the argument
         # form does not bind: it throws and the Word survives, and process exit
-        # does not reap it (PLAN.md 20, probe-quit0-leak.ps1). The no-argument
+        # does not reap it (probe-quit0-leak.ps1). The no-argument
         # form takes the same default. Reporting via Step rather than swallowing,
         # because the empty catch is what hid the leak.
         try { $w.Quit() } catch { Step "Quit() FAILED (Word may leak) -- $($_.Exception.Message.Split([char]10)[0])" }

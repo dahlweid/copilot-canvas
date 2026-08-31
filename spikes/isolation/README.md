@@ -4,15 +4,40 @@ Research for a possible v2 of the Word canvas: can a live Word instance be made 
 invisible** to the user while still rendering, and can it be driven well enough to support
 editing?
 
-`PLAN.md` is the write-up. Read §1's callout first — it points at the conclusion, which is
-**not** the one the plan starts out arguing for.
+`PLAN.md`, the 2,059-line write-up, has been **removed** (#103). It was the build plan for
+the design this spike falsified, and the product went another way. What it had measured is
+summarised below; the file itself is recoverable from git history at `v0.1.0` (`93c3536`).
 
 ## Conclusion in one line
 
 Full-window pixel streaming works and is invisible, but a **static colour-correct PDF for
-display plus a hidden live Word instance as an edit channel** (option C, §11) beats it, because
+display plus a hidden live Word instance as an edit channel** (option C) beats it, because
 single-page re-export costs 168 ms and streaming loses text selection, Ctrl+F, print and
 screen-reader accessibility.
+
+## What the plan had measured
+
+The numbers that outlived it. Where a probe is named below it still ships and can be re-run.
+The two lock rows and the addressing row name none: the scripts that produced them were cited
+by the plan and by nothing else, so they were removed with it. Their conclusions are what
+survive, in ADR 0005 and in `word-host.ps1`; the scripts are in git history at `v0.1.0`.
+
+| Finding | Where it lives now |
+| --- | --- |
+| Single-page PDF re-export costs **168 ms** and is flat in page position; a full 13-page export costs 664 ms (`probe-export.ps1`) | the conclusion above, and the render cache |
+| Word raises **no** content-change event; polling `doc.Saved` costs 1.14 ms (`probe-events.ps1`) | the file watcher |
+| Holding the original document open **blocks**: all three external write patterns fail with sharing violations, a second Word opening the same path hangs indefinitely with `DisplayAlerts` already off, and `~$` appears in the user's folder | ADR 0005 |
+| So the lock must be transient, and "already open" must be detected without calling `Documents.Open` — by taking a write handle, 4 ms when held, 9 ms when free | ADR 0005, `Test-FileWritable` |
+| A structural read must not walk paragraphs: on 219 paragraphs, per-paragraph `Range.Text`/`OutlineLevel` cost **3724 ms** against **289 ms** for one `Content.WordOpenXML` that returns strictly more | inlined at `Cmd-Structure` in `word-host.ps1` |
+| The revision token, a SHA-256 prefix computed in 3 ms, changes on our own save and on external regeneration but **not** on a save with nothing dirty | inlined in `revision-token.mjs` |
+| Style IDs inside the markup are **localized** — the first heading came back as `Überschrift1`, not `Heading1` | ADR 0006, and the structure parser |
+| "Unreadable" is two conditions and both runtimes tell them apart by type — `EBUSY`/`IOException` against `EPERM`/`UnauthorizedAccessException` (`probe-errno-mapping.mjs`) | ADR 0006, `document-reader.mjs` |
+| `Quit(<arg>)` does not bind under Windows PowerShell 5.1: it throws, the swallowing catch hides it, and process exit does not reap the survivor (`probe-quit0-leak.ps1`) | `quit-argument.test.mjs`, which pins it in the tree |
+
+Two figures are deliberately **not** carried over: the 4547 ms first export in a fresh Word
+process and the 228 ms open-edit-save-close round trip. Both are activation-inclusive —
+they measure a cold process, not the operation — and quoting them as operation costs is the
+mistake #35 exists to correct.
 
 ## Probes
 
@@ -40,7 +65,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\probes\probe-export.ps1
 ```
 
 Most probes need a `.docx` fixture at `$env:TEMP\desktop-probe.docx`. Any document works; the
-measurements quoted in `PLAN.md` used a 13-page one. Copy one there first:
+measurements quoted above used a 13-page one. Copy one there first:
 
 ```powershell
 Copy-Item .\path\to\any.docx "$env:TEMP\desktop-probe.docx"
@@ -53,5 +78,5 @@ repository's own earlier `spikes/live-word/FINDINGS.md` — turned out to be **w
 measured. Notably: that cross-process `SetWindowLong` could not work, that a non-input desktop
 could not render, and that the streamed page was colour-accurate.
 
-Treat secondary sources here as hypotheses. If a claim in `PLAN.md` matters, there is a probe
+Treat secondary sources here as hypotheses. Every claim above that still matters has a probe
 next to it that produced the number.
