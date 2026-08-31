@@ -135,7 +135,19 @@ re-renders exactly once.
   `spikes/isolation/probes/probe-autocorrect-concurrency.mjs`. The suppression was
   removed rather than hardened, because the same measurements showed it prevented
   nothing on any path this extension uses.
-- **Read-only.** Editing is deliberately out of scope for v1.
+- **A panel orphaned by an extension reload does not recover on its own.** Reloading the
+  extension kills the host, and the viewer's HTTP server dies with it; the app rehydrates
+  by opening a fresh server on a fresh ephemeral port, but nothing re-navigates the
+  existing webview, so it keeps requesting the dead one. Close and reopen the canvas.
+  This is deliberate: the only fix reachable from inside the extension is a deterministic
+  port per instance, which would have to be squatted out of the OS's own dynamic range
+  (measured here as 49152–65535, with blocks inside it already permanently reserved by
+  Windows). The real fix is host-app re-navigation. See
+  `docs/adr/0008-orphaned-panels-are-not-recovered-here.md`.
+- **The panel itself is display only.** You do not type into it. Reading, authoring and
+  editing all happen through Copilot, which drives the installed Word via this
+  extension's `read_document`, `create_document`, `edit_document` and `revert_document`
+  tools; the canvas re-renders afterwards and says what changed.
 
 ## Development
 

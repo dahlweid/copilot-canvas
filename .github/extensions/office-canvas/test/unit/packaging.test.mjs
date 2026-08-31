@@ -25,6 +25,21 @@ const REPO = path.resolve(HERE, "..", "..", "..", "..", "..");
 const EXT = path.join(".github", "extensions", "office-canvas");
 const NAME = "office-canvas";
 
+// Artefact filenames carry the *product* version, so this file tracks whatever
+// the manifest says rather than a literal. A release bump is paperwork; it must
+// not redden the packager's own tests, and a test that has to be edited to
+// permit a version change is a test that stops being run truthfully.
+const VERSION = JSON.parse(
+    await readFile(path.join(REPO, EXT, "copilot-extension.json"), "utf8"),
+).productVersion;
+
+// If that read ever goes wrong, VERSION becomes undefined and every filename
+// below turns into "office-canvas-undefined...", which fails loudly rather than
+// vacuously — but only if something checks. This is the check.
+if (!/^\d+\.\d+\.\d+$/.test(VERSION ?? "")) {
+    throw new Error(`copilot-extension.json productVersion is not semver: ${VERSION}`);
+}
+
 async function stageRepo() {
     const root = await mkdtemp(path.join(tmpdir(), "office-canvas-package-"));
     await cp(path.join(REPO, "tools"), path.join(root, "tools"), { recursive: true });
@@ -42,7 +57,7 @@ async function runPackager(root, args = []) {
     }
 }
 
-const readManifest = async (root, version = "1.0.0") =>
+const readManifest = async (root, version = VERSION) =>
     JSON.parse(await readFile(path.join(root, "dist", `${NAME}-${version}.package.json`), "utf8"));
 
 /** Every file in a packaged folder, as sorted POSIX-relative paths. */
@@ -72,7 +87,7 @@ test("packages the extension into a folder, a gist body and a manifest", async (
 
         const manifest = await readManifest(root);
         assert.equal(manifest.name, NAME);
-        assert.equal(manifest.version, "1.0.0");
+        assert.equal(manifest.version, VERSION);
 
         const files = await tree(path.join(root, "dist", NAME));
         // C1: the two files the runtime requires must survive packaging.
@@ -84,7 +99,7 @@ test("packages the extension into a folder, a gist body and a manifest", async (
             "the artefact on disk must match the manifest exactly",
         );
 
-        await stat(path.join(root, "dist", `${NAME}-1.0.0.gist.json`));
+        await stat(path.join(root, "dist", `${NAME}-${VERSION}.gist.json`));
     });
 });
 
@@ -205,8 +220,8 @@ test("packaging the same source twice produces an identical artefact", async () 
         assert.equal((await runPackager(root, ["--out", first])).ok, true);
         assert.equal((await runPackager(root, ["--out", second])).ok, true);
 
-        const manifestA = JSON.parse(await readFile(path.join(first, `${NAME}-1.0.0.package.json`), "utf8"));
-        const manifestB = JSON.parse(await readFile(path.join(second, `${NAME}-1.0.0.package.json`), "utf8"));
+        const manifestA = JSON.parse(await readFile(path.join(first, `${NAME}-${VERSION}.package.json`), "utf8"));
+        const manifestB = JSON.parse(await readFile(path.join(second, `${NAME}-${VERSION}.package.json`), "utf8"));
         assert.equal(manifestA.digest, manifestB.digest, "the digest must not depend on when packaging ran");
         assert.deepEqual(manifestA, manifestB, "the whole manifest must be reproducible");
 
@@ -219,8 +234,8 @@ test("packaging the same source twice produces an identical artefact", async () 
             const b = await readFile(path.join(second, NAME, rel));
             assert.ok(a.equals(b), `${rel} differs between two runs`);
         }
-        const gistA = await readFile(path.join(first, `${NAME}-1.0.0.gist.json`), "utf8");
-        const gistB = await readFile(path.join(second, `${NAME}-1.0.0.gist.json`), "utf8");
+        const gistA = await readFile(path.join(first, `${NAME}-${VERSION}.gist.json`), "utf8");
+        const gistB = await readFile(path.join(second, `${NAME}-${VERSION}.gist.json`), "utf8");
         assert.equal(gistA, gistB, "the gist body must be reproducible, key order included");
     });
 });
@@ -302,7 +317,7 @@ test("the gist body is flat, backslash-separated and complete", async () => {
     // backslash *is* the separator, so the bundle is the API request body.
     await withStagedRepo(async (root) => {
         assert.equal((await runPackager(root)).ok, true);
-        const payload = JSON.parse(await readFile(path.join(root, "dist", `${NAME}-1.0.0.gist.json`), "utf8"));
+        const payload = JSON.parse(await readFile(path.join(root, "dist", `${NAME}-${VERSION}.gist.json`), "utf8"));
         const manifest = await readManifest(root);
 
         const names = Object.keys(payload.files);
@@ -331,8 +346,8 @@ test("--expect-version gates the tag against the manifest", async () => {
         assert.match(wrong.output, /version mismatch/);
 
         // Both spellings, because git tags carry the v and manifests do not.
-        assert.equal((await runPackager(root, ["--expect-version", "v1.0.0"])).ok, true);
-        assert.equal((await runPackager(root, ["--expect-version", "1.0.0"])).ok, true);
+        assert.equal((await runPackager(root, ["--expect-version", `v${VERSION}`])).ok, true);
+        assert.equal((await runPackager(root, ["--expect-version", VERSION])).ok, true);
     });
 });
 
