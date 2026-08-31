@@ -9,17 +9,21 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const DIR = join(import.meta.dirname, "worker-split");
-const REPO_SERVER =
-  "C:/Git/copilot-worktrees/copilot-canvas-word/dahlweid-verbose-tribble/.github/extensions/office-canvas/src/server.mjs";
+const REPO_SERVER = join(
+  import.meta.dirname,
+  "../../..",
+  ".github/extensions/office-canvas/src/server.mjs",
+);
 
-let parseByteRange = null;
-try {
-  const mod = await import(pathToFileURL(REPO_SERVER).href);
-  parseByteRange = mod.parseByteRange ?? null;
-  console.log(`parseByteRange imported: ${typeof parseByteRange === "function"}`);
-} catch (e) {
-  console.log(`could not import repo server.mjs: ${e.message}`);
+// No try/catch. The second of this probe's two questions is answered entirely
+// by this import, so a recovery here would print `parseByteRange -> n/a` for
+// every range, exit 0, and read as a measured absence rather than as a probe
+// that never ran. Let it throw: an unhandled rejection here exits non-zero.
+const { parseByteRange } = await import(pathToFileURL(REPO_SERVER).href);
+if (typeof parseByteRange !== "function") {
+  throw new Error(`${REPO_SERVER} exports no parseByteRange function`);
 }
+console.log(`parseByteRange imported from ${REPO_SERVER}`);
 
 const worker = await readFile(join(DIR, "pdf.worker.min.mjs"));
 const main = await readFile(join(DIR, "pdf.min.mjs"));
@@ -124,14 +128,11 @@ setInterval(() => {
     const uniq = [...new Set(ranges)];
     console.log(`\n--- ${seen.length} requests, ${uniq.length} distinct range forms ---`);
     for (const r of uniq.slice(0, 12)) {
-      let parsed = "n/a";
-      if (parseByteRange) {
-        try {
-          const out = parseByteRange(r, pdf.length);
-          parsed = JSON.stringify(out);
-        } catch (e) {
-          parsed = "THREW: " + e.message;
-        }
+      let parsed;
+      try {
+        parsed = JSON.stringify(parseByteRange(r, pdf.length));
+      } catch (e) {
+        parsed = "THREW: " + e.message;
       }
       console.log(`  ${r.padEnd(28)} parseByteRange -> ${parsed}`);
     }
