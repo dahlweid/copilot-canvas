@@ -49,8 +49,8 @@
 // Losing the OS's automatic release is the cost, and it is paid explicitly
 // below: a lock whose owner is gone is reclaimed.
 
-import { readFile, rename, rm, stat, writeFile } from "node:fs/promises";
-import { readFileSync, unlinkSync } from "node:fs";
+import { readFile, writeFile } from "node:fs/promises";
+import { readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -94,57 +94,127 @@ async function readOwner(lockPath) {
 }
 
 /**
- * May this lock be taken from its owner?
+ * Is this owner's claim dead?
  *
- * Three reclaimable states, and one deliberately non-reclaimable one:
+ * Two independent tests, and both are needed:
  *
  *   - the owner pid is gone: the run crashed, was killed, or was interrupted
  *     before its exit hook ran. This is the case the OS would have handled for
- *     a real handle and the reason this function exists at all.
+ *     a real handle, and the reason reclamation exists at all.
  *   - the owner is alive but has held past `maxHoldMs`: the backstop for pid
  *     reuse, where a dead run's number has been reissued to something unrelated
  *     that will never release. Set well beyond any real suite -- a wrong steal
- *     here costs a false red, which is what we are trying to stop.
- *   - the payload is unreadable *and* the file has not been touched for
- *     `maxHoldMs`: a half-written or corrupted lock, which would otherwise wedge
- *     every future run forever.
- *
- * A payload that is merely unreadable *now* is not stale. `writeFile` creates
- * then writes, so a reader can catch the file empty microseconds after a
- * legitimate acquisition; treating that as abandonment would hand the lock to
- * two holders at once. It will parse on the next poll.
+ *     here costs a false red, which is the thing being fixed.
  */
-async function reclaimable(lockPath, owner, { maxHoldMs, alive }) {
-    if (!owner) {
-        try {
-            const info = await stat(lockPath);
-            return Date.now() - info.mtimeMs > maxHoldMs;
-        } catch {
-            // Gone between the failed read and here -- released, not stale.
-            return false;
-        }
-    }
+function isStaleOwner(owner, { maxHoldMs, alive }) {
     if (!alive(owner.pid)) return true;
     return Number.isFinite(owner.startedAt) && Date.now() - owner.startedAt > maxHoldMs;
 }
 
-/**
- * Takes the lock away from a dead owner, atomically enough that two waiters
- * cannot both succeed.
- *
- * `rm` then `writeFile` would let two waiters interleave -- A removes, A
- * creates, B removes *A's fresh lock*, B creates, and both run. Renaming is the
- * fix: the second rename of the same path fails with ENOENT, so exactly one
- * waiter is entitled to try the create, and the loser goes back to waiting.
- */
-async function stealFrom(lockPath) {
-    const aside = `${lockPath}.${process.pid}.${Date.now()}.stale`;
+/** Parse a lock payload, or null if it is empty or unreadable. */
+function parseOwner(raw) {
     try {
-        await rename(lockPath, aside);
+        const parsed = JSON.parse(raw);
+        return parsed && typeof parsed === "object" ? parsed : null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Re-judges the lock and takes it away from a dead owner. Returns whether the
+ * caller is now entitled to create its own.
+ *
+ * ## Why every step of this is synchronous
+ *
+ * The obvious shape -- read the owner, decide it is stale, then rename -- is
+ * wrong, and wrong in the direction that matters. Each `await` between the read
+ * and the rename is a point where another waiter runs, and a waiter that
+ * *already* judged the old owner stale will happily rename away the lock of the
+ * live holder that has since replaced it, then create its own on top. Two
+ * holders, which is precisely the "two suites in Word at once" this file
+ * exists to prevent. Measured: with the read and the rename separated by
+ * awaits, 8 waiters racing one abandoned lock produced overlapping holds
+ * every time (`word-suite-lock.test.mjs`, "two waiters racing ...").
+ *
+ * Synchronous calls make the judge-then-take pair atomic with respect to this
+ * process's event loop, so a decision cannot go stale before it is acted on.
+ *
+ * ## Why the direction of the rename matters
+ *
+ * The lock path is the rename's **source**, moved aside to a name unique to
+ * this caller. Exactly one waiter can move a given file, so the losers get
+ * ENOENT and go back to waiting. The inverse -- each waiter renaming its own
+ * temp *onto* the lock -- looks equivalent and is not: on Windows a rename onto
+ * an existing target replaces it and succeeds for every caller, so every waiter
+ * would believe it had won.
+ *
+ * ## The residual window, stated rather than hidden
+ *
+ * Across processes the pair is two syscalls rather than one, so a holder that
+ * acquires between our read and our rename could still be moved. That needs a
+ * third party to have emptied the path in the same instant, and it is closed
+ * further by verifying what the rename actually captured and putting it back if
+ * it turns out to be live. What is left is a genuine but far narrower race than
+ * the one above, and it fails safe: the restore uses `wx`, so it can never
+ * overwrite a lock someone else legitimately created.
+ */
+function takeIfStale(lockPath, { maxHoldMs, alive }) {
+    let raw;
+    try {
+        raw = readFileSync(lockPath, "utf8");
+    } catch {
+        // Already gone. Nothing to reclaim; the caller retries its create.
+        return false;
+    }
+
+    const owner = parseOwner(raw);
+    if (owner) {
+        if (!isStaleOwner(owner, { maxHoldMs, alive })) return false;
+    } else {
+        // An unreadable payload is not by itself abandonment: `writeFile`
+        // creates then writes, so a waiter can catch the file empty
+        // microseconds after a legitimate acquisition. Only age settles it.
+        try {
+            if (Date.now() - statSync(lockPath).mtimeMs <= maxHoldMs) return false;
+        } catch {
+            return false;
+        }
+    }
+
+    const aside = `${lockPath}.${process.pid}.${randomUUID()}.stale`;
+    try {
+        renameSync(lockPath, aside);
     } catch {
         return false;
     }
-    await rm(aside, { force: true }).catch(() => {});
+
+    // We now hold `aside` exclusively, whatever it turned out to be. If it is
+    // not what we judged, put it back rather than keeping a lock we were not
+    // entitled to.
+    let captured;
+    try {
+        captured = readFileSync(aside, "utf8");
+    } catch {
+        captured = "";
+    }
+    const capturedOwner = parseOwner(captured);
+    if (capturedOwner && !isStaleOwner(capturedOwner, { maxHoldMs, alive })) {
+        try {
+            writeFileSync(lockPath, captured, { flag: "wx" });
+        } catch {
+            // Someone else already holds the path. Theirs stands; ours is not
+            // restored, and we are not entitled either way.
+        }
+        try {
+            unlinkSync(aside);
+        } catch {}
+        return false;
+    }
+
+    try {
+        unlinkSync(aside);
+    } catch {}
     return true;
 }
 
@@ -229,10 +299,13 @@ export async function acquireWordSuiteLock(
             if (err.code !== "EEXIST") throw err;
         }
 
+        // Advisory only: used to say who we are waiting for. The decision to
+        // reclaim is re-taken synchronously inside `takeIfStale`, because a
+        // judgement made out here would be stale by the time it was acted on.
         const owner = await readOwner(lockPath);
-        if (await reclaimable(lockPath, owner, { maxHoldMs, alive })) {
+        if (takeIfStale(lockPath, { maxHoldMs, alive })) {
             const who = owner ? `pid ${owner.pid} (${owner.label})` : "an unreadable lock file";
-            if (await stealFrom(lockPath)) log(`[word-lock] reclaimed the lock from ${who}\n`);
+            log(`[word-lock] reclaimed the lock from ${who}\n`);
             continue;
         }
 

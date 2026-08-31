@@ -126,9 +126,63 @@ test("a living owner that has held past the cap is reclaimed anyway", async () =
     }
 });
 
+test("two waiters racing for the same abandoned lock, and only one wins", async () => {
+    // The reclamation race, which the *direction* of the rename decides.
+    //
+    // `stealFrom` renames the stale lock AWAY, to a name unique to the caller:
+    // the path being raced on is the rename's SOURCE, so exactly one waiter
+    // moves it and the losers get ENOENT. The inverse -- each waiter renaming
+    // its own temp ONTO the lock -- looks equivalent and is not: on Windows a
+    // rename onto an existing target replaces it and SUCCEEDS for every
+    // caller, so every waiter would believe it had won.
+    //
+    // Nothing above pins that, which is why this exists: every other test here
+    // passes with the steal written either way round.
+    const { lockPath, cleanup } = await scratch();
+    const ABANDONED = 999_999_998;
+    try {
+        await writeFile(
+            lockPath,
+            JSON.stringify({ token: "gone", pid: ABANDONED, label: "abandoned", startedAt: Date.now() }),
+        );
+
+        let holding = 0;
+        let overlapped = false;
+        const contend = async (n) => {
+            const handle = await acquireWordSuiteLock(`waiter-${n}`, {
+                lockPath,
+                timeoutMs: 10_000,
+                pollMs: 1,
+                onExit: false,
+                log: () => {},
+                // Only the seeded owner is dead. A waiter that has won holds a
+                // lock stamped with this process's pid, and must read as alive
+                // or the others would reclaim it out from under it.
+                alive: (pid) => pid !== ABANDONED,
+            });
+            if (!handle.held) return false;
+            if (++holding > 1) overlapped = true;
+            await new Promise((r) => setTimeout(r, 5));
+            const released = handle.release();
+            holding--;
+            return released;
+        };
+
+        const outcomes = await Promise.all([1, 2, 3, 4, 5, 6, 7, 8].map(contend));
+
+        assert.equal(overlapped, false, "two waiters held the abandoned lock at the same time");
+        // Every waiter must also eventually get in. A steal that cannot be
+        // completed wedges them all instead of double-booking them, which is
+        // the other way the wrong rename direction shows up.
+        assert.deepEqual(outcomes, [true, true, true, true, true, true, true, true]);
+        assert.equal(existsSync(lockPath), false);
+    } finally {
+        await cleanup();
+    }
+});
+
 test("a freshly created, not-yet-written lock is not mistaken for abandoned", async () => {
-    // `writeFile` creates then writes, so a waiter can read the file empty
-    // microseconds after a legitimate acquisition. Treating unparseable as
+    // `writeFile` creates then writes, so a waiter can read the file empty    // microseconds after a legitimate acquisition. Treating unparseable as
     // abandoned would hand the lock to two holders at once.
     const { lockPath, cleanup } = await scratch();
     try {
