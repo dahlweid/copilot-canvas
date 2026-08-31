@@ -103,6 +103,17 @@ nothing. Leave streaming on; keep serving `content-length` and `accept-ranges`
 so pdf.js can make the single-request choice. `parseByteRange`'s suffix branch
 stays unit-test-only — do not describe it as pdf.js-driven.
 
+**On the strength of that last bullet.** It was established before
+`probe-range-requests.mjs` could tell a failed pdf.js from a genuine absence:
+the in-page script reported its outcome only into the DOM, the report tick keyed
+on the requests pdf.js had *made*, and SIGINT was the only exit. Measured under
+issue #109, serving 500 to the second range request produced a report whose
+verdict line — `suffix-form ranges (bytes=-N): NONE` — was byte-identical to a
+healthy run's, and exited 0. The probe now posts the browser's outcome back to
+the server, prints that negative only on `ok:true`, and exits non-zero
+otherwise. Nothing here says the finding is wrong; it says the run that
+established it could not have told you, and a re-run now can.
+
 ## Budget
 
 | Item | Bytes |
