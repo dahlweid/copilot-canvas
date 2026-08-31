@@ -433,30 +433,34 @@ export class PdfView {
         if (page.rendered || !page.proxy) return;
         page.rendered = true;
         // Captured once, then re-read after every await below. There are three
-        // such checks and they are *not* interchangeable: each guards the await
-        // immediately above it, so each catches a re-scale that landed in a
-        // different window. Measured, removing any single one leaves the suite
-        // green -- a later check still stops the stale paint before the DOM --
-        // so what each one uniquely prevents is how *far* the paint gets:
+        // such checks and they are *not* interchangeable: each sits at a
+        // distinct await boundary -- render completion, text extraction, text
+        // layer rendering -- so each catches a re-scale that landed in a
+        // different window, and a fence is only ever reached by a paint the
+        // earlier fences let through. None is dead code. What differs is how
+        // far a superseded paint gets before it stops, and whether that is
+        // observable:
         //
-        //   after render()          the only one that runs before
-        //                           `getTextContent`, so the only one that can
-        //                           stop a worker round-trip for a paint that
-        //                           is already dead. Pinned.
+        //   after render()          the only one before `getTextContent`, so
+        //                           the only one that can stop a worker
+        //                           round-trip for a paint already dead.
+        //                           Removing it alone fails the suite.
         //   after getTextContent()  the last one before `page.items` is
         //                           stamped, which `planChangeMarks` reads to
-        //                           place the change overlay. Pinned.
+        //                           place the change overlay. Removing it alone
+        //                           fails the suite.
         //   after textLayer.render() prevents a redundant `#applyChange()`.
-        //                           Honestly: this one is *not* pinned, and
-        //                           removing it alone leaves the suite green
-        //                           for a reason no test asserts -- the call it
-        //                           skips reads current state, so running it
-        //                           twice produces the same overlay. It is kept
-        //                           because a provably superseded paint calling
-        //                           into live overlay placement is the shape of
-        //                           bug this class exists to prevent, but it is
-        //                           recorded here as unproven rather than left
-        //                           to read as covered.
+        //                           Reached like the others, but removing it
+        //                           alone leaves the suite green and no test
+        //                           here can change that: `#applyChange()`
+        //                           takes no arguments and reads current state,
+        //                           so the stale paint's call produces the same
+        //                           overlay the live one will. Its effect is
+        //                           unobservable, not absent. Kept because a
+        //                           provably superseded paint calling into live
+        //                           overlay placement is the shape of bug this
+        //                           guards against, and recorded as unpinned
+        //                           rather than left to read as covered.
         const epoch = this.#epoch;
 
         // Paint at device resolution. Without this the canvas is upscaled by the
