@@ -18,7 +18,10 @@
 // gist, and they are decimal — 1,000,000 bytes per file and 5,000,000 in
 // total. The restructure plan this repository was built to had held that
 // repo-folder install carried no such limit; measurement against the running
-// app said otherwise.
+// app said otherwise. (Pinned to the plan's first revision deliberately:
+// `93c3536` already carries the correction, so it does not evidence what
+// the plan originally held:
+//     git show 4e30367:docs/repo-restructure.md   // C4 — gist-only scope)
 //
 // Run: node tools/package-extension.mjs [name] [--out dist] [--expect-version v1.0.0]
 

@@ -7,9 +7,10 @@ viewer.*
 just says how to run the probes.
 
 These were run *before* #9 was written, so that layer inherits measurements
-rather than reasoning. They inverted both halves of the prediction the
-restructure plan had made about pdf.js (see [`FINDINGS.md`](FINDINGS.md) §1), and
-corrected three claims in the issue itself.
+rather than reasoning. They found the worker too large for C4 and the binary
+font files a non-issue — inverting both halves of the prediction the restructure
+plan (since deleted) had made about pdf.js (see [`FINDINGS.md`](FINDINGS.md) §1),
+and corrected three claims in the issue itself.
 
 ## Running them
 
