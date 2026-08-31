@@ -40,16 +40,27 @@ export const Util = {
 
 export class TextLayer {
     static instances = [];
+    /**
+     * When set, `render()` hands back a promise that stays pending until the
+     * test resolves it, so a re-scale can be landed while a text layer is
+     * half-built. Cleared by `reset()` along with `instances`.
+     */
+    static deferRender = false;
 
     constructor(options) {
         this.options = options;
         this.rendered = 0;
         this.cancelled = 0;
+        this.settleRender = null;
         TextLayer.instances.push(this);
     }
 
     async render() {
         this.rendered += 1;
+        if (!TextLayer.deferRender) return;
+        await new Promise((resolve) => {
+            this.settleRender = resolve;
+        });
     }
 
     cancel() {
@@ -82,6 +93,7 @@ export function reset() {
     specs.clear();
     opened.length = 0;
     TextLayer.instances.length = 0;
+    TextLayer.deferRender = false;
     GlobalWorkerOptions.workerSrc = null;
     OutputScale.pixelRatio = 1;
 }
@@ -132,6 +144,13 @@ function makePage(number, items, spec) {
         renderScales: [],
         // Render tasks handed out and not yet settled, when `deferRender` is on.
         inFlight: [],
+        // Counts the calls, not the results. A superseded paint that reaches
+        // this has already cost a worker round-trip, whatever it does with the
+        // answer -- which is the only way to tell the fence *before* it from the
+        // fences after it, since all three produce the same final DOM.
+        textContentCalls: 0,
+        // Resolves the pending `getTextContent`, when `deferTextContent` is on.
+        settleTextContent: null,
         cleanups: 0,
         getViewport({ scale }) {
             return {
@@ -195,6 +214,12 @@ function makePage(number, items, spec) {
             return task;
         },
         async getTextContent() {
+            this.textContentCalls += 1;
+            if (spec.deferTextContent) {
+                await new Promise((resolve) => {
+                    this.settleTextContent = resolve;
+                });
+            }
             return { items };
         },
         cleanup() {

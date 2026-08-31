@@ -53,6 +53,15 @@ vertical scrollbar, which lies inside the border box and outside the content
 box, not a layout fault. Worth recording because the naive measurement reports
 a perfectly centred page as off-centre, and by a plausible-looking amount.
 
+The correction changed a *right* margin by 15px on six rows and could not have
+touched a left one — `clientLeft` is the left border width, and in LTR the
+scrollbar is on the right — but that is a re-reading, and every leftReach figure
+below was captured before it, including the **−223.5** the `.pages` comment in
+`app.css` cites. So the probe now records `leftReach` on both instruments and
+asserts they agree on every row, control rows included. They do, to the
+hundredth of a pixel: `centring alone: -223.5 vs -223.5`. The cited number is
+reproducible on the committed probe rather than merely believed to be.
+
 ## Question 1 — is the left edge of a zoomed page reachable
 
 Only because of one declaration. The control holds everything else fixed —

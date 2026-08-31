@@ -835,3 +835,81 @@ test("onScaleChange reports the scale changes nobody pressed a button for", asyn
     await harness.settle();
     assert.deepEqual(seen, [], "a resize that changed nothing was still announced");
 });
+
+test("a superseded paint stops at the first fence rather than the last", async (t) => {
+    // The three `#epoch` fences all end in the same place -- nothing stale
+    // reaches the DOM -- so removing any one of them leaves the suite green and
+    // the other two catch it. That result is equally consistent with a fence
+    // being dead code, so this asserts the thing that distinguishes them: how
+    // far the superseded paint got before it stopped. The fence after the
+    // render is the only one that runs before `getTextContent`, so it is the
+    // only one that can stop the worker round-trip from happening at all.
+    const harness = await loadPdfView();
+    t.after(harness.restore);
+    const { PdfView, pdfjs, container } = harness;
+
+    inViewer(harness, { width: 632 });
+    pdfjs.serve("/pdf/slow.pdf", { pages: 1, width: 600, height: 800, deferRender: true });
+
+    const view = new PdfView(container);
+    await view.load("/pdf/slow.pdf");
+    harness.observers[0].enter(container.children[0]);
+    await harness.settle();
+
+    const page = pdfjs.opened[0].doc.pages.get(1);
+    assert.equal(page.textContentCalls, 0, "the in-flight paint had already asked for text");
+
+    // Completed, then superseded before its continuation resumes -- so its
+    // `cancel()` is a no-op and it wakes up believing it succeeded.
+    page.inFlight[0].finishAnyway();
+    view.zoomIn();
+    page.inFlight[1].finishAnyway();
+    await harness.settle();
+
+    assert.equal(
+        page.textContentCalls,
+        1,
+        "the superseded paint carried on and fetched text it could never use",
+    );
+});
+
+test("a re-scale landing while text is being fetched does not stamp the old items", async (t) => {
+    // The interleaving only the *second* fence catches: the paint is already
+    // past the render, so the fence before `getTextContent` has been and gone.
+    // What is left to protect is `page.items`, which `planChangeMarks` reads to
+    // decide where the change overlay goes.
+    const harness = await loadPdfView();
+    t.after(harness.restore);
+    const { PdfView, pdfjs, container } = harness;
+
+    inViewer(harness, { width: 632 });
+    pdfjs.serve("/pdf/t.pdf", { pages: 1, width: 600, height: 800, deferTextContent: true });
+
+    const view = new PdfView(container);
+    await view.load("/pdf/t.pdf");
+    harness.observers[0].enter(container.children[0]);
+    await harness.settle();
+
+    const page = pdfjs.opened[0].doc.pages.get(1);
+    assert.equal(page.textContentCalls, 1, "the paint never reached the text fetch");
+    assert.equal(pdfjs.TextLayer.instances.length, 0, "the text layer was built before its content arrived");
+
+    // The re-scale lands inside the fetch. The second paint's own fetch is
+    // deferred too, so only the first one can be resolved here.
+    const stalled = page.settleTextContent;
+    view.zoomIn();
+    stalled();
+    await harness.settle();
+
+    assert.equal(
+        pdfjs.TextLayer.instances.length,
+        0,
+        "the superseded paint built a text layer on the scale it started at",
+    );
+
+    page.settleTextContent();
+    await harness.settle();
+
+    assert.equal(pdfjs.TextLayer.instances.length, 1, "the replacement paint never finished");
+    assert.equal(pdfjs.TextLayer.instances[0].options.viewport.scale, 1.25);
+});

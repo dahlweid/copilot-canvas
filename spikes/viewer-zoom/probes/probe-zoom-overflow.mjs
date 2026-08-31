@@ -390,6 +390,11 @@ const MEASURE = function measure() {
         scrollLeftAtStart: round(scrollLeft),
         scrollWidth: pages.scrollWidth,
         leftReach: round(pageBox.left - contentLeft),
+        // The same margin off the border box, which is how this probe measured
+        // before the correction above. Recorded so the figures quoted from the
+        // earlier runs -- the -223.5 the CSS comment cites -- can be shown to be
+        // untouched by the change of instrument, rather than argued to be.
+        leftReachBorderBox: round(pageBox.left - viewerBox.left),
         // The other margin. Equal to `leftReach` is centred; a `flex-start` fix
         // for the overflow would cure `leftReach` and leave this one carrying
         // the whole difference.
@@ -552,6 +557,20 @@ async function main() {
                 .filter(([, m]) => m.pageCssWidth < m.viewerClientWidth - 2)
                 .map(([label, m]) => `${label}: ${m.leftReach} left / ${m.rightReach} right`)
                 .join(", ") || "no row had a page narrower than its viewer",
+        ],
+        [
+            // The correction to the content box moved every *right* margin by
+            // the scrollbar's 15px. It could not have moved a left margin --
+            // `clientLeft` is the left border width, and the vertical scrollbar
+            // is on the right in LTR -- but "could not have" is a re-reading,
+            // so measure it: the two instruments must agree on every row.
+            "the content-box correction leaves every leftReach figure unchanged",
+            [...rows, ["centring alone", control.naive], ["with the rule", control.fixed]].every(
+                ([, m]) => Math.abs(m.leftReach - m.leftReachBorderBox) <= 0.01,
+            ),
+            [...rows, ["centring alone", control.naive], ["with the rule", control.fixed]]
+                .map(([label, m]) => `${label}: ${m.leftReach} vs ${m.leftReachBorderBox}`)
+                .join(", "),
         ],
         [
             "the canvas bitmap is repainted at each new scale",

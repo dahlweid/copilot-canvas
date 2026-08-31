@@ -180,6 +180,15 @@ async function showPdf(page = currentPage, { force = false } = {}) {
  * `#rescale` early-returns when the scale is unchanged, so pressing fit-width
  * while already at exactly that scale fires no `onScaleChange` even though the
  * mode -- and so which button reads as pressed -- has just changed.
+ *
+ * That early return cannot hide a *resize* the same way, and the reason is the
+ * body below rather than a claim about resizes. This reads exactly three
+ * things: `pageCount`, the two `can*` flags, and `fitMode`. The flags are pure
+ * functions of the scale (`scale < MAX`, `scale > MIN`); a resize loads nothing,
+ * so `pageCount` is fixed; and `#refit` reads `#fitMode` without ever writing it
+ * -- only `setScale`, `fitWidth` and `fitHeight` write it, and each is a press.
+ * So on a resize the scale is the only input that can move, and a refit that
+ * recomputes to the same scale leaves every control exactly as it found them.
  */
 function syncZoom() {
     const loaded = view.pageCount > 0;
