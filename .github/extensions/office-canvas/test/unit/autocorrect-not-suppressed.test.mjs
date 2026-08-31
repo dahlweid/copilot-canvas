@@ -49,9 +49,30 @@
 // thing, in the same test, and must report it. A regex that stops matching
 // reddens the test rather than silently blessing the file.
 //
-// MUTANT (run red): add `$script:App.AutoCorrect.ReplaceText = $false` to
-// `Initialize-Word`. Reports `word-host.ps1:759 assigns
-// AutoCorrect.ReplaceText`.
+// MUTANTS (each run red, with the test that caught it)
+//
+//   1. Gut `word-host.ps1` to a single comment line -> "the sources these
+//      assertions read are non-empty and still the right files" fails. Without
+//      that test the other five would all have passed on an empty corpus.
+//   2. Add `$script:App.AutoCorrect.ReplaceText = $false` to `Set-ParagraphText`
+//      -> "the host assigns none of the five autocorrect settings" AND "the
+//      create_document description is backed by the host" both fail: the
+//      description promises those settings are never touched, so reintroducing
+//      the suppression makes the shipped description a lie, and the test says so.
+//   3. Reintroduce an unreferenced `Restore-AutoCorrect` helper -> "the suppress
+//      and restore helpers are gone" fails with `word-host.ps1 still carries
+//      Restore-AutoCorrect`.
+//   4. Reintroduce `autoCorrect: result.autoCorrect ?? null` in
+//      `document-author.mjs` -> "no autoCorrect field crosses the tool boundary"
+//      fails with `document-author.mjs still surfaces an autoCorrect field`.
+//   5. Delete the "never read and never changed" sentence from create_document's
+//      description -> "the create_document description is backed by the host"
+//      fails. The tie runs both ways on purpose: the claim cannot be quietly
+//      dropped either.
+//   6. Add `$script:App.Selection.TypeText($text)` to `Set-ParagraphText` -> "the
+//      host never types" fails. This is the mutant that matters most, because
+//      typing is the one edit that would make CorrectSentenceCaps and
+//      CorrectInitialCaps reachable again.
 //
 // Office-free.
 //
@@ -105,6 +126,43 @@ function assignments(source, property) {
 }
 
 const hostSource = blankComments(await readFile(HOST, "utf8"));
+const authorSource = await readFile(AUTHOR, "utf8");
+const extensionSource = await readFile(EXTENSION, "utf8");
+
+/**
+ * Anchors that must appear in each corpus, so absence can be trusted.
+ *
+ * Every other test here asserts a string is *missing*, which is the shape that
+ * passes forever once the corpus becomes empty -- a moved file, a rename, or a
+ * `blankComments` that blanks too much. `readFile` throws on a missing path, but
+ * it does not throw on a file that has been emptied, truncated or gutted by the
+ * comment stripper. So each corpus is proven to still contain the code the other
+ * tests are looking through.
+ */
+const CORPUS = [
+    // Chosen for what they mean, not for being long: this is the sole function
+    // through which document text is written, and the sole write inside it.
+    ["word-host.ps1", hostSource, ["function Set-ParagraphText", "(Get-TextRange $para).Text ="]],
+    ["document-author.mjs", authorSource, ["export", "created"]],
+    ["extension.mjs", extensionSource, ['name: "create_document"']],
+];
+
+test("the sources these assertions read are non-empty and still the right files", () => {
+    for (const [name, source, anchors] of CORPUS) {
+        assert.ok(
+            source.length > 1000,
+            `${name} is ${source.length} bytes -- too small to be the real file, so every ` +
+                `"string is absent" assertion below would pass on nothing`,
+        );
+        for (const anchor of anchors) {
+            assert.ok(
+                source.includes(anchor),
+                `${name} no longer contains ${JSON.stringify(anchor)}, so this file is searching ` +
+                    `the wrong text and its silence means nothing`,
+            );
+        }
+    }
+});
 
 test("the host assigns none of the five autocorrect settings", () => {
     for (const property of SUPPRESSED) {
@@ -149,8 +207,8 @@ test("no autoCorrect field crosses the tool boundary", async () => {
     // in create-smoke.
     const sources = {
         "word-host.ps1": hostSource,
-        "document-author.mjs": await readFile(AUTHOR, "utf8"),
-        "extension.mjs": await readFile(EXTENSION, "utf8"),
+        "document-author.mjs": authorSource,
+        "extension.mjs": extensionSource,
     };
     const re = /(?<![-\w])autoCorrect(?![-\w])/;
     assert.ok(re.test("{ autoCorrect: 1 }"), "the detector cannot match the field it looks for");
@@ -160,5 +218,97 @@ test("no autoCorrect field crosses the tool boundary", async () => {
         // why there is nothing to report; the field is the camel-cased
         // identifier, so match that and not the English word.
         assert.ok(!re.test(source), `${name} still surfaces an autoCorrect field`);
+    }
+});
+
+// The promise, verbatim, as `create_document`'s description makes it. Held here
+// so the test fails when the description drifts rather than when it is deleted.
+const PROMISE = "Your own Word settings are never read and never changed";
+
+/**
+ * The file with each `[...].join(" ")` description seam closed up.
+ *
+ * Descriptions are written as arrays of wrapped lines, so a sentence the agent
+ * reads as one string is several string literals in the source and a plain
+ * `includes` on the file misses it. This reproduces what `.join(" ")` does at
+ * runtime, which is the text that actually ships.
+ */
+const unwrap = (source) => source.replace(/",\s*\n\s*"/g, " ");
+
+test("the create_document description is backed by the host, not just asserted", () => {
+    // Prove the unwrapper before trusting it: a seam it fails to close makes
+    // every search below miss, which would read as "the promise is absent".
+    assert.equal(
+        unwrap('    "a sentence split",\n        "across two lines.",\n'),
+        '    "a sentence split across two lines.",\n',
+        "the description unwrapper does not reproduce .join(\" \"), so it cannot find any sentence",
+    );
+
+    // A description is the one string every agent reads before deciding what to
+    // do, and it outlives the code it describes unless something ties them. This
+    // is the tie: the sentence may only stand while the host earns it.
+    const shipped = unwrap(extensionSource);
+    const tool = shipped.indexOf('name: "create_document"');
+    assert.notEqual(tool, -1, "create_document is no longer registered under that name");
+    const promise = shipped.indexOf(PROMISE, tool);
+    assert.notEqual(
+        promise,
+        -1,
+        `create_document's description no longer carries "${PROMISE}". If that was deliberate, the ` +
+            `host must have started touching those settings -- which the rest of this file forbids. ` +
+            `Do not delete this assertion to make it pass.`,
+    );
+
+    // ...and it must be inside that tool's own description, not somewhere later
+    // in the file, or the tie is to nothing.
+    const nextTool = shipped.indexOf('name: "', tool + 10);
+    assert.ok(
+        nextTool === -1 || promise < nextTool,
+        "the promise sits outside create_document's description, so it does not describe this tool",
+    );
+
+    // "Never read" is the stronger half and is not covered by the assignment
+    // test above, which deliberately ignores reads. Here a read is a defect too,
+    // because the description says there are none.
+    const mention = /\.AutoCorrect\.|AutoFormatAsYouType/g;
+    assert.ok(
+        mention.test("$script:App.AutoCorrect.ReplaceText"),
+        "the detector cannot see a mention, so its silence means nothing",
+    );
+    mention.lastIndex = 0;
+    const hits = [...hostSource.matchAll(mention)].map((m) => lineOf(hostSource, m.index));
+    assert.deepEqual(
+        hits,
+        [],
+        `word-host.ps1:${hits.join(", ")} touches those settings while the description promises it ` +
+            `never does. Either the code or the promise is wrong; do not leave them disagreeing.`,
+    );
+});
+
+test("the host never types, so the two settings no bait could reach are unreachable", () => {
+    // `probe-autocorrect-necessity.ps1` gives a positive control for three of the
+    // five: ReplaceText, ReplaceQuotes and ReplaceSymbols each have a bait proven
+    // to fire. CorrectSentenceCaps and CorrectInitialCaps have none -- they are
+    // keystroke handlers, and nothing programmatic was found that triggers them.
+    // So the probe alone can only say they did not fire, not that they could not.
+    //
+    // This says they could not, and it is a fact about this codebase rather than
+    // about Word: every character of document text goes in through
+    // `Set-ParagraphText` -> `Range.Text` assignment, and no keystroke API is
+    // called anywhere. A future edit that reaches for one is the event that would
+    // make those two settings live again, and it reddens here.
+    for (const api of ["TypeText", "TypeParagraph", "SendKeys", "TypeBackspace"]) {
+        const re = new RegExp(`(?<![-\\w])${api}(?![-\\w])`, "g");
+        assert.ok(re.test(`$sel.${api}()`), `the detector for ${api} cannot match its own name`);
+        re.lastIndex = 0;
+        const hits = [...hostSource.matchAll(re)].map((m) => lineOf(hostSource, m.index));
+        assert.deepEqual(
+            hits,
+            [],
+            `word-host.ps1:${hits.join(", ")} calls ${api}. Typing makes autocorrect and ` +
+                `autoformat-as-you-type reachable, including CorrectSentenceCaps and ` +
+                `CorrectInitialCaps, which no probe here has a positive control for. ` +
+                `Measure before adding a keystroke path.`,
+        );
     }
 });
