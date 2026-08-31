@@ -40,16 +40,27 @@ export const Util = {
 
 export class TextLayer {
     static instances = [];
+    /**
+     * When set, `render()` hands back a promise that stays pending until the
+     * test resolves it, so a re-scale can be landed while a text layer is
+     * half-built. Cleared by `reset()` along with `instances`.
+     */
+    static deferRender = false;
 
     constructor(options) {
         this.options = options;
         this.rendered = 0;
         this.cancelled = 0;
+        this.settleRender = null;
         TextLayer.instances.push(this);
     }
 
     async render() {
         this.rendered += 1;
+        if (!TextLayer.deferRender) return;
+        await new Promise((resolve) => {
+            this.settleRender = resolve;
+        });
     }
 
     cancel() {
@@ -82,6 +93,7 @@ export function reset() {
     specs.clear();
     opened.length = 0;
     TextLayer.instances.length = 0;
+    TextLayer.deferRender = false;
     GlobalWorkerOptions.workerSrc = null;
     OutputScale.pixelRatio = 1;
 }
@@ -128,6 +140,17 @@ function makePage(number, items, spec) {
     return {
         pageNumber: number,
         renders: 0,
+        renderCancels: 0,
+        renderScales: [],
+        // Render tasks handed out and not yet settled, when `deferRender` is on.
+        inFlight: [],
+        // Counts the calls, not the results. A superseded paint that reaches
+        // this has already cost a worker round-trip, whatever it does with the
+        // answer -- which is the only way to tell the fence *before* it from the
+        // fences after it, since all three produce the same final DOM.
+        textContentCalls: 0,
+        // Resolves the pending `getTextContent`, when `deferTextContent` is on.
+        settleTextContent: null,
         cleanups: 0,
         getViewport({ scale }) {
             return {
@@ -142,9 +165,61 @@ function makePage(number, items, spec) {
         render(options) {
             this.renders += 1;
             this.lastRender = options;
-            return { promise: Promise.resolve(), cancel() {} };
+            // The scale each paint was given, in order. A canvas holds a bitmap
+            // rasterised at one scale, so "did the page repaint at the new
+            // scale" is not answerable from a count -- #106's first trap is a
+            // re-scale that resizes the boxes and leaves the bitmaps alone,
+            // which a count cannot tell from a correct one.
+            this.renderScales.push(options.viewport.scale);
+            if (!spec.deferRender) {
+                const task = {
+                    promise: Promise.resolve(),
+                    cancel: () => {
+                        this.renderCancels += 1;
+                    },
+                };
+                return task;
+            }
+            // A paint that stays in flight until the test settles it, so a
+            // re-scale can land *during* one. Both endings are reachable on
+            // purpose, because the view has to survive each:
+            //
+            //   `cancel()`       -- pdf.js rejects the task's promise with a
+            //                       RenderingCancelledException, which is the
+            //                       ending `#renderPage` names explicitly.
+            //   `finishAnyway()` -- the paint completed in the window between
+            //                       the cancel and its own continuation
+            //                       resuming. Nothing rejects, so the only
+            //                       thing standing between it and stamping
+            //                       stale results is the epoch fence.
+            let settle;
+            const promise = new Promise((resolve, reject) => {
+                settle = { resolve, reject };
+            });
+            // The view is entitled to walk away from a cancelled paint without
+            // observing the rejection; an unhandled one would fail the run for
+            // the wrong reason.
+            promise.catch(() => {});
+            const task = {
+                promise,
+                cancel: () => {
+                    this.renderCancels += 1;
+                    const err = new Error("cancelled");
+                    err.name = "RenderingCancelledException";
+                    settle.reject(err);
+                },
+                finishAnyway: () => settle.resolve(),
+            };
+            this.inFlight.push(task);
+            return task;
         },
         async getTextContent() {
+            this.textContentCalls += 1;
+            if (spec.deferTextContent) {
+                await new Promise((resolve) => {
+                    this.settleTextContent = resolve;
+                });
+            }
             return { items };
         },
         cleanup() {

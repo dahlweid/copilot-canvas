@@ -270,6 +270,11 @@ test("destroy releases the document, the observer and the page proxies", async (
     const doc = pdfjs.opened[0].doc;
     assert.equal(doc.destroyed, 1, "the document outlived the view");
     assert.equal(harness.observers[0].disconnected, 1, "the observer is still holding the removed pages");
+    assert.equal(
+        harness.resizeObservers[0].disconnected,
+        1,
+        "the resize watcher outlived the document it was refitting",
+    );
     assert.deepEqual([...doc.pages.values()].map((page) => page.cleanups), [1, 1]);
     assert.equal(container.children.length, 0);
     assert.equal(view.pageCount, 0);
@@ -310,4 +315,601 @@ test("the page reported as visible is the last one whose top has passed, within 
     await harness.settle();
 
     assert.deepEqual(reported, [1, 2, 1], "the visible page was misreported");
+});
+
+// --- zoom and fit (#106) ---------------------------------------------------
+
+/**
+ * A view whose pages sit inside a `.viewer` of the given size.
+ *
+ * The fits measure the *viewport*, not the container they write into: `.pages`
+ * is `min-width: max-content`, so it is as wide as its widest page once a page
+ * overflows, and a fit-width taken from it would fit the pages to themselves.
+ * A viewer is needed to assert the branch the panel actually runs.
+ */
+function inViewer(harness, { width = 632, height = 832 } = {}) {
+    const viewer = new harness.StubElement("div");
+    viewer.className = "viewer";
+    viewer.clientWidth = width;
+    viewer.clientHeight = height;
+    viewer.append(harness.container);
+    return viewer;
+}
+
+test("a re-scale repaints every visible page at the new scale rather than resizing its box", async (t) => {
+    // #106's first trap, and the one a screenshot of a fresh load cannot catch.
+    // `#renderPage` early-returns on `page.rendered`, so a re-scale that resizes
+    // the boxes without clearing the flag leaves each bitmap rasterised at the
+    // scale it was first painted at. It looks right once and wrong on the second
+    // zoom, which is why the scale of each paint is asserted and not the count.
+    const harness = await loadPdfView();
+    t.after(harness.restore);
+    const { PdfView, pdfjs, container } = harness;
+
+    const viewer = inViewer(harness, { width: 632 });
+    pdfjs.serve("/pdf/a.pdf", { pages: 3, width: 600, height: 800 });
+
+    const view = new PdfView(container);
+    await view.load("/pdf/a.pdf");
+    assert.equal(view.scale, 1, "600pt pages in a 632px viewer, less 32px of padding, is scale 1");
+
+    harness.observers[0].enter(container.children[0]);
+    await harness.settle();
+
+    const page1 = pdfjs.opened[0].doc.pages.get(1);
+    assert.deepEqual(page1.renderScales, [1]);
+
+    view.zoomIn();
+    await harness.settle();
+
+    assert.equal(view.scale, 1.25);
+    assert.deepEqual(page1.renderScales, [1, 1.25], "the box was resized but the bitmap was not repainted");
+    assert.equal(page1.renderCancels, 1, "the superseded paint was left to finish into the new boxes");
+    assert.equal(container.children[0].style.width, "750px", "the box did not follow the new scale");
+
+    // Twice. The single-zoom case passes even when `rendered` is never cleared,
+    // because the first paint of a page that had never painted is the same
+    // whether the flag was reset or was still false.
+    view.zoomIn();
+    await harness.settle();
+    assert.deepEqual(page1.renderScales, [1, 1.25, 1.5625]);
+});
+
+test("a re-scale leaves the pages nobody is looking at unpainted", async (t) => {
+    // The repaint is driven from the re-scale, not from the observer, because an
+    // `IntersectionObserver` reports a *change* of intersection and a page that
+    // was on screen before and after has not changed. Driving it from there must
+    // not cost the laziness: on a 13-page document only what is on screen paints.
+    const harness = await loadPdfView();
+    t.after(harness.restore);
+    const { PdfView, pdfjs, container } = harness;
+
+    inViewer(harness);
+    pdfjs.serve("/pdf/a.pdf", { pages: 3, width: 600, height: 800 });
+
+    const view = new PdfView(container);
+    await view.load("/pdf/a.pdf");
+    harness.observers[0].enter(container.children[0]);
+    await harness.settle();
+
+    view.zoomIn();
+    await harness.settle();
+
+    const pages = pdfjs.opened[0].doc.pages;
+    assert.equal(pages.get(1).renders, 2);
+    assert.equal(pages.get(2)?.renders ?? 0, 0, "a page nobody had scrolled to was painted by the zoom");
+    assert.equal(pages.get(3)?.renders ?? 0, 0);
+});
+
+test("a page that has scrolled out is not repainted by a re-scale", async (t) => {
+    // `page.visible` is what the observer last said, so it has to be cleared when
+    // a page leaves. Recording only arrivals would make every page ever seen
+    // repaint on every zoom, which on a long document is the whole file.
+    const harness = await loadPdfView();
+    t.after(harness.restore);
+    const { PdfView, pdfjs, container } = harness;
+
+    inViewer(harness);
+    pdfjs.serve("/pdf/a.pdf", { pages: 3, width: 600, height: 800 });
+
+    const view = new PdfView(container);
+    await view.load("/pdf/a.pdf");
+    harness.observers[0].enter(container.children[0]);
+    await harness.settle();
+    harness.observers[0].leave(container.children[0]);
+    harness.observers[0].enter(container.children[1]);
+    await harness.settle();
+
+    view.zoomIn();
+    await harness.settle();
+
+    const pages = pdfjs.opened[0].doc.pages;
+    assert.equal(pages.get(2).renders, 2, "the page on screen was not repainted");
+    assert.equal(pages.get(1).renders, 1, "a page that had scrolled away was repainted anyway");
+});
+
+test("--total-scale-factor follows every re-scale", async (t) => {
+    // Non-negotiable, and guarded upstream by TEXT_LAYER_CONTRACT: pdf.js's own
+    // text-layer stylesheet sizes every span with
+    // `round(down, var(--total-scale-factor) * Npx, ...)`. With the property
+    // stale the text sits off its glyphs; with it missing the declaration is
+    // invalid and the whole layer collapses, taking selection and the change
+    // overlay with it.
+    const harness = await loadPdfView();
+    t.after(harness.restore);
+    const { PdfView, pdfjs, container } = harness;
+
+    inViewer(harness, { width: 632, height: 432 });
+    pdfjs.serve("/pdf/a.pdf", { pages: 1, width: 600, height: 800 });
+
+    const view = new PdfView(container);
+    await view.load("/pdf/a.pdf");
+    const factor = () => container.style.getPropertyValue("--total-scale-factor");
+    assert.equal(factor(), "1");
+
+    view.zoomIn();
+    assert.equal(factor(), "1.25");
+
+    view.zoomOut();
+    assert.equal(factor(), "1");
+
+    view.fitHeight();
+    assert.equal(view.scale, 0.5, "fit-height did not change the scale, so this asserts nothing");
+    assert.equal(factor(), "0.5");
+});
+
+test("zoom clamps at both ends, and the view says which presses would do nothing", async (t) => {
+    const harness = await loadPdfView();
+    t.after(harness.restore);
+    const { PdfView, pdfjs, container } = harness;
+
+    inViewer(harness, { width: 632 });
+    pdfjs.serve("/pdf/a.pdf", { pages: 1, width: 600, height: 800 });
+
+    const view = new PdfView(container);
+    await view.load("/pdf/a.pdf");
+    assert.equal(view.canZoomIn, true);
+    assert.equal(view.canZoomOut, true);
+
+    for (let press = 0; press < 40; press++) view.zoomIn();
+    assert.equal(view.scale, 4, "zoom ran past the top of the range");
+    assert.equal(view.canZoomIn, false);
+
+    for (let press = 0; press < 40; press++) view.zoomOut();
+    assert.equal(view.scale, 0.2, "zoom ran past the bottom of the range");
+    assert.equal(view.canZoomOut, false);
+    assert.equal(view.canZoomIn, true);
+});
+
+test("fit-width and fit-height measure the viewport, not the pages they are sizing", async (t) => {
+    const harness = await loadPdfView();
+    t.after(harness.restore);
+    const { PdfView, pdfjs, container } = harness;
+
+    // A viewer 432px wide and 232px tall, less 32px of `.pages` padding: 400px
+    // across 800px of page height, and 200px down 800pt of it.
+    inViewer(harness, { width: 432, height: 232 });
+    pdfjs.serve("/pdf/a.pdf", { pages: 2, width: 800, height: 800 });
+
+    const view = new PdfView(container);
+    await view.load("/pdf/a.pdf");
+    assert.equal(view.scale, 0.5, "fit-width did not fit the page across the viewer");
+    assert.equal(view.fitMode, "width");
+
+    // The container is now wider than the viewer, which is what `min-width:
+    // max-content` does. A fit measuring it would grow without bound.
+    container.clientWidth = 4000;
+
+    view.fitHeight();
+    assert.equal(view.scale, 0.25, "fit-height did not fit a whole page down the viewer");
+    assert.equal(view.fitMode, "height");
+
+    view.fitWidth();
+    assert.equal(view.scale, 0.5, "the fit measured the pages it had just resized");
+});
+
+test("a panel resize refits a standing fit and leaves a hand-picked zoom alone", async (t) => {
+    // What `#scaleObserver` is for (#106). A fit is a standing instruction --
+    // "keep this fitted" -- and a fit computed once at load is only ever a fit to
+    // whatever the panel happened to be when the document opened. An explicit
+    // zoom is the opposite: a resize must not discard it.
+    const harness = await loadPdfView();
+    t.after(harness.restore);
+    const { PdfView, pdfjs, container } = harness;
+
+    const viewer = inViewer(harness, { width: 632, height: 832 });
+    pdfjs.serve("/pdf/a.pdf", { pages: 1, width: 600, height: 800 });
+
+    const view = new PdfView(container);
+    await view.load("/pdf/a.pdf");
+    assert.equal(view.scale, 1);
+
+    const resize = harness.resizeObservers[0];
+    assert.equal(resize.targets[0], viewer, "the watcher is on the pages, which resize because of it");
+    assert.deepEqual(
+        resize.options,
+        { box: "border-box" },
+        "watching the content box lets a scrollbar appearing shrink the pages that removed it",
+    );
+
+    viewer.clientWidth = 332;
+    resize.fire();
+    assert.equal(view.scale, 0.5, "the fit did not survive the panel resize");
+    assert.equal(container.children[0].style.width, "300px");
+
+    view.zoomIn();
+    assert.equal(view.fitMode, null, "zooming by hand left a fit standing");
+    const picked = view.scale;
+
+    viewer.clientWidth = 632;
+    resize.fire();
+    assert.equal(view.scale, picked, "a resize discarded the scale the reader had chosen");
+});
+
+test("a resize that cannot be measured leaves the scale where it is", async (t) => {
+    // A panel reporting no width is a panel that has not been laid out -- hidden,
+    // or mid-open. Treating that as "fit to nothing" would snap the reader's
+    // document to scale 1 for a reason they cannot see.
+    const harness = await loadPdfView();
+    t.after(harness.restore);
+    const { PdfView, pdfjs, container } = harness;
+
+    const viewer = inViewer(harness, { width: 332 });
+    pdfjs.serve("/pdf/a.pdf", { pages: 1, width: 600, height: 800 });
+
+    const view = new PdfView(container);
+    await view.load("/pdf/a.pdf");
+    assert.equal(view.scale, 0.5);
+
+    viewer.clientWidth = 0;
+    harness.resizeObservers[0].fire();
+
+    assert.equal(view.scale, 0.5, "an unmeasurable panel snapped the document to a scale nobody asked for");
+});
+
+test("a re-scale keeps the reader on the page they were reading", async (t) => {
+    // Every box moves, so scroll position means something different afterwards.
+    // Without the anchor a zoom on page 9 of 13 lands wherever the old offset
+    // now points, which is a different page.
+    const harness = await loadPdfView();
+    t.after(harness.restore);
+    const { PdfView, pdfjs, container } = harness;
+
+    inViewer(harness);
+    pdfjs.serve("/pdf/a.pdf", { pages: 3, width: 600, height: 800 });
+
+    const view = new PdfView(container);
+    await view.load("/pdf/a.pdf");
+
+    container.rect = { top: 0, left: 0, width: 600, height: 800 };
+    container.children[0].rect = { top: -1620, left: 0 };
+    container.children[1].rect = { top: -810, left: 0 };
+    container.children[2].rect = { top: 0, left: 0 };
+
+    view.zoomIn();
+    await harness.settle();
+
+    assert.equal(container.children[2].scrolledIntoView, 1, "the zoom did not return to the page being read");
+    assert.equal(container.children[0].scrolledIntoView, 0);
+});
+
+test("a re-scale re-places the change overlay instead of leaving it at the old scale", async (t) => {
+    // The overlay is drawn in page coordinates, so its boxes are as scale-bound
+    // as the bitmap under them. A zoom that moved the glyphs and not the
+    // highlight would point at the wrong words.
+    const harness = await loadPdfView();
+    t.after(harness.restore);
+    const { PdfView, pdfjs, container } = harness;
+
+    inViewer(harness, { width: 632 });
+    pdfjs.serve("/pdf/a.pdf", {
+        width: 600,
+        height: 800,
+        pageItems: [[pdfjs.textItem(PARAGRAPH, { x: 40, y: 700 })]],
+    });
+
+    const view = new PdfView(container);
+    await view.load("/pdf/a.pdf");
+    harness.observers[0].enter(container.children[0]);
+    await harness.settle();
+    view.setChange(change({ page: 1 }));
+
+    const overlay = partsOf(container.children[0]).overlay;
+    const before = boxes(overlay)[0];
+    assert.ok(before, "the change was never marked, so this asserts nothing about scaling it");
+    const width = Number.parseFloat(before.style.width);
+
+    view.zoomIn();
+    await harness.settle();
+
+    const after = boxes(overlay)[0];
+    assert.ok(after, "the zoom dropped the change marker");
+    assert.equal(
+        Number.parseFloat(after.style.width).toFixed(4),
+        (width * 1.25).toFixed(4),
+        "the marker stayed at the scale it was drawn at",
+    );
+});
+
+test("a re-scale clears the text layer instead of stacking a second one over it", async (t) => {
+    const harness = await loadPdfView();
+    t.after(harness.restore);
+    const { PdfView, pdfjs, container } = harness;
+
+    inViewer(harness, { width: 632 });
+    pdfjs.serve("/pdf/a.pdf", { pages: 1, width: 600, height: 800 });
+
+    const view = new PdfView(container);
+    await view.load("/pdf/a.pdf");
+    harness.observers[0].enter(container.children[0]);
+    await harness.settle();
+
+    view.zoomIn();
+    await harness.settle();
+
+    assert.equal(pdfjs.TextLayer.instances.length, 2, "the page was not given a text layer at the new scale");
+    assert.equal(pdfjs.TextLayer.instances[0].cancelled, 1, "the old text layer was left running");
+    assert.equal(
+        pdfjs.TextLayer.instances[1].options.viewport.scale,
+        1.25,
+        "the new text layer was built on the old scale's viewport",
+    );
+    assert.equal(
+        partsOf(container.children[0]).textLayer,
+        pdfjs.TextLayer.instances[1].options.container,
+        "the replacement layer was built somewhere else",
+    );
+});
+
+test("a zoom during a load does not destroy the document being loaded", async (t) => {
+    // `#epoch` exists because `#generation` cannot do this job: bumping the
+    // generation is how a load says "the document being opened is superseded",
+    // and a zoom that bumped it would make an in-flight load destroy its own
+    // document and leave the panel empty.
+    const harness = await loadPdfView();
+    t.after(harness.restore);
+    const { PdfView, pdfjs, container } = harness;
+
+    inViewer(harness, { width: 632 });
+    pdfjs.serve("/pdf/slow.pdf", { pages: 2, width: 600, height: 800, deferred: true });
+
+    const view = new PdfView(container);
+    const loading = view.load("/pdf/slow.pdf");
+    await harness.settle();
+
+    // The zoom cluster is live while a document is opening, so this is a press a
+    // reader can actually make. If a re-scale bumped `#generation`, the load's
+    // own guard would fire on its return and destroy the document it had just
+    // opened -- leaving an empty panel and no error.
+    view.zoomIn();
+    view.fitWidth();
+    pdfjs.opened[0].resolve();
+    await loading;
+
+    assert.equal(pdfjs.opened[0].doc.destroyed, 0, "the load destroyed the document it had just opened");
+    assert.equal(view.pageCount, 2);
+});
+
+test("opening a document returns to fit-width, whatever the last one was left at", async (t) => {
+    const harness = await loadPdfView();
+    t.after(harness.restore);
+    const { PdfView, pdfjs, container } = harness;
+
+    inViewer(harness, { width: 332 });
+    pdfjs.serve("/pdf/a.pdf", { pages: 1, width: 600, height: 800 });
+    pdfjs.serve("/pdf/b.pdf", { pages: 1, width: 600, height: 800 });
+
+    const view = new PdfView(container);
+    await view.load("/pdf/a.pdf");
+    view.zoomIn();
+    assert.equal(view.fitMode, null);
+
+    await view.load("/pdf/b.pdf");
+
+    assert.equal(view.fitMode, "width", "the new document opened at the previous one's hand-picked zoom");
+    assert.equal(view.scale, 0.5);
+});
+
+test("a re-scale that lands mid-paint cancels the paint it interrupted", async (t) => {
+    // Two pdf.js render tasks on one canvas resolve in whichever order finishes
+    // last, so the losing one has to be stopped rather than raced. `#renderPage`
+    // claims `page.rendered` synchronously, before its first await, so a second
+    // paint cannot begin on a page while one is in flight; `#resetPage` clears
+    // that flag only after cancelling the task holding it, and the paint it
+    // interrupted is holding its own task in a local rather than re-reading
+    // `page.renderTask`, which by then is the replacement.
+    const harness = await loadPdfView();
+    t.after(harness.restore);
+    const { PdfView, pdfjs, container } = harness;
+
+    inViewer(harness, { width: 632 });
+    pdfjs.serve("/pdf/slow.pdf", { pages: 1, width: 600, height: 800, deferRender: true });
+
+    const view = new PdfView(container);
+    await view.load("/pdf/slow.pdf");
+    harness.observers[0].enter(container.children[0]);
+    await harness.settle();
+
+    const page = pdfjs.opened[0].doc.pages.get(1);
+    assert.equal(page.inFlight.length, 1, "the first paint was not left in flight");
+    assert.deepEqual(page.renderScales, [1]);
+    assert.equal(pdfjs.TextLayer.instances.length, 0, "the in-flight paint reached its text layer");
+
+    view.zoomIn();
+
+    assert.equal(page.renderCancels, 1, "the interrupted paint was never cancelled");
+    assert.deepEqual(page.renderScales, [1, 1.25], "the re-scale did not start a fresh paint");
+
+    page.inFlight[1].finishAnyway();
+    await harness.settle();
+
+    assert.equal(
+        pdfjs.TextLayer.instances.length,
+        1,
+        "the cancelled paint carried on and built a text layer of its own",
+    );
+    assert.equal(
+        pdfjs.TextLayer.instances[0].options.viewport.scale,
+        1.25,
+        "the surviving text layer was built on the old scale's viewport",
+    );
+});
+
+test("a paint that completes despite being cancelled still does not stamp its stale results", async (t) => {
+    // The ending a cancel cannot cover. `renderTask.cancel()` is synchronous,
+    // but the paint may already have completed in the window before its own
+    // continuation resumes -- so nothing rejects and the `await` returns
+    // normally. The only thing between that paint and a text layer at the wrong
+    // scale is the epoch it captured when it started.
+    const harness = await loadPdfView();
+    t.after(harness.restore);
+    const { PdfView, pdfjs, container } = harness;
+
+    inViewer(harness, { width: 632 });
+    pdfjs.serve("/pdf/slow.pdf", { pages: 1, width: 600, height: 800, deferRender: true });
+
+    const view = new PdfView(container);
+    await view.load("/pdf/slow.pdf");
+    harness.observers[0].enter(container.children[0]);
+    await harness.settle();
+
+    const page = pdfjs.opened[0].doc.pages.get(1);
+
+    // Resolved, then superseded in the same synchronous turn. The awaiting
+    // continuation is a queued microtask, so `#rescale` runs first and the old
+    // paint wakes into a document that has moved on beneath it. Its `cancel()`
+    // lands on a promise that has already settled and does nothing at all.
+    page.inFlight[0].finishAnyway();
+    view.zoomIn();
+    assert.equal(page.renderCancels, 1, "the completed paint was not cancelled");
+
+    page.inFlight[1].finishAnyway();
+    await harness.settle();
+
+    assert.equal(
+        pdfjs.TextLayer.instances.length,
+        1,
+        "the superseded paint resumed and built a second text layer over the new one",
+    );
+    assert.equal(
+        pdfjs.TextLayer.instances[0].options.viewport.scale,
+        1.25,
+        "the text layer that survived was the superseded one, at the old scale",
+    );
+});
+
+test("onScaleChange reports the scale changes nobody pressed a button for", async (t) => {
+    // `#rescale` is the single funnel for every scale change in the class, so it
+    // is the only place that can tell a caller its zoom controls have gone
+    // stale. The resize case is the one that matters: a caller resyncing only
+    // after its own presses cannot see a refit.
+    const harness = await loadPdfView();
+    t.after(harness.restore);
+    const { PdfView, pdfjs, container } = harness;
+
+    const viewer = inViewer(harness, { width: 632, height: 832 });
+    pdfjs.serve("/pdf/a.pdf", { pages: 2, width: 600, height: 800 });
+
+    const seen = [];
+    const view = new PdfView(container, { onScaleChange: (scale) => seen.push(scale) });
+    await view.load("/pdf/a.pdf");
+    assert.deepEqual(seen, [], "a load reported a scale change of its own");
+
+    view.zoomIn();
+    assert.deepEqual(seen, [1.25], "an explicit zoom was not reported");
+
+    // The refit, with nothing pressed. This is the path the button handlers
+    // cannot cover, whatever they call after themselves.
+    view.fitWidth();
+    seen.length = 0;
+    viewer.clientWidth = 332;
+    harness.resizeObservers.at(-1).fire();
+    await harness.settle();
+
+    assert.deepEqual(seen, [0.5], "a resize-driven refit changed the scale in silence");
+
+    // And nothing is announced when nothing moves: `#rescale` returns early on
+    // an unchanged scale, so a fit already at its own scale is not a change.
+    seen.length = 0;
+    harness.resizeObservers.at(-1).fire();
+    await harness.settle();
+    assert.deepEqual(seen, [], "a resize that changed nothing was still announced");
+});
+
+test("a superseded paint stops at the first fence rather than the last", async (t) => {
+    // The three `#epoch` fences all end in the same place -- nothing stale
+    // reaches the DOM -- so removing any one of them leaves the suite green and
+    // the other two catch it. That result is equally consistent with a fence
+    // being dead code, so this asserts the thing that distinguishes them: how
+    // far the superseded paint got before it stopped. The fence after the
+    // render is the only one that runs before `getTextContent`, so it is the
+    // only one that can stop the worker round-trip from happening at all.
+    const harness = await loadPdfView();
+    t.after(harness.restore);
+    const { PdfView, pdfjs, container } = harness;
+
+    inViewer(harness, { width: 632 });
+    pdfjs.serve("/pdf/slow.pdf", { pages: 1, width: 600, height: 800, deferRender: true });
+
+    const view = new PdfView(container);
+    await view.load("/pdf/slow.pdf");
+    harness.observers[0].enter(container.children[0]);
+    await harness.settle();
+
+    const page = pdfjs.opened[0].doc.pages.get(1);
+    assert.equal(page.textContentCalls, 0, "the in-flight paint had already asked for text");
+
+    // Completed, then superseded before its continuation resumes -- so its
+    // `cancel()` is a no-op and it wakes up believing it succeeded.
+    page.inFlight[0].finishAnyway();
+    view.zoomIn();
+    page.inFlight[1].finishAnyway();
+    await harness.settle();
+
+    assert.equal(
+        page.textContentCalls,
+        1,
+        "the superseded paint carried on and fetched text it could never use",
+    );
+});
+
+test("a re-scale landing while text is being fetched does not stamp the old items", async (t) => {
+    // The interleaving only the *second* fence catches: the paint is already
+    // past the render, so the fence before `getTextContent` has been and gone.
+    // What is left to protect is `page.items`, which `planChangeMarks` reads to
+    // decide where the change overlay goes.
+    const harness = await loadPdfView();
+    t.after(harness.restore);
+    const { PdfView, pdfjs, container } = harness;
+
+    inViewer(harness, { width: 632 });
+    pdfjs.serve("/pdf/t.pdf", { pages: 1, width: 600, height: 800, deferTextContent: true });
+
+    const view = new PdfView(container);
+    await view.load("/pdf/t.pdf");
+    harness.observers[0].enter(container.children[0]);
+    await harness.settle();
+
+    const page = pdfjs.opened[0].doc.pages.get(1);
+    assert.equal(page.textContentCalls, 1, "the paint never reached the text fetch");
+    assert.equal(pdfjs.TextLayer.instances.length, 0, "the text layer was built before its content arrived");
+
+    // The re-scale lands inside the fetch. The second paint's own fetch is
+    // deferred too, so only the first one can be resolved here.
+    const stalled = page.settleTextContent;
+    view.zoomIn();
+    stalled();
+    await harness.settle();
+
+    assert.equal(
+        pdfjs.TextLayer.instances.length,
+        0,
+        "the superseded paint built a text layer on the scale it started at",
+    );
+
+    page.settleTextContent();
+    await harness.settle();
+
+    assert.equal(pdfjs.TextLayer.instances.length, 1, "the replacement paint never finished");
+    assert.equal(pdfjs.TextLayer.instances[0].options.viewport.scale, 1.25);
 });
