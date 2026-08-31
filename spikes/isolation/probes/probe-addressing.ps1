@@ -7,6 +7,30 @@
 #       ID must be derived - and derived IDs collide when paragraphs repeat.
 #   S3. A revision token has to distinguish "the agent changed it" from
 #       "something else changed it".
+#
+# ---------------------------------------------------------------------------
+# DO NOT RUN THIS AS IT STANDS. Its `finally` block kills every WINWORD process
+# on the machine, including ones it did not start -- another session's Word, or
+# your own open document. Tracked as #114, which fixes this file and its three
+# siblings together; this file is left byte-identical below that line so the two
+# changes do not collide. Read it, cite it, fix it under #114 -- do not execute
+# it on a machine anyone else is using.
+# ---------------------------------------------------------------------------
+#
+# WHAT THIS PROBE DOES AND DOES NOT BACK. S1 measures ONE strategy: the
+# per-paragraph walk, touching `Range.Text` and `OutlineLevel` on every
+# paragraph. It has no `Content.WordOpenXML` arm and no `Content.Text` arm, so
+# it backs the cost of that walk and NOT the 289 ms WordOpenXML figure or the
+# 6 ms `Content.Text` figure the walk was compared against. Those came from a
+# bulk-read comparison that is no longer committed. Cite this file for the
+# walk; do not cite it for the alternatives.
+#
+# Retired with the rest of the streaming archive (#103) and restored in the same
+# PR: it is the only committed instrument behind the S1 walk cost quoted in
+# `word-host.ps1` and the S3 revision-token behaviour quoted in
+# `revision-token.mjs`. Both now cite this file directly, because the chain that
+# used to reach it ran through a document rather than a citation and so was
+# invisible to `tools/check-citations.mjs`.
 
 $ErrorActionPreference = 'Stop'
 $src = $args[0]

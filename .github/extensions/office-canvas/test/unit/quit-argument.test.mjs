@@ -16,7 +16,7 @@
 // 38820 leaked, pid 10888 reaped.
 //
 // There is no literal/variable split -- `Quit($var)` throws exactly as `Quit(0)`
-// does (PLAN.md 20). So this cannot be checked by eye for "looks like a
+// does. So this cannot be checked by eye for "looks like a
 // constant"; the argument form is wrong in every spelling but `[ref]`.
 //
 // Why a source assertion rather than a leak assertion in the integration
@@ -98,7 +98,7 @@ test("no .ps1 calls Application.Quit with a bare argument", async (t) => {
         [],
         "Application.Quit(<arg>) does not bind under Windows PowerShell 5.1: it throws, and the swallowing catch " +
             "around it turns that into a leaked WINWORD.EXE. Use the no-argument Quit(), which takes the same " +
-            "default. See PLAN.md 20 and spikes/isolation/probes/probe-quit0-leak.ps1.\n  " +
+            "default. See spikes/isolation/probes/probe-quit0-leak.ps1.\n  " +
             offenders.join("\n  "),
     );
 });

@@ -156,7 +156,7 @@ finally {
     #   - Quit() returns seconds before its process exits (2.7-6.1 s idle, ADR
     #     0005), so $w2's still-exiting pid keeps the gate open for the $w1 pass.
     #   - an external producer creates WINWORDs on this machine at a measured
-    #     rate (PLAN.md, census control: 2 appeared in a 40 s window with nothing
+    #     rate (census control: 2 appeared in a 40 s window with nothing
     #     launched), so a stranger's Word can unlock the gate on its own.
     # Harmless while Quit(0) threw and the call could never execute; the fix to
     # that made this gate load-bearing for the first time.

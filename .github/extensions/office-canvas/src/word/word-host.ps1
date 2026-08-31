@@ -1108,11 +1108,29 @@ function Cmd-Open($a) {
 
 # One `Content.WordOpenXML` call, written to a file, document closed at once.
 #
-# Measured (PLAN.md §18.1) on a 219-paragraph document: walking Paragraphs and
-# touching Range.Text / OutlineLevel per paragraph cost 3724 ms, because every
-# property touch is a cross-process COM call; one WordOpenXML call cost 289 ms
-# and returned strictly more -- text, style and full markup. A per-paragraph
-# property walk is a defect, not a slow path.
+# Measured on a 219-paragraph document (`spikes/isolation/probes/probe-addressing.ps1`,
+# arm S1): walking Paragraphs and touching Range.Text / OutlineLevel per
+# paragraph cost 3724 ms, because every property touch is a cross-process COM
+# call. The cost scales with document length, so a 1000-paragraph document would
+# take about 17 seconds, and read-then-address requires reads to be routine. A
+# per-paragraph property walk is a defect, not a slow path.
+#
+# The comparison that made this call the replacement -- one WordOpenXML read at
+# 289 ms returning strictly more (text, style and full markup) -- came from a
+# bulk-read arm that is NOT part of the probe above and is no longer committed
+# anywhere. The 289 ms figure is therefore an uninstrumented historical number:
+# it is recorded here for provenance, and anything that turns on it should
+# re-measure rather than trust it. What remains instrument-backed is the walk
+# being unaffordable, which is the reason this function does not walk.
+#
+# Both figures were lifted from a document this repo has since deleted, so the
+# source is pinned to a commit rather than a path, which cannot dangle:
+#     git show 93c3536:spikes/isolation/PLAN.md   # section 18.1
+# That blob is the file's FINAL revision -- nothing edited it between there and
+# its deletion -- so a reader who checks it is not reading a superseded draft.
+# Note that section 18.1 attributes its whole three-strategy table to the probe
+# named above; the probe only ever implemented the walk, so the table over-claims
+# and this comment deliberately does not repeat that attribution.
 #
 # The markup goes to a file rather than back through the protocol: it is
 # routinely 100 KB and can be megabytes, and JSON-escaping that onto a single

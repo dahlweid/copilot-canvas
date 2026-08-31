@@ -1,8 +1,9 @@
 // The revision token: a hash of the file, returned with a structure map and
 // required by any edit.
 //
-// Measured behaviour (spikes/isolation/PLAN.md §18.3), which is exactly what
-// optimistic concurrency needs:
+// Measured behaviour, which is exactly what optimistic concurrency needs
+// (`spikes/isolation/probes/probe-addressing.ps1`, arm S3): a SHA-256 prefix
+// over the file, computed in 3 ms.
 //
 //   | our own edit and save          | token changes     |
 //   | save with nothing dirty        | token unchanged   |
@@ -10,10 +11,23 @@
 //
 // The "nothing dirty" row is the important one: Word skips writing a document
 // it considers clean, so merely inspecting a document does not churn the token
-// and force a re-read.
+// and force a re-read. The first row is what lets an edit response hand back a
+// fresh token, so the agent is forced to re-read after somebody else's edit and
+// never after its own.
+//
+// That is the whole concurrency story for transient locking: we hold nothing
+// between operations, so we cannot assume anything stayed put, and the token is
+// what converts that from a hazard into a detectable, refusable condition.
 //
 // A SHA-256 prefix rather than mtime+size, because a script that regenerates a
 // document can easily reproduce both while changing every word.
+//
+// The table above was lifted from a design document this repo has since deleted
+// (#103). The probe named above is the live instrument and is the thing to
+// re-run; the original write-up is pinned to a commit rather than a path, so the
+// reference cannot dangle:
+//     git show 93c3536:spikes/isolation/PLAN.md   // section 18.3
+// That blob is the file's final revision, so it cannot be a superseded draft.
 
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";

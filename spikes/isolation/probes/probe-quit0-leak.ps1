@@ -43,7 +43,7 @@ try {
     # after creating one it can no longer name". Measured: this window is real. A
     # seed block in probe-desktop.ps1 with the same ordering blocked in Documents.Add
     # for over nine minutes and left a Word (/Automation -Embedding) that no sound
-    # route could attribute, and that outlived its client (PLAN.md 20.3).
+    # route could attribute, and that outlived its client.
     [IO.File]::WriteAllText($OutFile, "START")
 
     $app = New-Object -ComObject Word.Application

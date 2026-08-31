@@ -4,9 +4,9 @@
 # a Word belonging to the user or to a concurrent session -- prompting on unsaved
 # work in a visible instance, or hanging on a modal prompt in a hidden one.
 #
-# The repo currently holds both answers. PLAN.md 2.3 states the call "goes through
-# the Running Object Table and may hand back the *user's* Word", and uses that to
-# justify the HWND bind. probe-single-instance.ps1 S3 reports Word as
+# The repo held both answers when this was written. The isolation plan, since
+# retired, stated the call "goes through the Running Object Table and may hand
+# back the *user's* Word", and used that to justify the HWND bind. probe-single-instance.ps1 S3 reports Word as
 # multi-instance. Neither is a measurement of the question the Quit() sites ask,
 # which is specifically: with a Word already running and held by another process,
 # does a fresh New-Object attach to it?

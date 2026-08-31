@@ -49,7 +49,7 @@ foreach ($rep in 1..$reps) {
         # ReleaseComObject *causing* the leak it was meant to prevent -- and
         # summarised it as "ReleaseComObject is not neutral". That is a real
         # measurement carried to a scope it never covered, which is this repo's
-        # named recurring failure (PLAN.md sec 20 entry 2). Read the source at
+        # named recurring failure. Read the source at
         # word-host.ps1 `Cmd-Edit`: it measured `ReleaseComObject($window)` on a
         # *Protected View window* RCW, across *multiple* operations of a
         # long-lived host, and explicitly declines to pin the mechanism beyond

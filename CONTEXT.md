@@ -832,13 +832,13 @@ of the declared-but-unenforced-bound defect. They are not. The bound is enforced
 above them, so the absent check is correct rather than missing. Measure each
 direction and each surface separately, or say you have not.
 
-**Name the discriminating case before you trust the probe.** `spikes/isolation/PLAN.md`
-§19 states the rule and the failure that produced it: a probe on which every case
-agrees has measured nothing, and the fix is not more care reading the output but
-identifying up front the one case whose result differs between the candidate
-mechanisms. Four readers of a Word-held file all requested `ReadWrite`, so all
-four succeeded under either candidate holder, and the lock model was revised
-twice with nothing ever going red.
+**Name the discriminating case before you trust the probe.** The rule came out
+of a failure recorded in the isolation spike's plan, since retired: a probe on
+which every case agrees has measured nothing, and the fix is not more care
+reading the output but identifying up front the one case whose result differs
+between the candidate mechanisms. Four readers of a Word-held file all requested
+`ReadWrite`, so all four succeeded under either candidate holder, and the lock
+model was revised twice with nothing ever going red.
 
 This generalises past probes to ordinary fixtures. The layout-mark normalizer
 covers four marks and only **two of them discriminate**: `w:tab` passes by luck
