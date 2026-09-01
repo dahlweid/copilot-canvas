@@ -1181,6 +1181,37 @@ wearing the shape of a test failure, which sends you looking for a broken test
 that does not exist. **Assert on the `pass` count, never on the exit code**, and
 treat `tests 0` as red.
 
+**But the summary line you assert on does not start with the character the
+obvious grep expects.** A gate keyed on `^# pass` — matching tap's `#` — is the
+recurring form of this, and it is worse than fragile: measured on Node v24.18.0,
+Windows, with stdout **captured** (a pipe, the arm every gate and CI step runs
+in), `node --test` selects the **spec** reporter and the summary line begins
+with `ℹ` (U+2139), so `^# pass` matches **nothing** — on a passing suite *and*
+on a broken one alike.
+
+| invocation | summary line | `^# pass` | `^(?:#\|ℹ)\s+pass` | exit |
+| --- | --- | --- | --- | --- |
+| `node --test` (default), passing | `ℹ pass 2` | **0** | `pass 2` | 0 |
+| `node --test` (default), **broken** | `ℹ fail 1` | **0** | reads `fail 1` | 1 |
+| `node --test --test-reporter=tap` | `# pass 2` | matches | matches | 0 |
+
+The negative-control row is the load-bearing one: with the suite **red**, the
+`^# ` form still matches nothing, so a gate written that way prints no verdict
+on a broken suite exactly as it prints none on a passing one — and folded
+together with capturing `$LASTEXITCODE` *after* a pipe (where `Select-String`
+has already overwritten it), the two compose into **exit 0 with no output,
+indistinguishable from a clean run**. The trap is not TTY-dependent, as was once
+believed; on this Node it is unconditional, because the default reporter is now
+spec rather than tap. Re-derived and captured in
+`spikes/test-reporter-gate/probes/probe-reporter-glyph.mjs`. So a summary
+matcher must **accept both glyphs and key on the label** —
+`^(?:#|ℹ)\s+pass\s+\d` — **assert the matched count is non-zero** before
+trusting it, and **capture `$LASTEXITCODE` before any pipe**. Better still,
+where a gate is scripted, **pin `--test-reporter=tap`**: it makes `# pass`
+correct by construction and stops the output shape depending on a default that
+has already moved once. Prefer removing the variable to documenting it — the
+same reasoning this repo applies to parsers.
+
 **A figure another session hands you is a memory, not a measurement — including
 when the session is you.** I reported this trap as *"zero output lines"*. The
 session I gave it to declined to write it down without reproducing it, and was
