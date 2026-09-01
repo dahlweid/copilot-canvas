@@ -183,13 +183,18 @@ the binder" is not the test; "it can name the deck" is.
 | --- | --- | --- |
 | Single-page export | **94-110 ms** | 168 ms |
 | Whole 13-page/slide export | 815-865 ms (~64 ms/slide) | 664 ms |
-| Cold start, fresh instance to first PDF | ~3019-3494 ms | 4547 ms |
-| Open + edit + save + close, warm | **163-177 ms** | 228 ms |
+| Cold start, fresh instance to first PDF | ~3019-3494 ms | not comparable (see below) |
+| Open + edit + save + close, warm | **163-177 ms** | not comparable (see below) |
 | Edit + 1-slide re-export | 137-141 ms mean, 93 ms min | n/a |
 
-Cold start decomposes as roughly 1000 ms to create the COM object, 250 ms to
-open the deck, and 1562-2017 ms for the first export — the same one-off engine
-load Word shows, about a third cheaper.
+The two Word timings for cold start and open-edit-save-close are deliberately
+not quoted. They came from separate Word probes, not measurements made alongside
+these PowerPoint runs, so neither supports a controlled comparison. The omitted
+cold-start result was a single measurement of one-off engine load on Word's
+first export in a fresh process, not process creation.
+
+PowerPoint cold start decomposes as roughly 1000 ms to create the COM object,
+250 ms to open the deck, and 1562-2017 ms for the first export.
 
 Single-slide export is flat: slide 7 costs the same as slide 1, so a
 render-on-demand canvas does not pay for position in the deck.

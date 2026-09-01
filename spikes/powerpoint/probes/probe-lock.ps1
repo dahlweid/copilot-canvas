@@ -22,7 +22,8 @@
 #       (a) direct overwrite  (b) write-temp-then-rename  (c) exclusive handle
 #   T3  INVALID, see above. Can a SECOND PowerPoint open the held file?
 #   T3c INVALID, see above. A/B control against a different file.
-#   T4  Transient-lock round trip: open, edit, save, close. Word: 228 ms.
+#   T4  Transient-lock round trip: open, edit, save, close. The prior Word mean
+#       came from a separate probe, not a controlled cross-application run.
 #   T5  Lock detection by write-handle test. Word: 4 ms held / 9 ms free.
 #
 #   -TimeoutSec  how long a blocked open is allowed to run before we call it a
