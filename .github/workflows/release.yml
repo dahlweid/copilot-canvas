@@ -30,18 +30,29 @@ jobs:
       - name: Check extension packaging invariants (C1-C4)
         run: node tools/validate-extensions.mjs
 
-      # Same as validate.yml: the shell expands the file set and Node is handed
-      # discrete paths, so only one globber decides what runs and an empty set
-      # fails loudly instead of exiting 0. It matters more here -- this workflow
-      # cuts a release, so a green run that tested nothing would ship.
+      # Same as validate.yml, and identical to it deliberately -- see the comment
+      # there for why each line is the shape it is. The shell expands the file
+      # set and Node is handed discrete paths, so only one globber decides what
+      # runs; an empty set fails loudly instead of exiting 0, and a set smaller
+      # than the recursive count fails too, because `*.test.mjs` does not descend
+      # and a test under a subdirectory would otherwise be skipped with the count
+      # still looking plausible. It matters more here -- this workflow cuts a
+      # release, so a green run that tested nothing, or tested less than it
+      # claimed, would ship.
       - name: Run Office-free unit tests
         run: |
           set -euo pipefail
           shopt -s nullglob
-          files=(.github/extensions/office-canvas/test/unit/*.test.mjs)
+          dir=.github/extensions/office-canvas/test/unit
+          files=("$dir"/*.test.mjs)
           echo "unit test files: ${#files[@]}"
           if [ "${#files[@]}" -eq 0 ]; then
             echo "::error::no unit test files found; the path moved and nothing would have run"
+            exit 1
+          fi
+          all=$(find "$dir" -name '*.test.mjs' -printf '.' | wc -c)
+          if [ "${#files[@]}" -ne "$all" ]; then
+            echo "::error::$((all - ${#files[@]})) unit test file(s) live in a subdirectory of $dir and would not run"
             exit 1
           fi
           node --test "${files[@]}"
