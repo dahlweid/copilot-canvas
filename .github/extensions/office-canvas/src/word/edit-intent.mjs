@@ -286,18 +286,25 @@ export function validateIntent(input) {
  * The failure this refuses to be quiet about is issue #131's. `describeIntent`
  * used to end in `default: return intent.op`, so an operation added to the
  * table above and not to that switch described itself as its own bare name.
- * That is not a visibly broken string — nothing downstream can tell it from a
- * deliberate one — and it drops the *address*, which for this string's two
- * consumers is the part carrying the information. A revert manifest that names
- * the operation and not the paragraph it was applied to is a recovery path
- * with the recovery taken out.
+ * That was not a visibly broken string — nothing downstream could tell it from
+ * a deliberate one — and it dropped the *address*, which for this string's two
+ * consumers is the part carrying the information. A revert manifest naming the
+ * operation and not the paragraph it was applied to would have been a recovery
+ * path with the recovery taken out.
+ *
+ * Which is why this throws instead of degrading: with no fallback left, an
+ * operation carrying no prose never reaches a manifest at all. The message says
+ * that and no more. Predicting the old behaviour here would be this repo's own
+ * defect — an error naming a consequence the code has just made impossible.
  */
 function describerFor(op) {
     const describe = OPERATIONS[op]?.describe;
     if (typeof describe !== "function") {
         throw new Error(
-            `Operation ${JSON.stringify(op)} has no description. A snapshot manifest or log line for it would ` +
-                `name the operation and not the paragraph it was applied to.`,
+            `Operation ${JSON.stringify(op)} has no \`describe\` in OPERATIONS, so it is refused rather than ` +
+                `described. Snapshot manifests and log lines are written from that string and \`revert_document\` ` +
+                `reads the manifest back, so every operation needs prose of its own naming the paragraph it was ` +
+                `applied to.`,
         );
     }
     return describe;

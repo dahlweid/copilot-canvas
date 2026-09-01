@@ -417,9 +417,16 @@ test("an operation the table does not describe is refused, not described as its 
     // operation with a plausible-looking string. A wrong answer here is written
     // into a snapshot manifest and read back by `revert_document`, so it has to
     // throw rather than guess.
+    //
+    // The message is matched on its *behavioural* claim, not on any convenient
+    // fragment. Round one caught this guard predicting the deleted fallback --
+    // "would name the operation and not the paragraph" -- which cannot happen
+    // once the throw exists, and is this repo's own defect class: an error
+    // naming a consequence the code has made impossible. Pinning "refused"
+    // means the sentence has to keep describing what actually occurs.
     assert.throws(
         () => describeIntent({ op: "duplicate_paragraph", address: ADDRESS }),
-        /has no description/,
+        /duplicate_paragraph[\s\S]*refused rather than described/,
         "an unlisted operation was described instead of refused",
     );
 });
