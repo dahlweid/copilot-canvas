@@ -103,6 +103,19 @@ Renders are cached under `~/.copilot/extensions/office-canvas/artifacts/`, keyed
 `path + mtime + size`, so reopening an unchanged document is instant and an edited one
 re-renders exactly once.
 
+**The Word mark beside the document name is extracted at runtime from the Word installed on
+your own machine** — `ExtractAssociatedIcon` reads `WINWORD.EXE`'s resources without launching
+Word, and the bytes are cached in memory and served over `/api/word-icon`. **No Microsoft
+artwork is committed to this repository, and that is deliberate and non-negotiable:** the open
+icon sets carry no Microsoft mark, for trademark reasons, so the only legitimate source is the
+installation on the machine that displays it — which is why a PowerShell script and an HTTP
+endpoint stand behind a 16×16 image. On a machine without Word the mark is simply absent: the
+image stays hidden, nothing breaks and nothing is reported, by design. Measured in
+[`spikes/word-icon/FINDINGS.md`](spikes/word-icon/FINDINGS.md). `ExtractAssociatedIcon` returns
+a 32×32 icon regardless of any higher-resolution icons the executable carries, so a larger mark
+would need a different extraction — not a defect at the current 16×16 render size, which the
+32×32 source already covers at 2×.
+
 ### Safety
 
 - Macros are force-disabled (`AutomationSecurity = 3`) before any document is opened.
