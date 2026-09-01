@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import {
     describeIntent,
     EditIntentError,
+    fieldRequirementHelp,
     HEADING_LEVEL_HELP,
     OPERATION_HELP,
     MAX_HEADING_LEVEL,
@@ -332,5 +333,44 @@ test("the `headingLevel` rule the schema advertises is the rule the validator en
             "invalid_intent",
             `the schema says ${op} refuses \`headingLevel\`, but the validator took one`,
         );
+    }
+});
+
+test("every operation reaches both schema descriptions", () => {
+    // The falsifiable half of the derivation. The two tests above pin the *rule*
+    // for every operation the prose names, so they cannot notice one the prose
+    // fails to name -- measured, not assumed: making `fieldRequirementHelp` skip
+    // `insert_paragraph_before` dropped it from both descriptions and left the
+    // suite at 18 pass, 0 fail. This one goes red on that mutation.
+    //
+    // It is not the tautology `CONTEXT.md` documents. There the compared list is
+    // built inside the test from the same constant by the same path, so no
+    // change to the code under test can separate them. Here the expectation is
+    // `OPERATION_NAMES` and the subject is the string `fieldRequirementHelp`
+    // produced, with the function under test in between -- which is exactly
+    // where an omission would be introduced.
+    for (const [label, help] of [
+        ["TEXT_HELP", TEXT_HELP],
+        ["HEADING_LEVEL_HELP", HEADING_LEVEL_HELP],
+    ]) {
+        const rules = requirementsFrom(help);
+        const named = [...rules.required, ...rules.optional, ...rules.refused].sort();
+        assert.deepEqual(
+            named,
+            [...OPERATION_NAMES].sort(),
+            `${label} does not account for every operation exactly once: ${help}`,
+        );
+    }
+});
+
+test("the table carries no requirement level the derivation cannot render", () => {
+    // Importing this module runs `fieldRequirementHelp` for both fields, so an
+    // unrecognised level throws before anything can read a description that
+    // silently dropped an operation. Exercised through a field the table does
+    // not carry, because a level that is merely absent looks the same to the
+    // guard as one that is misspelled.
+    assert.throws(() => fieldRequirementHelp("noSuchField"), /not a requirement level/);
+    for (const field of ["text", "headingLevel"]) {
+        assert.ok(fieldRequirementHelp(field).endsWith("."), `${field} renders no sentence`);
     }
 });

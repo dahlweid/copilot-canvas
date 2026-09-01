@@ -115,8 +115,12 @@ function joinNames(names) {
  * repo has corrected four times before (issue #28). The reasoning is
  * `OPERATION_HELP`'s: the rule the validator enforces and the rule the model
  * reads are one rule, so there is one place to change it.
+ *
+ * Exported for one test only: an unrecognised level throws here, so importing
+ * this module type-checks every level in the table, and a guard nothing
+ * exercises is a guard that may not work.
  */
-function fieldRequirementHelp(field) {
+export function fieldRequirementHelp(field) {
     const byLevel = new Map(REQUIREMENT_LEVELS.map((level) => [level, []]));
 
     for (const name of OPERATION_NAMES) {
@@ -233,8 +237,16 @@ export function validateIntent(input) {
 
     const normalized = { op, address };
 
+    // Both fields read the same three levels, and both handle all three, even
+    // though no operation marks `text` optional today. The asymmetry was real
+    // and measured: `fieldRequirementHelp` renders "optional on X" for whichever
+    // field the table says it about, so a `text: "optional"` operation would
+    // have shipped a schema description the validator then refused — a promise
+    // nothing keeps, in a string written for the model to act on.
     if (shape.text === "required") normalized.text = requireText(text);
-    else if (text !== undefined) {
+    else if (shape.text === "optional" && text !== undefined) {
+        normalized.text = requireText(text);
+    } else if (shape.text === "rejected" && text !== undefined) {
         throw new EditIntentError("invalid_intent", `${op} takes no \`text\`.`);
     }
 
