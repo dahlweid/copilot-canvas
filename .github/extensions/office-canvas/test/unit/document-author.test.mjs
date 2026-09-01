@@ -389,7 +389,7 @@ test("a document that cannot be read back is still reported as created", async (
     });
 });
 
-test("a save that hangs surfaces as a typed word_timeout, on a budget the caller spends down", async () => {
+test("a save that hangs surfaces as a typed word_timeout, on a shared deadline the host spends the cold start from", async () => {
     // The failure #96 is about: `SaveAs2` is an unbounded COM call, the class
     // this repo singles out as where a call "hangs indefinitely rather than
     // failing" (Documents.Open, Quit). If the save wedges, the user must get a
@@ -399,30 +399,35 @@ test("a save that hangs surfaces as a typed word_timeout, on a budget the caller
     // This is the author's half of the guarantee, and it is deliberately narrow
     // about what it proves. `DocumentAuthor` cannot bound anything itself; the
     // timer that actually stops a hang lives in `WordHost.#send`
-    // (word-host-timeout.test.mjs covers it). What the author owns is *spending
-    // one wall clock down across the operation* -- it hands the host
-    // `remaining(...)`, a value bounded by `CREATE_BUDGET_MS` and shrinking as
-    // the create proceeds -- and *not reshaping* the host's `word_timeout` on
-    // the way back out.
+    // (word-host-timeout.test.mjs covers it). What the author owns is *handing
+    // down one wall clock for the whole operation* and *not reshaping* the
+    // host's `word_timeout` on the way back out.
     //
-    // What deleting `timeoutMs: remaining("the authoring itself")` at
-    // document-author.mjs actually costs, stated straight because the mutant is
-    // the evidence: the host's `create` defaults `timeoutMs` to
-    // `STARTUP_TIMEOUT_MS` (180 s), so the save does NOT run unbounded -- it
-    // still surfaces as `word_timeout`. What is lost is the *shared* clock: the
-    // bound stops being spent across authoring and read-back and reverts to a
-    // flat per-call default, so a create can outlive the budget its own error
-    // text quotes. This test sees that as the handed value going from a finite
-    // number `<= CREATE_BUDGET_MS` to `undefined`.
+    // #128 sharpened what "handing down the clock" means. The author must hand
+    // the host the `deadline` itself, not a `remaining(...)` snapshot taken
+    // before the host's own cold start: `WordHost.#send` awaits `#ensureStarted`
+    // (bounded at 180 s) *before* arming its timer, so a pre-await snapshot lets
+    // that start compose on top of the budget -- ~480 s against an error text
+    // that quotes 300 s -- while a `deadline` is derived after start and so is
+    // spent from the budget. This test sees the difference as the handed shape:
+    // a future absolute `deadline <= now + CREATE_BUDGET_MS`, not a `timeoutMs`.
+    //
+    // Mutation that reddens this (result in the PR body): restore the pre-#128
+    // call at document-author.mjs -- `timeoutMs: remaining("the authoring
+    // itself")` in place of `deadline`. Then `handed.deadline` is `undefined` and
+    // the assertion below fails. (The host-side companion in
+    // word-host-timeout.test.mjs proves the host then spends the start from that
+    // deadline, so the two together pin caller and host.)
     await withTemp(async (dir) => {
         const doc = path.join(dir, "report.docx");
 
-        let handedTimeout = "unset";
+        const before = Date.now() + 300_000;
+        let handed = "unset";
         const author = new DocumentAuthor({
             reader: stubReader(doc),
             host: {
-                create: async ({ timeoutMs } = {}) => {
-                    handedTimeout = timeoutMs;
+                create: async (args = {}) => {
+                    handed = args;
                     // What `WordHost.#send` produces when the `create` command
                     // does not answer within its budget: a typed rejection, the
                     // child already killed. No file is written -- a hung save
@@ -437,9 +442,11 @@ test("a save that hangs surfaces as a typed word_timeout, on a budget the caller
         const err = await failed(author, doc);
         assert.ok(err, "a hung save resolved instead of failing");
 
+        const after = Date.now() + 300_000;
+        assert.equal(handed.timeoutMs, undefined, "the author snapshotted a window instead of handing down the deadline");
         assert.ok(
-            Number.isFinite(handedTimeout) && handedTimeout > 0 && handedTimeout <= 300_000,
-            `the save was not handed a spent-down budget (got ${handedTimeout}); the shared wall clock was lost`,
+            Number.isFinite(handed.deadline) && handed.deadline > Date.now() && handed.deadline >= before && handed.deadline <= after,
+            `the save was not handed the shared deadline (got ${handed.deadline}); the cold start would compose on top of the budget`,
         );
 
         assert.equal(err.code, "word_timeout", "a hung save reached the caller as something other than word_timeout");

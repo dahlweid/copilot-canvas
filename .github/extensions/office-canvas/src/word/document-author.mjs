@@ -243,10 +243,17 @@ export class DocumentAuthor {
         // other kind of entry through to be classified there.
         if (await isExistingFile(docPath)) failFromStatus({ status: "file_exists" }, docPath);
 
+        // The `remaining` call is kept as the cheap pre-flight refusal: if the
+        // budget is already gone, fail here with the budget-specific message
+        // rather than arming a zero-length timer. But the *value* handed to the
+        // host is the `deadline`, not this snapshot -- `#host.create` derives its
+        // window after the cold start, so start is spent from the budget instead
+        // of composing on top of it (#128).
+        remaining("the authoring itself");
         const result = await this.#host.create({
             path: docPath,
             blocks: spec.blocks,
-            timeoutMs: remaining("the authoring itself"),
+            deadline,
         });
 
         if (result.status !== "created") failFromStatus(result, docPath);

@@ -325,6 +325,11 @@ export class DocumentEditor {
 
         let result;
         try {
+            // Pre-flight the budget so an already-exhausted clock refuses here
+            // with the budget message; the host is handed the `deadline` below,
+            // not a snapshot, so its window is derived after the cold start
+            // rather than composed on top of it (#128).
+            remaining("the edit itself");
             result = await this.#host.edit({
                 path: docPath,
                 // Word's own paragraph numbering, not the map's. They diverge:
@@ -336,7 +341,7 @@ export class DocumentEditor {
                 op: intent.op,
                 text: intent.text ?? null,
                 headingLevel: intent.headingLevel ?? null,
-                timeoutMs: remaining("the edit itself"),
+                deadline,
             });
         } catch (err) {
             // The host *threw*, so the outcome is unknown -- which is precisely
