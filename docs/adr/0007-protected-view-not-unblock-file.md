@@ -61,14 +61,13 @@ footprint.
 | --- | --- |
 | `Documents.Open` on a marked file | never returns (killed externally) |
 | Same document, mark removed (control) | 430 ms |
-| Protected View open + `.Edit()` | operation cost unknown — recorded range included process activation |
+| Protected View open + `.Edit()`, warm | operation cost unknown — recorded range has no committed probe |
 | Edit + save through that window | 375–395 ms |
 | Full marked-document edit, end to end | 2737 ms |
 | Plain open after a trust record exists | 85 ms |
 | `Zone.Identifier` after the edit | unchanged |
 
-The operation cost of the Protected View route is unknown: the recorded open
-timing included process activation and cannot support comparison with a direct
-open. The route is used only for documents that carry the mark, only on the
-first edit of a session, and it keeps the file's security marker where the user
-put it.
+The operation cost of the Protected View route is unknown: the recorded warm
+range has no committed probe and cannot support comparison with a direct open.
+The route is used only for documents that carry the mark, only on the first edit
+of a session, and it keeps the file's security marker where the user put it.
