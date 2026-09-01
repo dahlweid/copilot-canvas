@@ -389,6 +389,60 @@ test("a document that cannot be read back is still reported as created", async (
     });
 });
 
+test("a save that hangs is bounded and surfaces as a typed word_timeout, not silence", async () => {
+    // The failure #96 is about: `SaveAs2` is an unbounded COM call, the class
+    // this repo singles out as where a call "hangs indefinitely rather than
+    // failing" (Documents.Open, Quit). If the save wedges, the user must get a
+    // typed error they can act on -- never a hang and never a create the agent
+    // is tempted to retry into an overwrite.
+    //
+    // The bound is `document-author.mjs` handing the host a finite `timeoutMs`
+    // (`remaining(...)`), which `WordHost.#send` turns into a `setTimeout` that
+    // rejects with `word_timeout` and tears the host down. This test injects a
+    // host that rejects `create` exactly as `#send` does on that timer, and
+    // asserts both halves of the guarantee.
+    //
+    // It can fail for the reason its name claims:
+    //   - Delete `timeoutMs: remaining("the authoring itself")` at
+    //     document-author.mjs (so the host gets `undefined` and `#send` would run
+    //     unbounded): the first assertion goes red -- no finite budget is handed
+    //     down. Measured with that line removed: this test fails, "the save was
+    //     handed no finite timeout".
+    //   - Have the caller swallow or re-wrap the host's `word_timeout` into a
+    //     generic failure: the second assertion goes red.
+    await withTemp(async (dir) => {
+        const doc = path.join(dir, "report.docx");
+
+        let handedTimeout;
+        const author = new DocumentAuthor({
+            reader: stubReader(doc),
+            host: {
+                create: async ({ timeoutMs }) => {
+                    handedTimeout = timeoutMs;
+                    // What `WordHost.#send` produces when the SaveAs2 command
+                    // does not answer within its budget: a typed rejection, the
+                    // child already killed. No file is written -- a hung save
+                    // wrote nothing.
+                    throw Object.assign(new Error(`Word did not respond to 'create' within ${Math.round(timeoutMs / 1000)}s.`), {
+                        code: "word_timeout",
+                    });
+                },
+            },
+        });
+
+        const err = await failed(author, doc);
+        assert.ok(err, "a hung save resolved instead of failing");
+
+        assert.ok(
+            Number.isFinite(handedTimeout) && handedTimeout > 0,
+            `the save was handed no finite timeout (got ${handedTimeout}); SaveAs2 would run unbounded`,
+        );
+
+        assert.equal(err.code, "word_timeout", "a hung save reached the caller as something other than word_timeout");
+        assert.match(throughToolBoundary(err), /word_timeout/);
+    });
+});
+
 test("a document still held after Close is flagged rather than passed off as clean", async () => {
     await withTemp(async (dir) => {
         const doc = path.join(dir, "report.docx");
