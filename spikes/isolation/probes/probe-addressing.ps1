@@ -9,12 +9,18 @@
 #       "something else changed it".
 #
 # ---------------------------------------------------------------------------
-# DO NOT RUN THIS AS IT STANDS. Its `finally` block kills every WINWORD process
-# on the machine, including ones it did not start -- another session's Word, or
-# your own open document. Tracked as #114, which fixes this file and its three
-# siblings together; this file is left byte-identical below that line so the two
-# changes do not collide. Read it, cite it, fix it under #114 -- do not execute
-# it on a machine anyone else is using.
+# TEARDOWN. This probe kills nothing. It ends the Word instance it is bound to
+# through the COM handle it holds rather than by pid, so it cannot reach a
+# process it never bound to, and an instance that turns out to predate the probe
+# is released rather than quit. The one residual case is an instance that could
+# not be attributed at all: that is still quit through its handle, because not
+# quitting is how a Word gets stranded -- see #114 for why that trade is made.
+#
+# It used to end its `finally` with an unfiltered
+# `Get-Process WINWORD | Stop-Process -Force`, which killed every Word on the
+# machine including ones it never started -- another session's, or your own open
+# document. That is fixed (#114). The measured arms below are untouched, so the
+# figures this file backs still stand.
 # ---------------------------------------------------------------------------
 #
 # WHAT THIS PROBE DOES AND DOES NOT BACK. S1 measures ONE strategy: the
@@ -45,11 +51,112 @@ function Get-Token([string]$Path) {
 }
 
 $word = $null
+$d = $null             # the document this probe opens; closed in `finally`
+# --- ownership: attribute by window handle, never by differencing (#114) ----
+# `Add-Type` is hoisted here, outside the `try`, so its one-time ~800 ms compile
+# can never land between a warm-up and a stopwatch.
+Add-Type -Namespace Win32 -Name Wnd -MemberDefinition @'
+[DllImport("user32.dll", SetLastError = true)]
+public static extern uint GetWindowThreadProcessId(System.IntPtr hWnd, out uint lpdwProcessId);
+'@
+
+function Get-WordPids { @(Get-Process -Name WINWORD -ErrorAction SilentlyContinue | ForEach-Object Id) }
+
+# Which process owns the window belonging to THIS RCW. Nothing is differenced
+# and nothing is guessed: every rejection returns $null, and the caller then
+# refuses to name a pid at all rather than picking a plausible one. Differencing
+# the WINWORD set around `New-Object` is measured unsound here -- with one
+# concurrent Word from a separate process it reported 2 new pids for the 1
+# instance created, and agreed only by luck
+# (probe-init-attribution.ps1:250-251, test/integration/word-pids.mjs:29-38).
+function Get-AttributedWordPid($app) {
+    try {
+        $hwnd = [IntPtr][int64]$app.ActiveWindow.Hwnd
+        if ($hwnd -eq [IntPtr]::Zero) { return $null }
+        [uint32]$procId = 0
+        [void][Win32.Wnd]::GetWindowThreadProcessId($hwnd, [ref]$procId)
+        $candidate = [int]$procId
+        if ($candidate -le 4) { return $null }
+        $p = Get-Process -Id $candidate -ErrorAction SilentlyContinue
+        if ($null -eq $p -or $p.ProcessName -ne 'WINWORD') { return $null }
+        return $candidate
+    } catch { return $null }
+}
+
+function Get-WordStartTime([int]$candidate) {
+    try {
+        $p = Get-Process -Id $candidate -ErrorAction SilentlyContinue
+        if ($null -eq $p -or $p.ProcessName -ne 'WINWORD') { return $null }
+        return $p.StartTime
+    } catch { return $null }
+}
+
+# 'gone' | 'alive' | 'unknown'. The expected StartTime is recorded once at
+# attribution and never overwritten, but it IS re-read and compared on every
+# poll: a pid recycled onto another process would otherwise be reported as our
+# Word surviving. Only a matching name AND start time is a survivor.
+#
+# The whole observation is wrapped, not just the StartTime read: a process can
+# exit between `Get-Process` returning and a property being fetched, which
+# throws rather than reporting absence. This runs inside `finally`, where an
+# escaping error would displace a real failure from the probe body.
+function Get-WordLiveness([int]$candidate, $expectedStart) {
+    try {
+        $p = Get-Process -Id $candidate -ErrorAction SilentlyContinue
+        if ($null -eq $p) { return 'gone' }
+        if ($p.ProcessName -ne 'WINWORD') { return 'gone' }
+        # No recorded start time means identity cannot be tested at all. Falling
+        # through would compare a real DateTime against $null, which is -ne, and
+        # so report a RUNNING Word as 'gone' -- a clean teardown nobody observed.
+        # Note the asymmetry this preserves: absence, checked above, is sound
+        # without a start time, because no process holds the pid. Presence is
+        # not, because the pid may have been recycled. Only the sound half is
+        # allowed to conclude.
+        if ($null -eq $expectedStart) { return 'unknown' }
+        $actual = $p.StartTime
+        if ($null -eq $actual) { return 'unknown' }
+        if ($actual -ne $expectedStart) { return 'gone' }
+        return 'alive'
+    } catch { return 'unknown' }
+}
+
+$ownedPid = $null      # created here and attributed -- the only pid ever polled
+$ownedStart = $null
+$attachedPid = $null   # attributed but pre-existing: someone else's, never quit
+$verdict = 0           # 0 ok | 1 our Word survived | 2 teardown unverified
+
 try {
+    # Census before New-Object, used ONLY as a negative: a pid that already
+    # existed cannot be one we created. It never selects a pid.
+    $before = Get-WordPids
     $word = New-Object -ComObject Word.Application
     $word.Visible = $false; $word.DisplayAlerts = 0
 
     $d = $word.Documents.Open($doc, $false, $true)   # read-only for the survey
+
+    # Attribution happens here: after the document exists (ActiveWindow needs
+    # one) but AHEAD of the warm-up, so the warm-up remains the last operation
+    # before the stopwatch and the measured arm is unperturbed. Reading early
+    # also matters for correctness: a late ActiveWindow read can name a
+    # Protected View sandbox WINWORD the caller never bound to
+    # (probe-init-attribution.ps1:36-44).
+    $attributed = Get-AttributedWordPid $word
+    if ($null -eq $attributed) {
+        "  ownership: could not attribute this instance to a pid."
+    }
+    elseif ($before -contains $attributed) {
+        $attachedPid = $attributed
+        "  ownership: attached to a pre-existing Word (pid $attachedPid) -- it will NOT be ended."
+    }
+    else {
+        $ownedPid = $attributed
+        $ownedStart = Get-WordStartTime $ownedPid
+        "  ownership: this probe created pid $ownedPid."
+        if ($null -eq $ownedStart) {
+            "  ownership: its start time could not be read, so its exit can be confirmed only by the pid going absent."
+        }
+    }
+
     $d.Content.InsertAfter("") | Out-Null            # no-op to warm the object model
 
     "== S1: cost of a full structural read =="
@@ -120,11 +227,92 @@ try {
     "  cost of computing a token: $($sw.ElapsedMilliseconds) ms"
 }
 finally {
-    if ($word) { try { $word.Quit() } catch {}; [Runtime.InteropServices.Marshal]::ReleaseComObject($word) | Out-Null }
-    Get-Process WINWORD -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-    Start-Sleep -Seconds 1
+    # Teardown kills nothing, and acts through handles rather than pids. `Quit`
+    # is addressed to the RCW we created, so it can only ever end the instance
+    # we are bound to; a kill is addressed to a coordinate and can land on a
+    # Word we never started. Destroy by handle is safe where destroy by
+    # coordinate is not (word-host.ps1:804-813).
+    #
+    # Every step below is individually wrapped: an error escaping this block
+    # would replace a real failure from the probe body.
+    #
+    # Close this probe's document first. On the attached path nothing else
+    # would: `Quit` is skipped there, so without this our temp document is left
+    # open in someone else's Word -- and the directory holding it is removed a
+    # few lines below, leaving them a document backed by a deleted file. Close(0)
+    # rather than Close(): argument-less Close prompts on a dirty document, and a
+    # prompt on a hidden instance is a hang. Already closed is the normal case
+    # and throws, so the result is ignored.
+    if ($d) {
+        try { $d.Close(0) } catch { }
+        try { [Runtime.InteropServices.Marshal]::ReleaseComObject($d) | Out-Null } catch { }
+    }
+
+    if ($word) {
+        if ($attachedPid) {
+            "  pid $attachedPid predates this probe -- released, NOT quit."
+        }
+        else {
+            # Quit() takes no argument. Under Windows PowerShell 5.1 -- this
+            # file's runtime -- Quit(0) throws AND leaves the process alive
+            # (probe-quit0-leak.ps1, test/unit/quit-argument.test.mjs). An
+            # unattributed instance is still quit: the handle is ours even when
+            # the pid is unknown, and not quitting is how a Word gets stranded.
+            try { $word.Quit() } catch { "  Quit threw -- $($_.Exception.Message.Split([char]10)[0])" }
+        }
+        try { [Runtime.InteropServices.Marshal]::ReleaseComObject($word) | Out-Null } catch { }
+    }
+
+    # Only an owned pid is polled. An attached instance is deliberately left
+    # running, so polling it would spend the budget confirming the expected and
+    # then report someone else's Word as a leak.
+    if ($ownedPid) {
+        # 90 s is a generous observation budget, not a measured boundary: a Word
+        # has been seen to outlive a 30 s poll under concurrent load and then
+        # exit on its own (test/integration/word-pids.mjs:130-137). Polling
+        # makes the budget free on success.
+        $deadline = (Get-Date).AddSeconds(90)
+        # Poll until the pid is absent, not merely until it is identified. An
+        # 'unknown' keeps watching rather than concluding: it may still resolve
+        # to a sound 'gone', and a transient failure to read a start time no
+        # longer ends the observation early. The deadline still bounds it.
+        $state = Get-WordLiveness $ownedPid $ownedStart
+        while ($state -ne 'gone' -and (Get-Date) -lt $deadline) {
+            Start-Sleep -Milliseconds 250
+            $state = Get-WordLiveness $ownedPid $ownedStart
+        }
+        if ($state -eq 'gone') {
+            "  our Word (pid $ownedPid) exited."
+        }
+        elseif ($state -eq 'unknown') {
+            $verdict = 2
+            "  our Word (pid $ownedPid) is still present but its identity could not be confirmed -- teardown UNVERIFIED."
+        }
+        else {
+            $verdict = 1
+            "  *** our Word (pid $ownedPid, started $ownedStart) is STILL RUNNING after 90 s."
+            "  *** Nothing is killed here, and no kill command is offered on purpose:"
+            "  *** a pid is a coordinate, and by the time anyone reads this it may"
+            "  *** belong to a different process. End it by hand only after confirming"
+            "  *** that pid $ownedPid is still a WINWORD started at $ownedStart."
+        }
+    }
+    elseif ($word -and -not $attachedPid) {
+        # An instance existed and was quit through its handle, but we never
+        # learned its pid, so we cannot confirm it went. That is not a clean
+        # teardown and must not be reported as one.
+        $verdict = 2
+        "  teardown UNVERIFIED: this instance was quit through its own handle, but it was never attributed to a pid, so its exit could not be confirmed. Nothing is killed on a guess."
+    }
+
+    # Only this run's own directory. The wildcard $env:TEMP\addr-* sweep that
+    # used to be here deleted concurrently-running siblings' working
+    # directories, which is the same "act on what you own" defect in miniature.
     Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue
-    Get-ChildItem $env:TEMP -Directory -Filter 'addr-*' -ErrorAction SilentlyContinue |
-        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-    "swept"
 }
+
+# Placed after the finally so cleanup always runs first: an exit that skipped
+# cleanup would trade a reported failure for a leaked WINWORD
+# (probe-fileshare-algebra.ps1:243-248). If the probe body threw, that exception
+# propagates past this line and the original failure is preserved.
+if ($verdict -ne 0) { exit $verdict }
