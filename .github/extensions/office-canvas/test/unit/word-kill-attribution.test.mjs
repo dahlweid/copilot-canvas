@@ -365,8 +365,14 @@ function guardsOf(body) {
             continue;
         }
 
+        // The FIRST plain return, not the last. PowerShell returns on the first
+        // one reached, so taking the last models a function that cannot exist.
+        // Measured, not theoretical: replacing the kill with `return 'declined'`
+        // left `return 'killed'` below it as dead code, and a last-wins parser
+        // reported the function as still killing. Test 3 caught that mutation
+        // anyway, but this test would have said the wrong thing about it.
         const plain = /^return '([\w:]+)'$/.exec(line);
-        if (plain) fallthrough = plain[1];
+        if (plain && !fallthrough) fallthrough = plain[1];
     }
     assert.ok(fallthrough, `${KILLER} has no fall-through return`);
     return { guards, fallthrough };
