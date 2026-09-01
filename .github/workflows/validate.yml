@@ -72,6 +72,15 @@ jobs:
       # before the annotation naming that exact cause was ever printed
       # (measured). `-printf '.' | wc -c` counts files; `wc -l` would count
       # lines, which a newline in a filename breaks.
+      #
+      # The second message names no cause, because the check establishes none:
+      # it compares two counts. There are at least two routes to a disagreement,
+      # both measured -- a file in a subdirectory, and a `.dot.test.mjs` sitting
+      # *flat*, which `find -name '*.test.mjs'` matches and the shell's `*` does
+      # not without `dotglob` (glob 2, find 3, zero subdirectories). Saying "in a
+      # subdirectory" would send a reader hunting one that need not exist. For
+      # the same reason it reports both counts rather than their difference:
+      # subtracting presumes a direction the check has not established.
       - name: Run Office-free unit tests
         run: |
           set -euo pipefail
@@ -85,7 +94,7 @@ jobs:
           fi
           all=$(find "$dir" -name '*.test.mjs' -printf '.' | wc -c)
           if [ "${#files[@]}" -ne "$all" ]; then
-            echo "::error::$((all - ${#files[@]})) unit test file(s) live in a subdirectory of $dir and would not run"
+            echo "::error::flat glob and recursive count disagree: the glob hands Node ${#files[@]} file(s), find matches $all under $dir. The check compares counts and does not establish why they differ; a file in a subdirectory and a leading-dot filename are both routes the glob misses and find does not."
             exit 1
           fi
           node --test "${files[@]}"
