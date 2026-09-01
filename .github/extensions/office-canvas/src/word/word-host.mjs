@@ -275,8 +275,56 @@ export class WordHost {
         this.#pending.clear();
     }
 
-    async #send(cmd, args, timeoutMs) {
+    // `budget` is either `{ timeoutMs }` -- a fixed window measured from when the
+    // command is written -- or `{ deadline }`, an absolute wall-clock instant the
+    // whole operation must finish by.
+    //
+    // The distinction is the fix for #128. `#ensureStarted()` is awaited *before*
+    // the timer is armed, and starting Word cold is bounded at STARTUP_TIMEOUT_MS
+    // (via the `ping` inside the start). A caller that snapshots `remaining()`
+    // itself and passes a `timeoutMs` has already fixed its value before that
+    // await, so the startup leg composes on top of its budget rather than being
+    // spent from it -- ~180s of start plus the caller's window, against an error
+    // that quotes only the window. Handing a `deadline` moves the subtraction to
+    // *after* `#ensureStarted()` returns, so whatever start consumed is deducted
+    // and the operation shares one wall clock with it, the way
+    // document-editor.mjs:230 says the whole operation should.
+    // `budget` is one of three shapes, and the resolution below is the one place
+    // a wrong branch could hide, so it is written to fail loudly rather than
+    // silently pick a default:
+    //   - a bare number -- a fixed window, for a leg not on a shared clock
+    //     (`ping`, `open`, `close`, `quit`, and the recovery replay);
+    //   - `{ deadline }` -- an absolute instant, from which the window is
+    //     derived *here*, after the await above;
+    //   - `{ timeoutMs }` -- a fixed window in object form.
+    // `deadline` is preferred to `timeoutMs` when both are present, but callers
+    // never pass both: `create`/`edit`/`structure` pick exactly one. A misspelt
+    // key (`{ deadlne }`, `{ deadline: undefined }`) matches none of the numeric
+    // branches and hits the `TypeError`, which is the point -- a dropped budget
+    // must not degrade to an unbounded or default-bounded call in silence.
+    async #send(cmd, args, budget) {
         await this.#ensureStarted();
+        // Derived after the start above, so the time the cold start consumed is
+        // spent from the deadline rather than added on top of a pre-await
+        // snapshot (#128). This subtraction and the `setTimeout` that consumes it
+        // are in one synchronous run -- there is no `await` between them -- so the
+        // value cannot go stale before the timer is armed. Keep it that way: an
+        // `await` inserted here would reintroduce a smaller version of the very
+        // bug this fixes.
+        const timeoutMs =
+            typeof budget === "number"
+                ? budget
+                : budget?.deadline != null
+                  ? budget.deadline - Date.now()
+                  : budget?.timeoutMs;
+        if (typeof timeoutMs !== "number" || Number.isNaN(timeoutMs)) {
+            throw new TypeError(`#send('${cmd}') needs a numeric timeoutMs or a deadline`);
+        }
+        // A deadline already in the past is not a bug to throw on -- the caller's
+        // budget legitimately ran out during startup. Let the timer fire at 0 so
+        // the caller gets the same typed `word_timeout` it would for any expiry,
+        // rather than a different error shape for "expired while starting".
+        const armMs = Math.max(0, timeoutMs);
         const id = this.#nextId++;
         return new Promise((resolve, reject) => {
             const timer = setTimeout(() => {
@@ -284,12 +332,12 @@ export class WordHost {
                 // A timeout usually means Word is stuck behind a modal dialog.
                 // The process is unrecoverable from here, so tear it down; the
                 // next request transparently starts a fresh one.
-                this.log(`word-host: '${cmd}' timed out after ${timeoutMs}ms, restarting host`);
+                this.log(`word-host: '${cmd}' timed out after ${armMs}ms, restarting host`);
                 this.#kill();
-                const err = new Error(`Word did not respond to '${cmd}' within ${Math.round(timeoutMs / 1000)}s.`);
+                const err = new Error(`Word did not respond to '${cmd}' within ${Math.round(armMs / 1000)}s.`);
                 err.code = "word_timeout";
                 reject(err);
-            }, timeoutMs);
+            }, armMs);
 
             this.#pending.set(id, { resolve, reject, timer });
             try {
@@ -305,10 +353,15 @@ export class WordHost {
     /**
      * Sends a command, transparently recovering from a host restart by
      * replaying the `open` that the command depends on.
+     *
+     * `budget` is passed straight to `#send`: either `{ timeoutMs }` for a fixed
+     * window or `{ deadline }` for a shared wall clock (see `#send`). It defaults
+     * to the standard window; a caller spending a shared budget passes a
+     * `deadline` so the derivation happens after any host restart's own start.
      */
-    async request(cmd, args = {}, { timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
+    async request(cmd, args = {}, budget = { timeoutMs: DEFAULT_TIMEOUT_MS }) {
         try {
-            return await this.#send(cmd, args, timeoutMs);
+            return await this.#send(cmd, args, budget);
         } catch (err) {
             const docId = args?.docId;
             const message = err.message ?? "";
@@ -334,10 +387,29 @@ export class WordHost {
             } catch {
                 /* non-fatal */
             }
-            return await this.#send(cmd, args, timeoutMs);
+            return await this.#send(cmd, args, budget);
         }
     }
 
+    // `ping` keeps a fixed `STARTUP_TIMEOUT_MS` bound rather than deriving one
+    // from the operation's `deadline`, and that is deliberate (#128 asked the
+    // question explicitly). Two reasons.
+    //
+    // First, it is sound: the composition #128 fixes is create/edit being armed
+    // *before* the start it awaits. `#send` now derives that window *after*
+    // `#ensureStarted()` returns, so however long the start took -- up to this
+    // 180 s -- is subtracted from the deadline, and the create window is the
+    // residual. The total is bounded by `max(startup, budget)`, not their sum;
+    // the 480 s composition is gone whether or not this line changes.
+    //
+    // Second, it cannot be pulled from the operation clock cleanly, because a
+    // start is *shared*: `#ensureStarted` collapses concurrent callers onto one
+    // `#starting` promise, and the `ping` inside it belongs to that shared start,
+    // not to any one caller's deadline. Binding it to one caller's clock would
+    // let a caller with a short budget time out a start another caller with a
+    // longer budget is legitimately waiting on. A fixed ceiling on "how long may
+    // Word take to come up" is the right shape for a shared precondition; the
+    // per-operation clock governs the work done *after* it is up.
     async ping() {
         const result = await this.#send("ping", {}, STARTUP_TIMEOUT_MS);
         this.ownedPid = result.ownedPid ?? null;
@@ -378,9 +450,15 @@ export class WordHost {
      * be timeout-bounded: detection and open are not atomic, so a file that
      * looked free can still be taken between the two, and an unbounded open
      * against a held file hangs forever.
+     *
+     * Accepts a `deadline` so a caller spending one budget across several Word
+     * operations (a read, an edit, a read-back) hands down the shared wall clock
+     * rather than restarting it here -- and, crucially, so the window is derived
+     * after the cold start rather than before it (see `#send`, #128).
      */
-    structure({ docId, path: docPath, workDir, out, timeoutMs = STARTUP_TIMEOUT_MS }) {
-        return this.request("structure", { docId, path: docPath, workDir, out }, { timeoutMs });
+    structure({ docId, path: docPath, workDir, out, timeoutMs = STARTUP_TIMEOUT_MS, deadline = null }) {
+        const budget = deadline != null ? { deadline } : { timeoutMs };
+        return this.request("structure", { docId, path: docPath, workDir, out }, budget);
     }
 
     /**
@@ -399,10 +477,13 @@ export class WordHost {
      *
      * It is a parameter rather than a constant because `edit_document` spends
      * one budget across two reads and this call, and needs to hand down what is
-     * left rather than restart the clock here.
+     * left rather than restart the clock here. Prefer `deadline`, which spends
+     * the cold start from that budget instead of adding it on top (#128); a
+     * fixed `timeoutMs` is kept for callers that are not on a shared clock.
      */
-    edit({ path: docPath, wordIndex, expectedText, op, text, headingLevel, timeoutMs = STARTUP_TIMEOUT_MS }) {
-        return this.#send("edit", { path: docPath, wordIndex, expectedText, op, text, headingLevel }, timeoutMs);
+    edit({ path: docPath, wordIndex, expectedText, op, text, headingLevel, timeoutMs = STARTUP_TIMEOUT_MS, deadline = null }) {
+        const budget = deadline != null ? { deadline } : { timeoutMs };
+        return this.#send("edit", { path: docPath, wordIndex, expectedText, op, text, headingLevel }, budget);
     }
 
     /**
@@ -417,10 +498,13 @@ export class WordHost {
      *
      * The timeout is a parameter, not a constant, because the caller spends its
      * budget across this call and the read-back that confirms it, and has to
-     * hand down what is left rather than restart the clock.
+     * hand down what is left rather than restart the clock. Prefer `deadline`,
+     * which spends the cold start from that budget rather than adding it on top
+     * (#128); a fixed `timeoutMs` remains for callers off a shared clock.
      */
-    create({ path: docPath, blocks, timeoutMs = STARTUP_TIMEOUT_MS }) {
-        return this.#send("create", { path: docPath, blocks }, timeoutMs);
+    create({ path: docPath, blocks, timeoutMs = STARTUP_TIMEOUT_MS, deadline = null }) {
+        const budget = deadline != null ? { deadline } : { timeoutMs };
+        return this.#send("create", { path: docPath, blocks }, budget);
     }
 
     outline({ docId, limit }) {
