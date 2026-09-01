@@ -4,10 +4,10 @@
 // Requires Word. Generates its own fixture, exercises every host command, and
 // asserts that no WINWORD.EXE is left behind.
 
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
-import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
@@ -32,6 +32,62 @@ function check(name, fn) {
             process.stderr.write(`  FAIL ${name}\n       ${err.message}\n`);
         }
     })();
+}
+
+/**
+ * Waits for one WINWORD pid to disappear, and reports how long that took.
+ *
+ * "This Word is gone" is a **state at a deadline**, which is the kind of claim a
+ * poll can settle -- unlike "no Word appeared during this interval", for which
+ * no later moment makes it true. #37 measured the difference and CONTEXT.md
+ * records it beside `probe-suite-contention.mjs`; sampling once here would be
+ * the avoidable half of that.
+ *
+ * The deadline matches `assertNoLeakedWord`'s for the same reason: process exit
+ * on this machine is load-dependent and not bounded by idle measurements, and
+ * polling makes a generous deadline free on the runs that pass. Returns rather
+ * than asserts, so the caller can say what the timeout means in its own terms.
+ */
+async function waitForWordGone(pid, { timeoutMs = 90000, intervalMs = 250 } = {}) {
+    const started = Date.now();
+    const deadline = started + timeoutMs;
+    let present = (await wordPids()).includes(pid);
+    while (present && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, intervalMs));
+        present = (await wordPids()).includes(pid);
+    }
+    return { gone: !present, waitedMs: Date.now() - started };
+}
+
+/**
+ * Ends a PowerShell host process this suite started, and waits for it to go.
+ *
+ * `pid` must come from the host's own record -- word-host.ps1 names its pid file
+ * `$PID.pid`, so the file name in a pid directory only this suite created is the
+ * host reporting its own identity, not something differenced out of a process
+ * list. The name check is the same one `killOwnedWord` makes and for the same
+ * reason: pids are reused.
+ *
+ * It waits, and re-asks with `Get-Process`, because the caller's next step
+ * depends on `Clear-OrphanedWord` seeing this pid as dead -- and that is the
+ * predicate the sweep itself uses. `Kill()` only requests termination.
+ *
+ * Never used on a WINWORD. Word is killed through `killOwnedWord` alone.
+ */
+function killHostProcess(hostPid) {
+    assert.ok(Number.isInteger(hostPid) && hostPid > 4, `refusing to kill '${hostPid}', which is not a pid`);
+    return String(
+        execFileSync("powershell.exe", [
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            `$p = Get-Process -Id ${hostPid} -ErrorAction SilentlyContinue; ` +
+                "if (-not $p) { 'gone' } " +
+                "elseif ($p.ProcessName -ne 'powershell') { 'notpowershell' } " +
+                "else { $p.Kill(); $null = $p.WaitForExit(30000); " +
+                `if (Get-Process -Id ${hostPid} -ErrorAction SilentlyContinue) { 'still-running' } else { 'killed' } }`,
+        ]) ?? "",
+    ).trim();
 }
 
 const workRoot = await mkdtemp(path.join(tmpdir(), "word-canvas-test-"));
@@ -378,6 +434,175 @@ try {
             // this test runs on every suite run, so the accumulation would be
             // silent and unbounded.
             await rm(reapDir, { recursive: true, force: true }).catch(() => {});
+        }
+    });
+
+    // The positive half of that pair, and the branch that actually carries the
+    // weight. The case above proves the sweep *declines* a Word it cannot prove
+    // it owns; nothing proved it reaps one it can. When this branch fails the
+    // consequence is not a process that lingers -- it is a hidden WINWORD that
+    // nothing will ever end, which is on this repo's short list of real bugs --
+    // and by the standard `Get-WordStartTime`'s own comment sets, an instrument
+    // that has never produced a positive cannot tell you the branch works.
+    //
+    // Every destructive step here is authorised from what the host itself
+    // recorded: the pid it proved from its own window handle, plus the start
+    // time that turns that coordinate into an identity
+    // (word-host.ps1 `Get-WordStartTime` / `Stop-VerifiedWord`). Nothing is
+    // differenced. The header of word-pids.mjs sets out why that is not a
+    // stylistic preference -- measured in
+    // `spikes/isolation/probes/probe-word-ownership.ps1`, differencing reported
+    // 2 new pids for the 1 instance created, so a set difference cannot name a
+    // kill target however plausible the integer it hands back looks.
+    await check("the orphan sweep reaps a Word its ledger entry proves it owns", async () => {
+        // The bystander control, captured before anything is destroyed. This
+        // Word is a WINWORD, it is alive, and it is *not* named by the entry the
+        // reaper will read -- so it is the observation that separates "reaped
+        // the Word the ledger named" from "swept the machine".
+        const bystander = (await host.ping()).ownedPid;
+        assert.ok(bystander, "expected this suite's own host to report the Word it owns");
+        assert.ok(
+            (await wordPids()).includes(bystander),
+            `the bystander Word ${bystander} was already gone, so it can control nothing`,
+        );
+
+        const victimDir = await mkdtemp(path.join(tmpdir(), "word-canvas-orphan-"));
+        const victimLedger = ownedWordLedger();
+        const victim = new WordHost({
+            log: (m) => process.stderr.write(`[victim] ${m}\n`),
+            // Recorded twice on purpose. The suite ledger is what the final leak
+            // assertion reads; the private one scopes this case's own cleanup to
+            // the Word it created, so a failure here cannot reach into the rest
+            // of the suite and kill a Word another check still needs.
+            onOwnedPid: (pid) => {
+                ledger.record(pid);
+                victimLedger.record(pid);
+            },
+            pidDir: victimDir,
+        });
+        const reaperLog = [];
+        let reaper = null;
+        try {
+            const started = await victim.ping();
+            assert.equal(
+                started.attribution,
+                "hwnd",
+                `the victim host proved nothing about which Word it started (got '${started.attribution}'), ` +
+                    "so there is no identity to reap by",
+            );
+            const orphanPid = started.ownedPid;
+            assert.ok(Number.isInteger(orphanPid) && orphanPid > 4, "expected a real pid for the Word to orphan");
+            assert.notEqual(orphanPid, bystander, "the victim attached to the bystander instead of creating a Word");
+            assert.ok(
+                !pidsBefore.includes(orphanPid),
+                `the victim claims to own pid ${orphanPid}, which was already running before this suite started`,
+            );
+
+            // The ledger entry exactly as the host wrote it: the file *name* is
+            // the recording host's own $PID, the contents are "<wordPid>
+            // <startTicks>". Read rather than constructed -- a synthesized entry
+            // would test this suite's idea of the format, and the format is the
+            // thing the reap trusts.
+            const names = (await readdir(victimDir)).filter((n) => n.endsWith(".pid"));
+            assert.equal(names.length, 1, `expected one ledger entry, got: ${names.join(", ") || "(none)"}`);
+            const entryPath = path.join(victimDir, names[0]);
+            const victimHostPid = Number.parseInt(path.basename(names[0], ".pid"), 10);
+            const [recordedPid, recordedTicks] = (await readFile(entryPath, "utf8")).trim().split(/\s+/);
+            assert.equal(
+                Number(recordedPid),
+                orphanPid,
+                "the ledger entry names a different Word than the host attributed by window handle",
+            );
+            // Without this the sweep declines with "no start time was ever
+            // recorded", the Word survives, and every assertion below would be
+            // testing the legacy path the case above already covers.
+            assert.match(
+                recordedTicks ?? "",
+                /^[1-9][0-9]*$/,
+                `the entry recorded no start time (${JSON.stringify(recordedTicks ?? null)}), so a pid is all it has ` +
+                    "and the sweep will refuse it -- this case would then prove nothing",
+            );
+
+            // The bridge carries its own reaper: `#onExit` kills `ownedPid` when
+            // the host process dies, and `dispose()` does the same. That net sits
+            // in *front* of the one under test, so leaving it armed would make
+            // this case green whichever of the two fired, with no way to tell
+            // them apart. Forgetting the pid here is what the PowerShell-side
+            // ledger exists for in the first place: the Node process went away
+            // too, so nothing in this address space remembers the Word.
+            victim.ownedPid = null;
+
+            const ended = killHostProcess(victimHostPid);
+            assert.equal(
+                ended,
+                "killed",
+                `could not end the victim host process ${victimHostPid} (${ended}); the sweep skips an entry whose ` +
+                    "recording host is still alive, so it would never have reached the Word",
+            );
+
+            // A genuine orphan, on every count the ledger comment names: its host
+            // is gone, no client holds it, no document is open, and nothing in
+            // this process remembers it.
+            assert.ok(
+                (await wordPids()).includes(orphanPid),
+                `Word ${orphanPid} was already gone before the sweep ran, so there was no orphan to reap`,
+            );
+
+            reaper = new WordHost({
+                log: (m) => {
+                    reaperLog.push(m);
+                    process.stderr.write(`[reaper] ${m}\n`);
+                },
+                onOwnedPid: (pid) => ledger.record(pid),
+                pidDir: victimDir,
+            });
+            await reaper.ping(); // startup runs the sweep
+
+            // Reached, before what it did -- the same guard the case above needs
+            // and for the same reason. The sweep deletes every entry it
+            // processes, so a surviving file means it skipped this one, and the
+            // rest of this case would then be settled by whatever else happened
+            // to be true.
+            const processed = await stat(entryPath).then(() => false, () => true);
+            assert.equal(processed, true, "the sweep never processed the orphan's ledger entry, so it proved nothing");
+
+            // A decline is the failure this case is the inverse of, and it is
+            // reported on the log the extension actually reads. Naming the pid
+            // keeps this from being satisfied by a refusal about some other one.
+            const declined = reaperLog.filter((line) => line.includes(`refusing to reap pid ${orphanPid}`));
+            assert.deepEqual(
+                declined,
+                [],
+                `the sweep refused the one entry whose identity it could prove: ${declined.join(" | ")}`,
+            );
+
+            const { gone, waitedMs } = await waitForWordGone(orphanPid);
+            process.stderr.write(`       orphan ${orphanPid} gone ${(waitedMs / 1000).toFixed(1)}s after the sweep\n`);
+            assert.equal(
+                gone,
+                true,
+                `the sweep processed the entry naming Word ${orphanPid} and declined nothing, but that Word was ` +
+                    `still running ${(waitedMs / 1000).toFixed(1)}s later`,
+            );
+
+            // And it reaped *that* Word, not Word in general. The sweep read one
+            // entry; the bystander is a live WINWORD no entry named, so it must
+            // still be here. This is the assertion that would go red if the reap
+            // ever widened from an identity to a process name.
+            assert.ok(
+                (await wordPids()).includes(bystander),
+                `the sweep also ended pid ${bystander}, which none of the entries it read named`,
+            );
+        } finally {
+            if (reaper) await reaper.dispose().catch(() => {});
+            await victim.dispose().catch(() => {});
+            // This case deliberately creates a Word that nothing else in the
+            // suite will end, so a failure above must not strand one on the
+            // machine. Through the sanctioned path -- a ledger fed only by the
+            // host's own attribution -- and scoped to this case's Word alone. A
+            // no-op when the sweep did its job: the pid reports 'gone'.
+            killOwnedWord(victimLedger);
+            await rm(victimDir, { recursive: true, force: true }).catch(() => {});
         }
     });
 } finally {
