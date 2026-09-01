@@ -28,31 +28,21 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { VENDOR_DIR } from "../../src/vendor-assets.mjs";
+import { REPO, gitAvailable } from "./tracked-files.mjs";
 
 const execFileAsync = promisify(execFile);
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const REPO = path.resolve(HERE, "..", "..", "..", "..", "..");
 
+// A general `git` runner is still needed here: `tracked-files.mjs` exports
+// `trackedFiles` and `gitAvailable`, not a way to run `check-attr`, `ls-files`
+// or `cat-file`. The `maxBuffer` is headroom, not a measured requirement --
+// `check-attr` over the seven vendored files answers in 553 bytes against a
+// 1 MiB default -- and matches what `trackedFiles` already runs under, so the
+// two agree rather than differing for no stated reason.
 async function git(...args) {
     const { stdout } = await execFileAsync("git", args, { cwd: REPO, maxBuffer: 8 * 1024 * 1024 });
     return stdout;
-}
-
-// Skip rather than fail where there is no git to ask -- an installed extension
-// folder is a plain directory, and this property is about the repository.
-let available = null;
-async function gitAvailable() {
-    if (available !== null) return available;
-    try {
-        await git("rev-parse", "--git-dir");
-        available = true;
-    } catch {
-        available = false;
-    }
-    return available;
 }
 
 // The list is read off disk, not restated here: a vendored file added later is
