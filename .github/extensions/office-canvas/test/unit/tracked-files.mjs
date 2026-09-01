@@ -74,6 +74,44 @@ export async function trackedFiles(pathspec) {
  * Callers skip rather than fail when this is false -- an installed extension
  * folder is a plain directory, and these are properties of the repository, not
  * of the shipped artifact.
+ *
+ * That mode is real, and #104 turned on establishing it, so the evidence is
+ * recorded here rather than left as an assertion. There are two install paths
+ * and they differ:
+ *
+ * - **Packaged.** `tools/package-extension.mjs` excludes any path with a `test`
+ *   segment (`id: "test"`), so the artefact carries no tests. This suite cannot
+ *   run there at all, with or without git.
+ * - **Repo-folder.** `install_extension` "copies a folder, not a repository"
+ *   (`tools/package-extension.mjs:103`) and its own skip list is `dist` /
+ *   `build` / `out` (`:97-98`) -- **`test` is not in it**. The packager excludes
+ *   `test` precisely because this path will not. So the installed directory
+ *   contains `test/unit/*.test.mjs` and has no `.git`, which is this mode
+ *   exactly.
+ *
+ * Observed on the machine this was written on, against real repo-folder installs
+ * under `~/.copilot/installed-plugins/`: one carries `cli/test/unit/` test files,
+ * another a `tests/` directory of them, and neither contains a `.git` anywhere
+ * -- while
+ * `.gitignore` and `.github/` are both present, so dotted entries are being
+ * listed and the absence is a fact rather than an artefact of how it was looked
+ * for. Not a direct install of *this* folder, which would be stronger; two
+ * independent lines of evidence agreeing is what this rests on.
+ *
+ * **What this justifies, and what it does not.** All of the above is a reason to
+ * skip when there is no *repository*. It is not a reason to skip when there is
+ * no working *git*, and the bare `catch` below cannot tell those apart: a
+ * `PATH` with no git fails the spawn, a plain directory fails the command, and
+ * both land here as `false` and become `t.skip()` at all 16 call sites. So a
+ * runner whose git installation is broken reports a green suite that executed
+ * nothing -- the vacuous pass this file's callers exist to prevent.
+ *
+ * Node does distinguish them, on the error *shape* rather than on a localized
+ * message: a spawn failure carries `code === "ENOENT"`, a non-zero exit carries
+ * a numeric `code`. Splitting on that would let the first throw and the second
+ * skip, with no call site changed. Not done here, because it is a behaviour
+ * change under 16 dependents and the error shape is a platform claim this repo
+ * requires a committed probe for. **See #148**, which carries both.
  */
 let available = null;
 export async function gitAvailable() {

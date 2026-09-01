@@ -69,10 +69,11 @@ export const assignsUtf8 = (property) =>
  * preserved.
  *
  * Blanked because a grep over raw text accepts a **commented-out** setter, and
- * that is not hypothetical: the first form of `word-host-encoding.test.mjs`
- * passed cleanly while the fix it asserted sat behind a `#`. Deleting the line
- * is only one of the ways the fix goes away; disabling it during a debugging
- * session is the likelier one, and the likeliest to be committed by accident.
+ * that is not hypothetical: the first form of the `word-host.ps1` encoding
+ * assertion passed cleanly while the fix it asserted sat behind a `#`. Deleting
+ * the line is only one of the ways the fix goes away; disabling it during a
+ * debugging session is the likelier one, and the likeliest to be committed by
+ * accident.
  *
  * Preserved rather than removed because the ordering check compares positions,
  * and shortening the text would move them.
