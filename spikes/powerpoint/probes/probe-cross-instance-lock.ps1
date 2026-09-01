@@ -71,14 +71,15 @@ function Try-Arm {
 }
 
 $anchor = $null
+$anchorPres = $null
 try {
     $before = @(Get-PptPids)
     Rep "POWERPNT pids before" ($(if ($before) { $before -join ',' } else { '(none)' }))
 
-    $anchor = New-OwnedPowerPoint
+    $anchor = New-PowerPointInstance
     $anchorPres = $anchor.App.Presentations.Open($held, 0, 0, 0)   # read-write, holds the lock
     Rep "anchor holds" ("{0} (ReadOnly={1})" -f $anchorPres.Name, $anchorPres.ReadOnly)
-    Rep "anchor pid" ($(if ($anchor.Owned) { $anchor.Owned -join ',' } else { '(attached)' }))
+    Rep "anchor pid" ($(if ($anchor.NewPids) { $anchor.NewPids -join ',' } else { '(attached)' }))
 
     # CONTROL runs FIRST on purpose. A hung arm can only be cleaned up with a
     # kill, and a killed PowerPoint poisons the next launch with a safe-mode
@@ -103,11 +104,15 @@ try {
     }
     else { Rep "  CONCLUSION" 'anomalous - held opened but free did not' }
 
-    try { $anchorPres.Saved = -1; $anchorPres.Close() } catch { }
+    try { $anchorPres.Saved = -1; $anchorPres.Close(); $anchorPres = $null } catch { }
 }
 catch { Rep "ERROR" $_.Exception.Message.Split([char]10)[0] }
 finally {
-    Close-OwnedPowerPoint $anchor
+    # Ours, opened from our own temp root -- close it before releasing the
+    # application, which may be one we merely attached to.
+    try { if ($anchorPres) { $anchorPres.Saved = -1; $anchorPres.Close() } } catch { }
+    $anchorPres = $null
+    Close-PowerPointInstance $anchor
     Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue
     Rep "POWERPNT pids after" ($(if (Get-PptPids) { (Get-PptPids) -join ',' } else { '(none)' }))
 }

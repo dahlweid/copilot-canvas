@@ -11,12 +11,38 @@
 # Intermittent means it needs a rate, not an anecdote, and a rate is only useful
 # next to a control. Two arms:
 #
-#   FRESH  N cycles, a brand new POWERPNT per cycle: open, export, close, quit.
+#   FRESH  N cycles, a new PowerPoint context per cycle: open, export, close.
 #   WARM   one POWERPNT, one open presentation, N exports in a row.
 #
 # WARM is the architecture ADR 0003/0005 assume -- a long-lived hidden instance
 # that re-exports on demand. FRESH is the control that says whether the cost sits
 # in "export" or in "reuse".
+#
+# WHAT THIS PROBE NO LONGER ESTABLISHES
+#
+# The FRESH arm used to read "a brand new POWERPNT per cycle: open, export,
+# close, quit", and it reported how often Quit() left the process running --
+# the source of the 15/15 figure in FINDINGS.md. It got that by calling Quit()
+# on the instance and then force-killing the census difference between cycles.
+#
+# Both of those are gone (see issue #139 and _common.ps1's header): New-Object
+# attaches to a running PowerPoint, so the instance may be the user's, and a
+# census difference cannot establish otherwise. Neither Quit() nor a kill is
+# defensible on an object obtained that way.
+#
+# The consequence is honest and worth stating rather than absorbing: with no
+# kill between cycles, nothing makes each cycle's instance a new process, so
+# the arm no longer establishes a fresh process per cycle and may attach to a
+# previous one. It still measures the export path per cycle, which is what the
+# FRESH/WARM comparison of export cost needs. It cannot reproduce the 15/15
+# Quit()-reaping figure, and that figure is NOT re-derivable from this file as
+# it now stands -- it was measured on a clean machine, where the census really
+# was empty and the sweep really did make each cycle fresh, and it stands as
+# that historical measurement.
+#
+# Re-establishing a genuinely per-cycle process needs the route _isolated.ps1
+# already proves: CreateProcess, so the pid is the kernel's answer rather than
+# an inference. That is a redesign of this arm, not a change to it.
 #
 # It also reports whether the OS logged a fault, which distinguishes "PowerPoint
 # crashed" from "PowerPoint decided to exit".
@@ -50,29 +76,23 @@ function Export-Deck($pres, $path) {
 
 function Sweep($ctx) {
     if ($null -eq $ctx) { return 0 }
-    try { if ($ctx.App) { [Runtime.InteropServices.Marshal]::ReleaseComObject($ctx.App) | Out-Null } } catch { }
-    [GC]::Collect(); [GC]::WaitForPendingFinalizers()
-    Start-Sleep -Milliseconds 1200
-    $killed = 0
-    foreach ($p in $ctx.Owned) {
-        if (Get-Process -Id $p -ErrorAction SilentlyContinue) {
-            Stop-Process -Id $p -Force -ErrorAction SilentlyContinue
-            $killed++
-        }
-    }
-    $killed
+    Close-PowerPointInstance $ctx
+    # Report, do not kill. $ctx.NewPids is a census difference and cannot
+    # establish that this probe created anything -- see _common.ps1's header.
+    @(Get-PptPids | Where-Object { $ctx.NewPids -contains $_ }).Count
 }
 
 function Invoke-FreshArm {
-        Say "== FRESH: a new POWERPNT per export (control) =="
+        Say "== FRESH: a new PowerPoint context per export (control) =="
+        Say "   NOTE: no longer guaranteed to be a NEW PROCESS per cycle -- see the header."
     $results = @()
-    $quitLeaks = 0
+    $survivors = 0
     for ($c = 1; $c -le $Cycles; $c++) {
         $src = Join-Path $root "fresh$c.pptx"
         Copy-Item $Fixture $src
-        $stage = 'create'; $ctx = $null; $ms = 0
+        $stage = 'create'; $ctx = $null; $pres = $null; $ms = 0
         try {
-            $ctx = New-OwnedPowerPoint
+            $ctx = New-PowerPointInstance
             $stage = 'open'
             $pres = $ctx.App.Presentations.Open($src, $NO, $NO, $NO)
             $stage = 'export'
@@ -80,20 +100,24 @@ function Invoke-FreshArm {
             $stage = 'post-export-property'
             $null = $pres.Slides.Count
             $stage = 'close'
-            $pres.Saved = -1; $pres.Close()
-            $stage = 'quit'
-            $ctx.App.Quit()
+            $pres.Saved = -1; $pres.Close(); $pres = $null
             $results += [pscustomobject]@{ N = $c; Failed = $null; Ms = $ms }
         }
         catch {
             $alive = $false
-            foreach ($p in $ctx.Owned) { if (Get-Process -Id $p -ErrorAction SilentlyContinue) { $alive = $true } }
+            foreach ($p in $ctx.NewPids) { if (Get-Process -Id $p -ErrorAction SilentlyContinue) { $alive = $true } }
             $results += [pscustomobject]@{ N = $c; Failed = $stage; Ms = $ms }
             Rep "  cycle $c" ("DIED at '$stage' (process alive: $alive) -> " + $_.Exception.Message.Split([char]10)[0])
         }
-        finally { $quitLeaks += (Sweep $ctx) }
+        finally {
+            # Ours: opened from our own temp copy. Closing it here stops a
+            # failure above leaving our deck open in an attached instance.
+            try { if ($pres) { $pres.Saved = -1; $pres.Close() } } catch { }
+            $pres = $null
+            $survivors += (Sweep $ctx)
+        }
     }
-    Rep "  Quit() left the process running" ("$quitLeaks / $Cycles cycles needed an external kill")
+    Rep "  POWERPNT still up after release" ("$survivors / $Cycles cycles (not killed -- see header)")
     , $results
 }
 
@@ -103,8 +127,9 @@ function Invoke-WarmArm {
     Copy-Item $Fixture $src
     $results = @()
     $ctx = $null
+    $pres = $null
     try {
-        $ctx = New-OwnedPowerPoint
+        $ctx = New-PowerPointInstance
         $pres = $ctx.App.Presentations.Open($src, $NO, $NO, $NO)
         for ($c = 1; $c -le $Cycles; $c++) {
             $stage = 'export'; $ms = 0
@@ -116,15 +141,19 @@ function Invoke-WarmArm {
             }
             catch {
                 $alive = $false
-                foreach ($p in $ctx.Owned) { if (Get-Process -Id $p -ErrorAction SilentlyContinue) { $alive = $true } }
+                foreach ($p in $ctx.NewPids) { if (Get-Process -Id $p -ErrorAction SilentlyContinue) { $alive = $true } }
                 $results += [pscustomobject]@{ N = $c; Failed = $stage; Ms = $ms }
                 Rep "  export $c" ("DIED at '$stage' (process alive: $alive) -> " + $_.Exception.Message.Split([char]10)[0])
                 break   # the instance is gone; remaining iterations would fail identically
             }
         }
-        try { $pres.Saved = -1; $pres.Close(); $ctx.App.Quit() } catch { }
+        try { $pres.Saved = -1; $pres.Close(); $pres = $null } catch { }
     }
-    finally { $null = Sweep $ctx }
+    finally {
+        try { if ($pres) { $pres.Saved = -1; $pres.Close() } } catch { }
+        $pres = $null
+        $null = Sweep $ctx
+    }
     , $results
 }
 

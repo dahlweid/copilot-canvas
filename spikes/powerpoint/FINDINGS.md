@@ -328,6 +328,23 @@ Run `make-fixture.ps1` first; everything else is independent and re-runnable.
 | `probe-saved-flag.ps1` | the `Saved` MsoTriState trap |
 | `probe-stability.ps1`, `probe-notes-control.ps1` | crash investigation, both negative |
 
-Every probe snapshots `POWERPNT.EXE` and `WINWORD.EXE` pids before it starts and
-only ever touches processes it created itself, so they are safe to run while
-other work is driving Office.
+Process hygiene, corrected by issue #139. These probes used to snapshot the
+`POWERPNT.EXE` pid set and treat the difference as processes they had created —
+then `Quit()` and force-kill it. That is unsound in both halves: `New-Object`
+attaches rather than starts (see the single-instance finding above), and
+differencing over-reports (`probe-init-attribution.ps1`, 2 new pids for 1
+instance). The census is now a **report only**; no COM-obtained PowerPoint is
+quit or killed; the only kills are on `CreateProcess` pids through
+`Stop-VerifiedPpt`, which verifies process name and recorded `StartTime` before
+acting. The probes therefore no longer terminate a PowerPoint they did not
+start — but they may leave one running, and they still write `DisplayAlerts` on
+an instance they may have attached to. See `README.md`, *Process safety*.
+
+`probe-stability.ps1` is affected as an instrument. Its FRESH arm was defined as
+"open, export, close, **quit**" and its 15/15 figure above counted cycles where
+`Quit()` failed to reap the process, with a kill between cycles making the next
+one fresh. Both the quit and that kill are gone, so the arm as it now stands
+cannot establish a new process per cycle and cannot reproduce that measurement.
+The figures recorded above stand: they were measured on a clean machine, where
+the census genuinely was empty. Redesigning the arm onto the `CreateProcess`
+route in `_isolated.ps1` is filed as a follow-up.

@@ -17,7 +17,10 @@
 #
 # SAFETY: everything here is keyed to a pid returned by CreateProcess. Nothing in
 # this file enumerates processes by name, so it cannot touch another session's
-# PowerPoint.
+# PowerPoint. The teardown kill goes through Stop-VerifiedPpt in _common.ps1,
+# which is dot-sourced below so the helper resolves however this file is loaded.
+
+. (Join-Path $PSScriptRoot '_common.ps1')
 
 Add-Type -TypeDefinition @"
 using System;
@@ -190,10 +193,16 @@ function Start-IsolatedPowerPoint {
         $false, 0, [IntPtr]::Zero, [IntPtr]::Zero, [ref]$si, [ref]$pi)
 
     $ctx = [pscustomobject]@{
-        Pid = $pi.Pid; Desk = $desk; DesktopName = $DesktopName
+        Pid = $pi.Pid; StartTime = $null; Desk = $desk; DesktopName = $DesktopName
         App = $null; Pres = $null; BoundMs = -1; Ok = $ok; Diag = ''; Dialogs = @()
     }
     if (-not $ok) { return $ctx }
+    # Record the launch identity immediately. Stop-VerifiedPpt refuses to kill a
+    # pid it cannot match on both name and StartTime, so without this the kill
+    # below would decline every time and the teardown would silently become a
+    # leak. A read that fails leaves $null, which declines -- honestly, and out
+    # loud at the call site -- rather than killing on the pid alone.
+    try { $ctx.StartTime = (Get-Process -Id $pi.Pid -ErrorAction SilentlyContinue).StartTime } catch { }
 
     $sw = [Diagnostics.Stopwatch]::StartNew()
     Start-Sleep -Seconds $SettleSeconds
@@ -255,8 +264,16 @@ function Stop-IsolatedPowerPoint {
         }
     }
     if ($Ctx.Pid -and (Get-Process -Id $Ctx.Pid -ErrorAction SilentlyContinue)) {
-        Stop-Process -Id $Ctx.Pid -Force -ErrorAction SilentlyContinue
-        Start-Sleep -Milliseconds 900
+        # Routed through the one sanctioned kill. The pid came from CreateProcess,
+        # which is a fact from the kernel rather than an inference over a census --
+        # but a pid alone is not identity, and both files here treat this process
+        # as expected to exit (:201 'process exited'), so a recycled pid is a real
+        # exposure. Stop-VerifiedPpt re-checks the name and the recorded StartTime
+        # and declines rather than guessing.
+        $r = Stop-VerifiedPpt $Ctx.Pid $Ctx.StartTime
+        if ($r -ne 'killed' -and $r -ne 'gone') {
+            Rep "isolated PowerPoint NOT killed" "$r (pid $($Ctx.Pid)) -- confirm and close it by hand"
+        }
     }
     if ($Ctx.Desk -and $Ctx.Desk -ne [IntPtr]::Zero) { [PptIso]::CloseDesktop($Ctx.Desk) | Out-Null }
 }

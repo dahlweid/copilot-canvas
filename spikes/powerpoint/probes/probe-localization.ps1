@@ -37,10 +37,11 @@ $pristine = Join-Path $root 'pristine.pptx'   # L5b must not see L6's rename
 Copy-Item $Fixture $pristine
 
 $ctx = $null
+$pres = $null
 try {
     Rep "POWERPNT pids before" ($(if (Get-PptPids) { (Get-PptPids) -join ',' } else { '(none)' }))
-    $ctx = New-OwnedPowerPoint
-    Rep "owned pid" ($(if ($ctx.Owned) { $ctx.Owned -join ',' } else { '(ATTACHED - will not quit)' }))
+    $ctx = New-PowerPointInstance
+    Rep "new POWERPNT pids seen" ($(if ($ctx.NewPids) { $ctx.NewPids -join ',' } else { '(none appeared - attached)' }))
     $app = $ctx.App
 
     Say "== L1: which language is this Office? =="
@@ -112,7 +113,7 @@ try {
     $pres.Save()
     $renamed = Join-Path $root 'renamed.pptx'
     Copy-Item $deck $renamed -Force
-    try { $pres.Saved = -1; $pres.Close() } catch { }
+    try { $pres.Saved = -1; $pres.Close(); $pres = $null } catch { }
 
     $zc = [IO.Compression.ZipFile]::OpenRead($renamed)
     try {
@@ -159,7 +160,11 @@ try {
 }
 catch { Rep "ERROR" $_.Exception.Message.Split([char]10)[0] }
 finally {
-    Close-OwnedPowerPoint $ctx
+    # Ours, opened from our own temp root -- close it before releasing the
+    # application, which may be one we merely attached to.
+    try { if ($pres) { $pres.Saved = -1; $pres.Close() } } catch { }
+    $pres = $null
+    Close-PowerPointInstance $ctx
     Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue
     Rep "POWERPNT pids after" ($(if (Get-PptPids) { (Get-PptPids) -join ',' } else { '(none)' }))
 }

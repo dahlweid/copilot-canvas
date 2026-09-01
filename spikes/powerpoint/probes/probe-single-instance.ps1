@@ -51,7 +51,7 @@ if ($pptBefore.Count -or $wordBefore.Count) {
     Say "  NOTE: Office already running. This probe will not quit or kill anything it did not start."
 }
 
-$app1 = $null; $app2 = $null
+$app1 = $null; $app2 = $null; $pres = $null
 try {
     Say "== S1: two New-Object calls in ONE process =="
     $app1 = New-Object -ComObject PowerPoint.Application
@@ -82,7 +82,7 @@ try {
     if ($seen -gt 0) {
         try { Rep "  app2 can name app1's deck" $app2.Presentations.Item($seen).Name } catch { }
     }
-    try { $pres.Saved = -1; $pres.Close() } catch { }
+    try { $pres.Saved = -1; $pres.Close(); $pres = $null } catch { }
 
     Say "== S2: New-Object from a SEPARATE process =="
     $pidFile = Join-Path $root 'jobpids.txt'
@@ -104,27 +104,36 @@ try {
     if ($done) { Say ("  " + (Receive-Job $job)) } else { Say "  job timed out"; Stop-Job $job -ErrorAction SilentlyContinue }
     Remove-Job $job -Force -ErrorAction SilentlyContinue
     if (Test-Path $pidFile) {
-        foreach ($p in ((Get-Content $pidFile) -split ',' | Where-Object { $_ })) {
-            if (Get-Process -Id ([int]$p) -ErrorAction SilentlyContinue) {
-                Stop-Process -Id ([int]$p) -Force -ErrorAction SilentlyContinue
-                Say "  swept job-created pid $p"
-            }
+        # The job above (:98-100) correctly declines to Quit these, on the
+        # grounds that it may have attached to an instance it did not create.
+        # This block used to force-kill the very same pids, which discarded that
+        # reasoning at the point it mattered most. Report only (issue #139).
+        $still = @((Get-Content $pidFile) -split ',' | Where-Object { $_ } |
+            Where-Object { Get-Process -Id ([int]$_) -ErrorAction SilentlyContinue })
+        if ($still.Count -gt 0) {
+            Say "  POSSIBLY left running: $($still -join ',') -- confirm and close by hand"
         }
     }
     Rep "  SINGLE-INSTANCE (cross-process)" ($(if ((Test-Path $pidFile) -and -not (Get-Content $pidFile)) { 'YES - a separate process attached to the running instance' } else { 'NO' }))
 }
 catch { Rep "ERROR (PowerPoint arms)" $_.Exception.Message.Split([char]10)[0] }
 finally {
+    # Our own deck, opened at the top of S1 from our temp root. Close it here so
+    # a failure above does not leave it open in an instance we attached to.
+    try { if ($pres) { $pres.Saved = -1; $pres.Close() } } catch { }
+    $pres = $null
     foreach ($a in @($app2, $app1)) {
         if ($a) { try { [Runtime.InteropServices.Marshal]::ReleaseComObject($a) | Out-Null } catch { } }
     }
     [GC]::Collect(); [GC]::WaitForPendingFinalizers()
     Start-Sleep -Seconds 2
-    foreach ($p in (Get-PptPids | Where-Object { $pptBefore -notcontains $_ })) {
-        if (Get-Process -Id $p -ErrorAction SilentlyContinue) {
-            Stop-Process -Id $p -Force -ErrorAction SilentlyContinue
-            Say "  swept POWERPNT pid $p (created by this probe)"
-        }
+    # Report, never kill. This probe's own S1 result is that New-Object ATTACHES,
+    # so a pid appearing between $pptBefore and now is not evidence this probe
+    # created it -- the old message here said "(created by this probe)", which
+    # was a cause the code could not know, and it was attached to a force-kill.
+    $appeared = @(Get-PptPids | Where-Object { $pptBefore -notcontains $_ })
+    if ($appeared.Count -gt 0) {
+        Say "  POWERPNT appeared during this probe and is still up: $($appeared -join ',') -- confirm and close by hand"
     }
 }
 
@@ -194,11 +203,15 @@ finally {
         }
     }
     [GC]::Collect(); [GC]::WaitForPendingFinalizers()
-    # Sweep only pids this probe attributed to its own two calls. The old sweep
-    # killed every WINWORD absent from $wordBefore, which on this machine includes
-    # any Word a concurrent session started meanwhile -- and Stop-Process -Force
-    # destroys unsaved work with no prompt at all, so it is strictly worse than
-    # the Quit() above. Anything else new is reported and left alone (#25).
+    # $ourPids is pid-differenced, and the comment above already concedes that is
+    # "not sound attribution" -- a stranger's Word appearing in the census window
+    # lands in this set at a measured rate. It used to be force-killed anyway, and
+    # Stop-Process -Force destroys unsaved work with no prompt. Removed (#139);
+    # #136 owns the Quit() gate above.
+    #
+    # The wait stays, because it is the instrument: Quit() reaps slowly, so
+    # without it a survivor count would be a stopwatch artefact rather than a
+    # leak. What follows the deadline is now a report, not a kill.
     $ourPids = @($wOwned1 + $wOwned2 | Where-Object { $_ } | Select-Object -Unique)
     $deadline = (Get-Date).AddSeconds(30)
     while ((Get-Date) -lt $deadline -and @($ourPids | Where-Object { (Get-Process -Id $_ -ErrorAction SilentlyContinue).ProcessName -eq 'WINWORD' }).Count -gt 0) {
@@ -206,9 +219,7 @@ finally {
     }
     foreach ($p in $ourPids) {
         if ((Get-Process -Id $p -ErrorAction SilentlyContinue).ProcessName -eq 'WINWORD') {
-            Stop-Process -Id $p -Force -ErrorAction SilentlyContinue
-            $gone = -not ((Get-Process -Id $p -ErrorAction SilentlyContinue).ProcessName -eq 'WINWORD')
-            Rep "  swept WINWORD pid $p (created by this probe)" $(if ($gone) { 'killed' } else { 'KILL FAILED - leaked' })
+            Rep "  WINWORD pid $p still up 30 s after Quit()" 'LEAKED - not killed; confirm and close by hand'
         }
         else { Say "  WINWORD pid $p exited on Quit()" }
     }

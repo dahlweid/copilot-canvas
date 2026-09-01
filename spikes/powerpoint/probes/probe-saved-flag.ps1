@@ -42,13 +42,15 @@ function Invoke-Arm([string]$Label, $SavedValue) {
         $src = Join-Path $root "$Label$c.pptx"
         Copy-Item $Fixture $src
         $ctx = $null
+        $pres = $null
         try {
-            $ctx = New-OwnedPowerPoint
-            $ourPids += $ctx.Owned
+            $ctx = New-PowerPointInstance
+            $ourPids += $ctx.NewPids
             $pres = $ctx.App.Presentations.Open($src, 0, 0, 0)
             $null = $pres.Slides.Item(1).Shapes.Item(1).TextFrame.TextRange.InsertAfter("x")
             $pres.Saved = $SavedValue
             $pres.Close()
+            $pres = $null
             $null = $ctx.App.Presentations.Count   # a call that needs the process alive
         }
         catch {
@@ -56,13 +58,18 @@ function Invoke-Arm([string]$Label, $SavedValue) {
             Rep "  [$Label] cycle $c" ('FAILED -> ' + $_.Exception.Message.Split([char]10)[0])
         }
         finally {
-            try { if ($ctx.App) { $ctx.App.Quit() } } catch { }
-            try { if ($ctx.App) { [Runtime.InteropServices.Marshal]::ReleaseComObject($ctx.App) | Out-Null } } catch { }
-            [GC]::Collect(); [GC]::WaitForPendingFinalizers()
-            Start-Sleep -Milliseconds 1000
-            foreach ($p in $ctx.Owned) {
-                if (Get-Process -Id $p -ErrorAction SilentlyContinue) { Stop-Process -Id $p -Force -ErrorAction SilentlyContinue }
-            }
+            # No Quit() and no kill: $ctx.App may be the user's PowerPoint
+            # (New-Object attaches), and $ctx.NewPids is a census difference,
+            # which is evidence of nothing. See _common.ps1's header.
+            #
+            # The presentation IS ours -- we opened $src, a copy of the fixture
+            # in our own temp root -- so closing it is both safe and necessary:
+            # an exception above would otherwise leave our deck open in
+            # somebody else's instance. Close only this object; never enumerate
+            # Presentations.
+            try { if ($pres) { $pres.Saved = -1; $pres.Close() } } catch { }
+            $pres = $null
+            Close-PowerPointInstance $ctx
         }
     }
     [pscustomobject]@{ Label = $Label; Died = $died; Pids = $ourPids }
@@ -80,8 +87,13 @@ Say "== summary =="
 Rep "  A  Saved = -1 (msoTrue)" ("{0} / {1} cycles failed" -f $a.Died, $Cycles)
 Rep "  B  Saved = `$true" ("{0} / {1} cycles failed" -f $b.Died, $Cycles)
 
-# Attribute logged crashes to the exact PIDs each arm created. The event message
-# carries the faulting process id in hex.
+# Correlate logged crashes with the pids that appeared while each arm ran. The
+# event message carries the faulting process id in hex.
+#
+# This is a correlation, not an attribution: the pid set comes from a census
+# difference, which over-reports (probe-init-attribution.ps1) and cannot
+# establish that this arm created the process. The labels below say "coincided
+# with" rather than "caused by" for that reason.
 $evt = @(Get-WinEvent -FilterHashtable @{ LogName = 'Application'; ProviderName = 'Application Error'; StartTime = $startedAt } -ErrorAction SilentlyContinue |
     Where-Object { $_.Message -match 'POWERPNT' })
 $crashPids = @()
@@ -93,8 +105,8 @@ foreach ($e in $evt) {
 }
 $crashPids = @($crashPids | Sort-Object -Unique)
 Rep "  logged POWERPNT crash events" $evt.Count
-Rep "  crashes attributable to arm A" (@($a.Pids | Where-Object { $crashPids -contains $_ }).Count)
-Rep "  crashes attributable to arm B" (@($b.Pids | Where-Object { $crashPids -contains $_ }).Count)
+Rep "  crashes coinciding with arm A pids" (@($a.Pids | Where-Object { $crashPids -contains $_ }).Count)
+Rep "  crashes coinciding with arm B pids" (@($b.Pids | Where-Object { $crashPids -contains $_ }).Count)
 foreach ($e in ($evt | Select-Object -First 3)) {
     Say ("    [{0}] {1}" -f $e.TimeCreated.ToString('HH:mm:ss'), (($e.Message -split "`n")[0..3] -join ' | ').Trim())
 }

@@ -43,8 +43,9 @@ under a 70 s timeout.
 
 ## Shared files
 
-- `_common.ps1` — output helpers, pid-ownership tracking, and `/MediaBox`
-  parsing that reads PDF page geometry without a PDF library.
+- `_common.ps1` — output helpers, the census/report split described below, the
+  one sanctioned kill (`Stop-VerifiedPpt`), and `/MediaBox` parsing that reads
+  PDF page geometry without a PDF library.
 - `_isolated.ps1` — launches a genuinely private PowerPoint on its own window
   station desktop and binds to it through `OBJID_NATIVEOM`. Needed because
   `New-Object -ComObject PowerPoint.Application` attaches to the user's
@@ -52,19 +53,42 @@ under a 70 s timeout.
 
 ## Process safety
 
-These probes were written to run alongside other sessions driving Office.
+These probes used to claim they "only ever kill the difference" between a
+`POWERPNT` pid census taken before and after attaching. That claim was wrong in
+the one direction that matters, and issue #139 removed it:
 
-- Every probe snapshots `POWERPNT.EXE` and `WINWORD.EXE` pids before it starts
-  and only ever kills the difference.
-- `Close-OwnedPowerPoint` calls `Quit()` **only** when a new pid was actually
-  created. Since PowerPoint is single-instance, quitting an attached instance
-  would close the user's decks.
-- `_isolated.ps1` only ever touches the pid `CreateProcess` returned to it.
+- `New-Object -ComObject PowerPoint.Application` **attaches**. The instance the
+  probe holds is routinely the user's, with their unsaved decks in it.
+- Differencing a census over-reports — `probe-init-attribution.ps1` measured 2
+  new pids for 1 instance created — and is non-empty by construction whenever
+  anyone else starts PowerPoint during the census window.
+
+So the old guard `if ($ctx.Owned.Count -gt 0) { Quit; Stop-Process }` passed
+*precisely* in the race it existed to catch. What the probes do now:
+
+- **The census is a report, never an authorisation.** An empty difference is
+  evidence we started nothing; a non-empty difference is evidence of nothing at
+  all. `NewPids` is printed, never acted on.
+- **A COM-obtained PowerPoint is never quit and never killed.** No signal at
+  this layer can establish that we created it, so the honest classification is
+  *unproven* and the honest action is to release the RCW and report.
+- **The only kills are on pids returned by `CreateProcess`**, through
+  `Stop-VerifiedPpt`, which re-checks `ProcessName` and the `StartTime` recorded
+  at launch and returns `declined:<reason>` rather than guessing.
+- Each probe closes only the presentations it opened itself, in a `finally`, and
+  never enumerates `Presentations`.
 - Fixtures are copied into `%TEMP%` per run, so two probes never contend for the
   same path.
 
-One consequence is worth knowing before running these by hand: `Quit()` does not
-terminate `POWERPNT.EXE` (15/15 cycles), so a kill is the fallback — and a killed
-PowerPoint makes the *next* launch show a modal safe-mode prompt.
-`_isolated.ps1` quits gracefully first and dismisses the prompt with
-`WM_COMMAND`/`IDNO` if it appears anyway.
+What that buys, and what it does not. These probes no longer terminate or quit a
+PowerPoint they did not start. They **may still leave one running** — `Quit()`
+is measured not to reap `POWERPNT` (15/15 cycles) and the fallback kill on an
+attached instance is gone — and they **may still change application-level
+settings** on an instance they attached to: `DisplayAlerts` is set on every
+instance obtained through `New-PowerPointInstance`, which is a write into the
+user's live session if that is whose instance it is.
+
+A killed PowerPoint makes the *next* launch show a modal safe-mode prompt.
+`_isolated.ps1` quits gracefully first — its instance came from `CreateProcess`,
+so it genuinely owns it — and dismisses the prompt with `WM_COMMAND`/`IDNO` if it
+appears anyway.

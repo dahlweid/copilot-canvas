@@ -26,9 +26,10 @@ New-Item -ItemType Directory -Force -Path $dir | Out-Null
 Remove-Item $Path -Force -ErrorAction SilentlyContinue
 
 $ctx = $null
+$pres = $null
 try {
-    $ctx = New-OwnedPowerPoint
-    Rep "owned pid" ($(if ($ctx.Owned) { $ctx.Owned -join ',' } else { '(attached - will NOT kill)' }))
+    $ctx = New-PowerPointInstance
+    Rep "new POWERPNT pids seen" ($(if ($ctx.NewPids) { $ctx.NewPids -join ',' } else { '(none appeared - attached)' }))
     $app = $ctx.App
 
     # WithWindow := msoFalse (0) keeps the deck off screen; see probe-hide.ps1.
@@ -51,12 +52,17 @@ try {
 
     $pres.SaveAs($Path)
     $pres.Close()
+    $pres = $null
 
     Rep "fixture" $Path
     Rep "slides" $Slides
     Rep "size" ("{0:N0} bytes" -f (Get-Item $Path).Length)
 }
 finally {
-    Close-OwnedPowerPoint $ctx
+    # Ours: we added it. Close it before releasing an application that may be
+    # one we merely attached to.
+    try { if ($pres) { $pres.Saved = -1; $pres.Close() } } catch { }
+    $pres = $null
+    Close-PowerPointInstance $ctx
     Rep "POWERPNT pids after" ($(if (Get-PptPids) { (Get-PptPids) -join ',' } else { '(none)' }))
 }

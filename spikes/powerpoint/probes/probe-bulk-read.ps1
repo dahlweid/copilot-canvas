@@ -69,10 +69,11 @@ function Read-DeckXml([string]$Path) {
 }
 
 $ctx = $null
+$pres = $null
 try {
     Rep "POWERPNT pids before" ($(if (Get-PptPids) { (Get-PptPids) -join ',' } else { '(none)' }))
-    $ctx = New-OwnedPowerPoint
-    Rep "owned pid" ($(if ($ctx.Owned) { $ctx.Owned -join ',' } else { '(ATTACHED - will not quit)' }))
+    $ctx = New-PowerPointInstance
+    Rep "new POWERPNT pids seen" ($(if ($ctx.NewPids) { $ctx.NewPids -join ',' } else { '(none appeared - attached)' }))
     $pres = $ctx.App.Presentations.Open($deck, 0, 0, 0)
     $slides = $pres.Slides.Count
     $null = $pres.Slides.Item(1).Shapes.Count   # warm the proxy
@@ -107,7 +108,7 @@ try {
     Rep "  $($itemsHeld.Count) shapes parsed" ("$msC1 ms")
     Rep "  readable while PowerPoint holds it" ($(if ($itemsHeld.Count -gt 0) { 'YES' } else { 'NO' }))
 
-    try { $pres.Saved = -1; $pres.Close() } catch { }
+    try { $pres.Saved = -1; $pres.Close(); $pres = $null } catch { }
 
     Say "== C2: same read with the file FREE (control) =="
     $sw = [Diagnostics.Stopwatch]::StartNew()
@@ -132,7 +133,11 @@ try {
 }
 catch { Rep "ERROR" $_.Exception.Message.Split([char]10)[0] }
 finally {
-    Close-OwnedPowerPoint $ctx
+    # Ours, opened from our own temp root -- close it before releasing the
+    # application, which may be one we merely attached to.
+    try { if ($pres) { $pres.Saved = -1; $pres.Close() } } catch { }
+    $pres = $null
+    Close-PowerPointInstance $ctx
     Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue
     Rep "POWERPNT pids after" ($(if (Get-PptPids) { (Get-PptPids) -join ',' } else { '(none)' }))
 }

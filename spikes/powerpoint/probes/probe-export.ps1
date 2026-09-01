@@ -36,6 +36,7 @@ Copy-Item $Fixture $src
 $PDF = 2; $INTENT_PRINT = 2; $OUT_SLIDES = 1; $ALL = 1; $RANGE = 4; $NO = 0; $HANDOUT = 2
 
 $ctx = $null
+$pres = $null
 try {
     Rep "POWERPNT pids before" ($(if (Get-PptPids) { (Get-PptPids) -join ',' } else { '(none)' }))
     # --- C1: cold start of a fresh instance ----------------------------------
@@ -43,17 +44,17 @@ try {
     # measurement from a different spike, not a comparable repeated range.
     # Measure the equivalent: process creation through first PDF on disk.
     $coldSw = [Diagnostics.Stopwatch]::StartNew()
-    $ctx = New-OwnedPowerPoint
+    $ctx = New-PowerPointInstance
     $app = $ctx.App
     $appMs = $coldSw.Elapsed.TotalMilliseconds
-    Rep "owned pid" ($(if ($ctx.Owned) { $ctx.Owned -join ',' } else { '(attached - will NOT kill)' }))
+    Rep "new POWERPNT pids seen" ($(if ($ctx.NewPids) { $ctx.NewPids -join ',' } else { '(none appeared - attached)' }))
     Rep "COM instance creation" ("{0:F0} ms" -f $appMs)
 
     # The instance dying mid-probe is itself a finding, so report liveness at
     # every phase boundary rather than discovering it as an RPC error later.
     function Alive($phase) {
         $ok = $true
-        foreach ($p in $ctx.Owned) { if (-not (Get-Process -Id $p -ErrorAction SilentlyContinue)) { $ok = $false } }
+        foreach ($p in $ctx.NewPids) { if (-not (Get-Process -Id $p -ErrorAction SilentlyContinue)) { $ok = $false } }
         if (-not $ok) { Rep "  !! POWERPNT DIED after" $phase }
     }
 
@@ -149,11 +150,16 @@ try {
 
     $pres.Saved = -1
     $pres.Close()
+    $pres = $null
     Alive "Presentation.Close"
 }
 catch { Rep "ERROR" $_.Exception.Message }
 finally {
-    Close-OwnedPowerPoint $ctx
+    # Ours, opened from our own temp root. Closing it here stops a failure above
+    # leaving our deck open in an instance we may only have attached to.
+    try { if ($pres) { $pres.Saved = -1; $pres.Close() } } catch { }
+    $pres = $null
+    Close-PowerPointInstance $ctx
     Remove-Item $out -Recurse -Force -ErrorAction SilentlyContinue
     Rep "POWERPNT pids after cleanup" ($(if (Get-PptPids) { (Get-PptPids) -join ',' } else { '(none)' }))
 }
