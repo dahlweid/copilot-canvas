@@ -23,7 +23,7 @@
 #   T3  INVALID, see above. Can a SECOND PowerPoint open the held file?
 #   T3c INVALID, see above. A/B control against a different file.
 #   T4  Transient-lock round trip: open, edit, save, close. The prior Word
-#       figure included process activation and is not a comparable operation cost.
+#       figure combined all three operations rather than measuring any one.
 #   T5  Lock detection by write-handle test. Word: 4 ms held / 9 ms free.
 #
 #   -TimeoutSec  how long a blocked open is allowed to run before we call it a
