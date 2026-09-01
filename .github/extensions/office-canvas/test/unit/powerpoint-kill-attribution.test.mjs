@@ -147,9 +147,9 @@ test(`${KILLER} still exists and still kills`, async (t) => {
  *
  * Seeded from a literal `New-Object -ComObject PowerPoint.Application` and from
  * either factory name, then propagated through the one aliasing form the tree
- * actually uses, `$alias = $tainted.App` (probe-hide.ps1, probe-export.ps1 and
- * four others). Without that propagation a future `$app.Quit()` in any of them
- * passes.
+ * actually uses, `$alias = $tainted.App` (spikes/powerpoint/probes/probe-hide.ps1,
+ * spikes/powerpoint/probes/probe-export.ps1 and four others). Without that
+ * propagation a future `$app.Quit()` in any of them passes.
  */
 function comObtained(source) {
     const tainted = new Set();
