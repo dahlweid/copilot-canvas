@@ -103,18 +103,24 @@ Renders are cached under `~/.copilot/extensions/office-canvas/artifacts/`, keyed
 `path + mtime + size`, so reopening an unchanged document is instant and an edited one
 re-renders exactly once.
 
-**The Word mark beside the document name is extracted at runtime from the Word installed on
-your own machine** — `ExtractAssociatedIcon` reads `WINWORD.EXE`'s resources without launching
-Word, and the bytes are cached in memory and served over `/api/word-icon`. **No Microsoft
-artwork is committed to this repository, and that is deliberate and non-negotiable:** the open
-icon sets carry no Microsoft mark, for trademark reasons, so the only legitimate source is the
-installation on the machine that displays it — which is why a PowerShell script and an HTTP
-endpoint stand behind a 16×16 image. On a machine without Word the mark is simply absent: the
-image stays hidden, nothing breaks and nothing is reported, by design. Measured in
-[`spikes/word-icon/FINDINGS.md`](spikes/word-icon/FINDINGS.md). `ExtractAssociatedIcon` returns
-a 32×32 icon regardless of any higher-resolution icons the executable carries, so a larger mark
-would need a different extraction — not a defect at the current 16×16 render size, which the
-32×32 source already covers at 2×.
+### The Word mark
+
+The small Word icon beside the document name comes from the Word installed on **your own
+machine**. `GET /api/word-icon` extracts it at runtime from `WINWORD.EXE` and serves it,
+memoized for the life of the process; the extension commits and ships **no standalone
+Word-mark asset**. On a machine without Word the mark is simply absent — `showWordMark` in
+`src/ui/word-mark.mjs` ships the `<img>` hidden and un-hides it only once it has loaded, and
+every extraction failure resolves to `null`, so the route answers 404 and the image stays
+hidden. Nothing breaks and nothing is reported. That is the designed behaviour, not a
+swallowed error.
+
+Why it is obtained this way rather than from a committed file — and the probe that measured
+it — is at the top of
+[`src/word/word-icon.mjs`](.github/extensions/office-canvas/src/word/word-icon.mjs). Read that
+before concluding the script and the endpoint are disproportionate to a 16×16 image. On the
+installation recorded in [`spikes/word-icon/FINDINGS.md`](spikes/word-icon/FINDINGS.md) the
+extraction returned 32×32, which covers the 16×16 render at 2×; a larger mark would mean
+re-evaluating the extraction path, which that probe did not investigate.
 
 ### Safety
 
