@@ -1,7 +1,8 @@
 // A missing start time is never proof that our Word exited.
 //
-// The teardown in `probe-addressing.ps1` and `probe-bulk-read.ps1` records the
-// owned pid's `StartTime` at attribution and re-reads it on every poll, so that
+// The teardown in `spikes/isolation/probes/probe-addressing.ps1` and
+// `spikes/isolation/probes/probe-bulk-read.ps1` records the owned pid's
+// `StartTime` at attribution and re-reads it on every poll, so that
 // a pid recycled onto another process is not reported as our Word surviving.
 // `Get-WordStartTime` returns `$null` both when the process cannot be found and
 // from its catch, so the recorded value can legitimately be null.
