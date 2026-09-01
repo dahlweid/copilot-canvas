@@ -804,6 +804,9 @@ export class ViewerInstance {
     /**
      * The Word application icon, extracted from this machine's own Word.
      *
+     * Why it is extracted rather than served from a committed file, with the
+     * probe that measured it, is at the top of `word/word-icon.mjs`.
+     *
      * 404 when there is none, and that is an ordinary answer rather than an
      * error: it decorates a bar that is already drawn, so a machine without
      * Word simply keeps the glyph the markup ships with. Nothing is logged at
