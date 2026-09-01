@@ -10,10 +10,14 @@
 // the JSON-RPC line protocol but drops `create` in Word's place, so the only
 // thing that can end the wait is WordHost's own timer.
 //
-// Mutations this can go red for (results in the PR body):
+// Mutations this catches (results in the PR body). Note the failure shape: a
+// broken bound makes this test HANG, not report a red assertion, and a hang is
+// simply never a green pass -- that is the property that matters here.
 //   - Delete the `setTimeout` block in `#send` (word-host.mjs) so the wedged
-//     `create` is never bounded: this test's `assert.rejects` never settles and
-//     the case fails on its own deadline rather than passing.
+//     `create` is never bounded: `assert.rejects` never settles, so the test
+//     never reaches a passing state. With a `--test-timeout` set the runner
+//     kills it as a failure; with node:test's default (`Infinity`) it hangs
+//     until the run is killed. Either way it cannot pass -- which is the point.
 //   - Rename the host-side `timeoutMs` parameter so the value is ignored and the
 //     bound silently reverts to a constant: the timer still fires here because
 //     the timer lives on the Node side, so this stays green -- which is why the
