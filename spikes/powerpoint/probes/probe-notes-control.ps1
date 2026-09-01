@@ -35,8 +35,9 @@ function Invoke-Arm([string]$Label, [int]$SecondOutputType) {
     Copy-Item $Fixture $src
 
     $ctx = $null
+    $pres = $null
     try {
-        $ctx = New-OwnedPowerPoint
+        $ctx = New-PowerPointInstance
         $app = $ctx.App
         $pres = $app.Presentations.Open($src, $NO, $NO, $NO)
         $slides = $pres.Slides.Count
@@ -61,12 +62,13 @@ function Invoke-Arm([string]$Label, [int]$SecondOutputType) {
 
         Start-Sleep -Milliseconds 500
         $aliveAfterExport = $true
-        foreach ($p in $ctx.Owned) { if (-not (Get-Process -Id $p -ErrorAction SilentlyContinue)) { $aliveAfterExport = $false } }
+        foreach ($p in $ctx.NewPids) { if (-not (Get-Process -Id $p -ErrorAction SilentlyContinue)) { $aliveAfterExport = $false } }
         Rep "  [$Label] process alive after export" $aliveAfterExport
 
         try {
             $pres.Saved = -1
             $pres.Close()
+            $pres = $null
             Rep "  [$Label] Presentation.Close" "OK"
         }
         catch {
@@ -74,7 +76,11 @@ function Invoke-Arm([string]$Label, [int]$SecondOutputType) {
         }
     }
     finally {
-        Close-OwnedPowerPoint $ctx
+        # Ours, opened from our own temp root -- close it before releasing the
+        # application, which may be one we merely attached to.
+        try { if ($pres) { $pres.Saved = -1; $pres.Close() } } catch { }
+        $pres = $null
+        Close-PowerPointInstance $ctx
         Remove-Item $out -Recurse -Force -ErrorAction SilentlyContinue
     }
 }

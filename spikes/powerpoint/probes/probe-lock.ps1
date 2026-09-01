@@ -62,9 +62,13 @@ function Test-PresAlive($pres, $label) {
     catch { Rep "  handle still valid after $label" ('NO -> ' + $_.Exception.Message.Split([char]10)[0]) }
 }
 
-# Open a path in a SEPARATE PowerPoint, in a job, under a timeout. The job
-# records the PIDs it created so the parent can sweep exactly those and nothing
-# a sibling session owns.
+# Open a path in a SEPARATE PowerPoint, in a job, under a timeout.
+#
+# "Separate" is aspirational and this file has always known it: PowerPoint is
+# single-instance, so New-Object inside the job attaches to whatever is already
+# running -- including the user's. The census the job records is therefore a
+# report of what appeared, not a set this probe may act on, and the parent no
+# longer kills it (issue #139).
 function Invoke-SecondInstanceOpen([string]$Path, [string]$Label) {
     $pidFile = Join-Path $root ("pids-" + $Label + ".txt")
     $job = Start-Job -ArgumentList $Path, $pidFile -ScriptBlock {
@@ -73,22 +77,28 @@ function Invoke-SecondInstanceOpen([string]$Path, [string]$Label) {
         $app = New-Object -ComObject PowerPoint.Application
         $app.DisplayAlerts = 1     # ppAlertsNone -- nothing may surface a dialog
         Start-Sleep -Milliseconds 300
-        $owned = @(Get-Process POWERPNT -ErrorAction SilentlyContinue | ForEach-Object Id) |
+        $appeared = @(Get-Process POWERPNT -ErrorAction SilentlyContinue | ForEach-Object Id) |
             Where-Object { $before -notcontains $_ }
-        Set-Content -Path $pidFile -Value ($owned -join ',')
+        Set-Content -Path $pidFile -Value ($appeared -join ',')
         $sw = [Diagnostics.Stopwatch]::StartNew()
+        $pres = $null
         try {
             $pres = $app.Presentations.Open($p, 0, 0, 0)
             $sw.Stop()
             $r = "OPENED in $($sw.ElapsedMilliseconds) ms; ReadOnly=$($pres.ReadOnly)"
-            try { $pres.Close() } catch { }
+            try { $pres.Close(); $pres = $null } catch { }
             $r
         }
         catch {
             $sw.Stop()
             "REFUSED after $($sw.ElapsedMilliseconds) ms -> " + $_.Exception.Message.Split([char]10)[0]
         }
-        finally { try { $app.Quit() } catch { } }
+        finally {
+            # Close our own presentation if it survived the try, but never
+            # Quit(): $app may be the user's PowerPoint.
+            try { if ($pres) { $pres.Close() } } catch { }
+            try { [Runtime.InteropServices.Marshal]::ReleaseComObject($app) | Out-Null } catch { }
+        }
     }
 
     $done = Wait-Job $job -Timeout $TimeoutSec
@@ -101,26 +111,29 @@ function Invoke-SecondInstanceOpen([string]$Path, [string]$Label) {
     }
     Remove-Job $job -Force -ErrorAction SilentlyContinue
 
-    # Sweep only the PIDs that job created.
+    # Report what appeared. Do not kill it: this is a census difference, and the
+    # job attaches rather than creates, so these pids are not ours to end.
     if (Test-Path $pidFile) {
-        foreach ($p in ((Get-Content $pidFile) -split ',' | Where-Object { $_ })) {
-            if (Get-Process -Id ([int]$p) -ErrorAction SilentlyContinue) {
-                Stop-Process -Id ([int]$p) -Force -ErrorAction SilentlyContinue
-                Say "  [$Label] swept second-instance pid $p"
-            }
+        $still = @((Get-Content $pidFile) -split ',' | Where-Object { $_ } |
+            Where-Object { Get-Process -Id ([int]$_) -ErrorAction SilentlyContinue })
+        if ($still.Count -gt 0) {
+            Say "  [$Label] POSSIBLY left running: $($still -join ',') -- confirm and close by hand"
         }
     }
     return $done -ne $null
 }
 
 $ctx = $null
+$pres = $null
+$p = $null
+$held = $null
 try {
     Rep "POWERPNT pids before" ($(if (Get-PptPids) { (Get-PptPids) -join ',' } else { '(none)' }))
     Say "== T0: baseline =="
     Show-Dir 'before open'
 
-    $ctx = New-OwnedPowerPoint
-    Rep "owned pid" ($(if ($ctx.Owned) { $ctx.Owned -join ',' } else { '(attached - will NOT kill)' }))
+    $ctx = New-PowerPointInstance
+    Rep "new POWERPNT pids seen" ($(if ($ctx.NewPids) { $ctx.NewPids -join ',' } else { '(none appeared - attached)' }))
 
     $sw = [Diagnostics.Stopwatch]::StartNew()
     $pres = $ctx.App.Presentations.Open($deck, 0, 0, 0)   # ReadOnly = msoFalse
@@ -160,14 +173,14 @@ try {
     Test-PresAlive $pres 'T3c'
 
     Say "== T4: transient-lock round trip =="
-    try { $pres.Saved = -1; $pres.Close() } catch { Say ("  close failed -> " + $_.Exception.Message.Split([char]10)[0]) }
+    try { $pres.Saved = -1; $pres.Close(); $pres = $null } catch { Say ("  close failed -> " + $_.Exception.Message.Split([char]10)[0]) }
     Rep "  file free after close" (-not (Test-Locked $deck))
 
     # Discard the first iteration: it carries one-off engine load.
     try {
         $p = $ctx.App.Presentations.Open($deck, 0, 0, 0)
         $null = $p.Slides.Item(1).Shapes.Item(1).TextFrame.TextRange.InsertAfter("warm")
-        $p.Save(); $p.Close()
+        $p.Save(); $p.Close(); $p = $null
     }
     catch { Say ("  warmup failed -> " + $_.Exception.Message.Split([char]10)[0]) }
 
@@ -179,6 +192,7 @@ try {
             $null = $p.Slides.Item(1).Shapes.Item(1).TextFrame.TextRange.InsertAfter("e$i")
             $p.Save()
             $p.Close()
+            $p = $null
             $sw.Stop()
             $times += $sw.ElapsedMilliseconds
         }
@@ -197,13 +211,19 @@ try {
         $held = $ctx.App.Presentations.Open($deck, 0, 0, 0)
         $sw = [Diagnostics.Stopwatch]::StartNew(); $heldLocked = Test-Locked $deck; $sw.Stop()
         Rep "  file HELD  -> locked=$heldLocked" ("{0} ms (expect True)" -f $sw.ElapsedMilliseconds)
-        $held.Saved = -1; $held.Close()
+        $held.Saved = -1; $held.Close(); $held = $null
     }
     catch { Say ("  T5 held check failed -> " + $_.Exception.Message.Split([char]10)[0]) }
 }
 catch { Rep "ERROR" $_.Exception.Message }
 finally {
-    Close-OwnedPowerPoint $ctx
+    # Only decks this probe opened itself, never an enumeration of
+    # Presentations -- the instance may be one we merely attached to.
+    foreach ($d in @($pres, $p, $held)) {
+        try { if ($d) { $d.Saved = -1; $d.Close() } } catch { }
+    }
+    $pres = $null; $p = $null; $held = $null
+    Close-PowerPointInstance $ctx
     Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue
     Rep "POWERPNT pids after cleanup" ($(if (Get-PptPids) { (Get-PptPids) -join ',' } else { '(none)' }))
 }

@@ -1,8 +1,36 @@
 # Shared helpers for the PowerPoint probes.
 #
-# Process hygiene is the reason this file exists. Other sessions on this machine
-# drive Office concurrently, so a probe may only ever kill a POWERPNT.EXE that
-# did not exist when it started. Snapshot first, kill only the difference.
+# Process hygiene is the reason this file exists, and the rule it enforces is
+# narrower than it used to be.
+#
+# This file used to snapshot the POWERPNT pid set, attach with New-Object, and
+# treat the difference as "the instance we own" -- then Quit() and force-kill it.
+# Every part of that is unsound here:
+#
+#   * New-Object -ComObject PowerPoint.Application ATTACHES to a running
+#     instance rather than starting one (FINDINGS.md, single-instance). So the
+#     object we hold is routinely the USER'S PowerPoint, with their unsaved
+#     decks in it.
+#   * Differencing a pid census over-reports: probe-init-attribution.ps1
+#     measured 2 new pids for 1 instance created. And the difference is
+#     non-empty by construction whenever anyone else starts PowerPoint during
+#     our census window.
+#
+# Those combine into the exact inversion the old guard was written to prevent:
+# `if ($ctx.Owned.Count -gt 0) { Quit }` passed PRECISELY in the race where we
+# had attached to somebody else's instance.
+#
+# The rule now:
+#
+#   * The census is a REPORT, never an authorisation. An empty difference is
+#     evidence we started nothing; a non-empty one is evidence of nothing at
+#     all, and must never be used as permission to act.
+#   * A COM-obtained PowerPoint is never quit and never killed. There is no
+#     signal available at this layer that would make that safe, so the honest
+#     classification is "unproven" and the honest action is to release and
+#     report.
+#   * The only process this tree may kill is one whose pid came back from
+#     CreateProcess, through Stop-VerifiedPpt below.
 
 function Say($s) { [Console]::WriteLine($s) }
 function Rep($l, $v) { [Console]::WriteLine(("{0,-42} {1}" -f $l, $v)) }
@@ -11,8 +39,12 @@ function Get-PptPids {
     @(Get-Process POWERPNT -ErrorAction SilentlyContinue | ForEach-Object Id)
 }
 
-# Create a PowerPoint instance and report which PID (if any) we own.
-function New-OwnedPowerPoint {
+# Attach to (or start) a PowerPoint instance and report the census difference.
+#
+# NewPids is NOT ownership. It is what the census happened to show, and it is
+# reported so probes can say what they saw -- nothing may be killed or quit on
+# the strength of it. See the header.
+function New-PowerPointInstance {
     $before = Get-PptPids
     $app = New-Object -ComObject PowerPoint.Application
     # TRAP: PowerPoint's alert enum is INVERTED relative to Word's.
@@ -20,37 +52,68 @@ function New-OwnedPowerPoint {
     #   PowerPoint: ppAlertsNone = 1, ppAlertsAll = 2
     # Porting `DisplayAlerts = 0` from the Word host would select an undefined
     # value, not "suppress everything".
+    #
+    # NOTE: this is an application-level write, so when we have attached it
+    # changes a setting in the user's live session. It is kept because the
+    # probes need alerts suppressed to run unattended, and because it is not
+    # destructive -- but it is a real side effect and is recorded as one in
+    # README.md rather than described as harmless.
     try { $app.DisplayAlerts = 1 } catch { }
     # PowerPoint refuses Visible = $false on most builds, so we do not set it
     # here; probe-hide.ps1 measures what is and is not possible.
     Start-Sleep -Milliseconds 300
     $after = Get-PptPids
-    $owned = @($after | Where-Object { $before -notcontains $_ })
-    [pscustomobject]@{ App = $app; Owned = $owned; Before = $before }
+    $newPids = @($after | Where-Object { $before -notcontains $_ })
+    [pscustomobject]@{ App = $app; NewPids = $newPids; Before = $before }
 }
 
-function Close-OwnedPowerPoint($ctx) {
+# Release the RCW and report. Never quits, never kills -- see the header.
+function Close-PowerPointInstance($ctx) {
     if ($null -eq $ctx) { return }
-    # SAFETY: only quit an instance we actually created. PowerPoint hands back a
-    # RUNNING instance from New-Object rather than starting a new process (see
-    # probe-single-instance.ps1), so an unconditional Quit() here would close a
-    # sibling session's -- or the user's -- PowerPoint, with their unsaved work.
-    if ($ctx.App -and $ctx.Owned.Count -gt 0) {
-        try { $ctx.App.Quit() } catch { }
-    }
-    elseif ($ctx.App) {
-        Rep "NOT quitting" "attached to a pre-existing PowerPoint; leaving it alone"
-    }
     try { if ($ctx.App) { [Runtime.InteropServices.Marshal]::ReleaseComObject($ctx.App) | Out-Null } } catch { }
     [GC]::Collect(); [GC]::WaitForPendingFinalizers()
     Start-Sleep -Seconds 2
-    foreach ($p in $ctx.Owned) {
-        if (Get-Process -Id $p -ErrorAction SilentlyContinue) {
-            Stop-Process -Id $p -Force -ErrorAction SilentlyContinue
-            Rep "swept leaked owned pid" $p
-        }
+    # Report anything the census saw appear, so a leak is visible rather than
+    # silent. Deliberately no pid is offered as a kill target: a pid is a
+    # coordinate, and handing one out invites the caller to do what this
+    # function has just refused to do.
+    $still = @(Get-PptPids | Where-Object { $ctx.NewPids -contains $_ })
+    if ($still.Count -gt 0) {
+        Rep "POSSIBLY left running" "$($still.Count) POWERPNT appeared during this probe and is still up -- confirm and close it by hand"
     }
-    Start-Sleep -Milliseconds 800   # Stop-Process returns before the process is gone
+}
+
+# The only sanctioned kill in this tree.
+#
+# Takes a pid that came back from CreateProcess plus the StartTime recorded for
+# it at launch, and refuses unless the live process still matches both. Mirrors
+# Stop-VerifiedWord in src/word/word-host.ps1.
+#
+# Order matters. The handle is pinned FIRST, because everything after it is a
+# read of a process that could otherwise exit and have its pid reused
+# underneath the checks. Absence is distinguished from non-verification: a pid
+# that is gone is 'gone' and fine, whereas a pid we cannot verify is declined
+# and said out loud.
+#
+# HYPOTHESIS, not a measured fact: the PROCESS_INFORMATION.hProcess handle from
+# CreateProcess is never closed by these probes (no CloseHandle anywhere in
+# this tree), and Windows will not recycle a pid while a handle to the process
+# object is open -- so the pid is probably pinned already. That inference has
+# NOT been probed here, and probing it means launching a process. The checks
+# below therefore do not rely on it. Anyone adding CloseHandle should know they
+# are changing something whose effect is unverified in both directions.
+function Stop-VerifiedPpt([int]$ProcessId, $ExpectedStart) {
+    if (-not $ProcessId) { return 'declined:nopid' }
+    $p = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+    if (-not $p) { return 'gone' }
+    try { $null = $p.Handle } catch { return 'declined:handle' }
+    if ($p.ProcessName -ne 'POWERPNT') { return 'declined:name' }
+    if ($null -eq $ExpectedStart) { return 'declined:unverified' }
+    try { $actual = $p.StartTime } catch { return 'declined:unreadable' }
+    if ($actual -ne $ExpectedStart) { return 'declined:start' }
+    Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 800   # the call returns before the process is gone
+    return 'killed'
 }
 
 # --- PDF inspection without a PDF library -------------------------------------

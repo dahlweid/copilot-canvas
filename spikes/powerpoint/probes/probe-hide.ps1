@@ -74,19 +74,33 @@ Rep "POWERPNT pids before" ($(if (Get-PptPids) { (Get-PptPids) -join ',' } else 
 
 # --- H1..H3 -------------------------------------------------------------------
 $ctx = $null
+$pres = $null
 try {
-    $ctx = New-OwnedPowerPoint
+    $ctx = New-PowerPointInstance
     $app = $ctx.App
-    $ppid = $ctx.Owned | Select-Object -First 1
-    Rep "owned pid" ($(if ($ppid) { $ppid } else { '(attached - will NOT kill)' }))
+    $ppid = $ctx.NewPids | Select-Object -First 1
+    Rep "new POWERPNT pids seen" ($(if ($ppid) { $ppid } else { '(none appeared - attached)' }))
 
     Say "== H1: Application.Visible = msoFalse =="
-    try {
-        $app.Visible = 0
-        Rep "  assignment" "ACCEPTED"
-        Rep "  Application.Visible now" $app.Visible
-    }
-    catch { Rep "  assignment" ("REFUSED -> " + $_.Exception.Message.Split([char]10)[0]) }
+    # NOT MEASURED ANY MORE, and the reason is the point of issue #139.
+    #
+    # This arm used to assign $app.Visible = 0. That is a WRITE to the
+    # Application object, and New-Object attaches to a running PowerPoint, so on
+    # any machine where the user has PowerPoint open the write lands on THEIR
+    # instance -- and nothing here ever set it back. The probe knew: :81 above
+    # prints "(none appeared - attached)" and the teardown declines to kill on
+    # exactly that basis. It then wrote to the instance anyway.
+    #
+    # There is no gate that fixes this. Gating on the census difference being
+    # non-empty is the same unsound inference the kills were removed for, in the
+    # other direction: a non-empty difference is evidence of nothing (it
+    # over-reports 2-for-1, probe-init-attribution.ps1) and is non-empty by
+    # construction in the race where somebody else starts PowerPoint mid-census.
+    #
+    # Measuring this properly needs an instance we can PROVE we started, which
+    # means the CreateProcess route in _isolated.ps1 rather than New-Object.
+    # That is a redesign of this probe, not a change to it.
+    Rep "  H1 Application.Visible = 0" 'NOT MEASURED - would write to a possibly-attached instance (#139)'
     try { Rep "  Application.Visible reads" $app.Visible } catch { Rep "  Application.Visible reads" 'unreadable' }
     if ($ppid) { Show-Windows $ppid 'H1 no presentation' }
 
@@ -100,27 +114,29 @@ try {
     if ($ppid) { Show-Windows $ppid 'H2 windowless open' }
 
     Say "== H3: WindowState fallback (only meaningful if a window exists) =="
-    try {
-        if ($app.Windows.Count -gt 0) {
-            $app.WindowState = 2   # ppWindowMinimized
-            Rep "  WindowState = ppWindowMinimized" "ACCEPTED"
-        }
-        else { Rep "  WindowState" "no document window exists to minimise" }
-    }
-    catch { Rep "  WindowState" ("REFUSED -> " + $_.Exception.Message.Split([char]10)[0]) }
-
-    try { $pres.Saved = -1; $pres.Close() } catch { }
+    # Same reason as H1: WindowState = 2 minimises the Application, and the
+    # instance may be the user's. Worse than H1, in fact -- its old guard was
+    # `$app.Windows.Count -gt 0`, which is true precisely when somebody has a
+    # deck open. Not measured (#139); H2 above already reports the window count.
+    Rep "  H3 WindowState = ppWindowMinimized" 'NOT MEASURED - would write to a possibly-attached instance (#139)'
 }
 catch { Rep "ERROR (H1-H3)" $_.Exception.Message }
-finally { Close-OwnedPowerPoint $ctx }
+finally {
+    # Ours: opened from our own temp root at H2. Close it here so a failure
+    # above cannot leave it open in an instance we merely attached to.
+    try { if ($pres) { $pres.Saved = -1; $pres.Close() } } catch { }
+    $pres = $null
+    Close-PowerPointInstance $ctx
+}
 
 # --- H4: survival A/B ---------------------------------------------------------
 function Invoke-SurvivalArm([string]$Label, [int]$WithWindow) {
     $src = Join-Path $root "$Label.pptx"; Copy-Item $Fixture $src
     $ctx = $null
+    $pres = $null
     try {
-        $ctx = New-OwnedPowerPoint
-        $ppid = $ctx.Owned | Select-Object -First 1
+        $ctx = New-PowerPointInstance
+        $ppid = $ctx.NewPids | Select-Object -First 1
         $pres = $ctx.App.Presentations.Open($src, 0, 0, $WithWindow)
         $diedAt = $null
         $sw = [Diagnostics.Stopwatch]::StartNew()
@@ -135,10 +151,14 @@ function Invoke-SurvivalArm([string]$Label, [int]$WithWindow) {
         $sw.Stop()
         if ($null -ne $diedAt) { Rep "  [$Label] DIED after" "$diedAt s idle" }
         else { Rep "  [$Label] survived" "$IdleSec s idle, handle still valid" }
-        try { $pres.Saved = -1; $pres.Close() } catch { }
+        try { $pres.Saved = -1; $pres.Close(); $pres = $null } catch { }
     }
     catch { Rep "  [$Label] ERROR" $_.Exception.Message.Split([char]10)[0] }
-    finally { Close-OwnedPowerPoint $ctx }
+    finally {
+        try { if ($pres) { $pres.Saved = -1; $pres.Close() } } catch { }
+        $pres = $null
+        Close-PowerPointInstance $ctx
+    }
 }
 
 Say "== H4: does a windowless instance stay alive while idle? =="
