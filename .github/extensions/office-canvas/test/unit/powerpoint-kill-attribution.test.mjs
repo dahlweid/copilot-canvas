@@ -296,6 +296,16 @@ const CASES = [
     ["E: launcher never recorded a StartTime", { ...ok, expectedStart: null }, "declined:unverified"],
     ["F: StartTime unreadable", { ...ok, startReadable: false }, "declined:unreadable"],
     ["G: pid recycled onto another POWERPNT", { ...ok, actualStart: THEIRS }, "declined:start"],
+    // I pins the ORDER. Absence is sound WITHOUT a recorded StartTime -- no
+    // process holds the pid, so nothing we launched runs under it. Hoist the
+    // null-ExpectedStart guard above the absence check and this is the only
+    // case that changes: an already-gone process comes back as a decline and
+    // the caller prints a leak warning about nothing. Measured: without this
+    // world the mutation passes, because every other absent case here carries a
+    // recorded start time. It is reachable in the tree -- _isolated.ps1 leaves
+    // StartTime null when the launch-time read fails, and that process may well
+    // have exited by teardown.
+    ["I: pid absent AND no recorded StartTime", { ...ok, exists: false, expectedStart: null }, "gone"],
     // H is the one that fails if the helper is made to refuse everything.
     ["H: our own process, fully verified", ok, "killed"],
 ];
