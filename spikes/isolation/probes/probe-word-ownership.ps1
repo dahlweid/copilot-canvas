@@ -244,6 +244,11 @@ $created = @()
 # quoting defect above lived in. The .NET call takes a literal path and crosses
 # no parser, so neither argument is needed.
 if ($foreign) {
+    # $foreign is NOT a pid-census foreigner. It is a powershell.exe this probe
+    # launched with Start-Process -PassThru above -- the pid is a fact the kernel
+    # returned about a process it made for us, which is exactly the provenance
+    # #136 keeps. "foreign" names whose Word it drives, not whose process it is.
+    #
     # A swallowed failure here is not cosmetic: if the release file is never
     # written the helper waits out its full 60 s loop, we force-kill it, and
     # killing a COM client orphans its Word. That is the leak this probe is about,

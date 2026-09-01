@@ -8,6 +8,8 @@
 
 $ErrorActionPreference = 'Stop'
 
+. (Join-Path $PSScriptRoot '_common.ps1')
+
 Add-Type -TypeDefinition @"
 using System;
 using System.Collections.Generic;
@@ -126,6 +128,9 @@ $cmd = '"' + $exe + '" /w /q "' + $docPath + '"'
 $ok = [Bind]::CreateProcess([IntPtr]::Zero, $cmd, [IntPtr]::Zero, [IntPtr]::Zero, $false, 0, [IntPtr]::Zero, [IntPtr]::Zero, [ref]$si, [ref]$pi)
 Report "launched" "$ok pid=$($pi.pid)"
 $ownPid = $pi.pid
+# Recorded immediately, while the pid is certainly still this process.
+# Stop-VerifiedWord declines without it, which would silently become a leak.
+$ownStart = Get-WordStartTime $ownPid
 
 try {
     Start-Sleep -Seconds 12
@@ -167,7 +172,11 @@ try {
     Report "   zoom" $wdWindow.View.Zoom.Percentage
 }
 finally {
-    if ($ownPid -and (Get-Process -Id $ownPid -ErrorAction SilentlyContinue)) { Stop-Process -Id $ownPid -Force }
+    # $ownPid came back from CreateProcess -- a kernel fact about a process made
+    # for us, not a census difference (#136) -- so the kill is kept, and routed
+    # through Stop-VerifiedWord, which re-verifies name and StartTime against a
+    # pinned handle first.
+    Report "teardown pid $ownPid" (Stop-VerifiedWord $ownPid $ownStart)
     Start-Sleep -Milliseconds 500
     [Bind]::CloseDesktop($desk) | Out-Null
 }

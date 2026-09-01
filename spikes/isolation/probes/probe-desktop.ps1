@@ -9,6 +9,8 @@
 
 $ErrorActionPreference = 'Stop'
 
+. (Join-Path $PSScriptRoot '_common.ps1')
+
 Add-Type -TypeDefinition @"
 using System;
 using System.Collections.Generic;
@@ -165,6 +167,9 @@ Report "desktop string" $si.desktop
 if (-not $ok) { [DesktopProbe]::CloseDesktop($desk) | Out-Null; throw "CreateProcess failed" }
 
 $ownPid = $pi.pid
+# Recorded immediately: Stop-VerifiedWord declines a pid whose StartTime was
+# never captured, and a silent decline in teardown is a leak.
+$ownStart = Get-WordStartTime $ownPid
 try {
     Start-Sleep -Seconds 12
 
@@ -188,17 +193,21 @@ try {
     }
 }
 finally {
-    if ($ownPid -and (Get-Process -Id $ownPid -ErrorAction SilentlyContinue)) {
-        # $ownPid comes from CreateProcess, so it is genuinely ours. Guarded
-        # anyway: the pid can exit between the test and the call, and measured
-        # under $ErrorActionPreference = 'Stop' that throws a terminating error
-        # inside this finally -- which would skip CloseDesktop below and leak the
-        # desktop handle. Outcome observed rather than asserted.
-        Stop-Process -Id $ownPid -Force -ErrorAction SilentlyContinue
-        $kd = (Get-Date).AddSeconds(15)
-        while ((Get-Date) -lt $kd -and (Get-Process -Id $ownPid -ErrorAction SilentlyContinue)) { Start-Sleep -Milliseconds 250 }
-        if (Get-Process -Id $ownPid -ErrorAction SilentlyContinue) { Write-Output "pid $ownPid STILL ALIVE after kill -- leaked" }
-        else { Write-Output "killed pid $ownPid" }
+    # $ownPid comes from CreateProcess, so it is genuinely ours -- a kernel fact
+    # about a process made for us, not the census difference the seed block above
+    # deliberately refuses to act on (#136). It is nevertheless routed through
+    # Stop-VerifiedWord, which pins the handle and re-verifies name and StartTime:
+    # the pid can exit between any test and the call, and measured under
+    # $ErrorActionPreference = 'Stop' an unguarded terminate throws inside this
+    # finally, which would skip CloseDesktop below and leak the desktop handle.
+    # Outcome observed rather than asserted.
+    $outcome = Stop-VerifiedWord $ownPid $ownStart
+    Write-Output "teardown pid ${ownPid}: $outcome"
+    if ($outcome -ne 'killed' -and $outcome -ne 'gone') {
+        # Not `-like 'declined:*'`: 'killed:survived' means the guards passed and
+        # the terminate was issued and the process is STILL THERE, which is the
+        # same leak and would have been reported as a success.
+        Write-Output "pid $ownPid NOT terminated -- this probe's own Word has leaked; close it by hand"
     }
     Start-Sleep -Milliseconds 500
     [DesktopProbe]::CloseDesktop($desk) | Out-Null

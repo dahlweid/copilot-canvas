@@ -6,6 +6,8 @@
 
 $ErrorActionPreference = 'Stop'
 
+. (Join-Path $PSScriptRoot '_common.ps1')
+
 Add-Type -TypeDefinition @"
 using System;
 using System.Drawing;
@@ -137,6 +139,12 @@ try {
     $cmd = '"' + $exe + '" /w /q'
     $ok = [P2]::CreateProcess([IntPtr]::Zero, $cmd, [IntPtr]::Zero, [IntPtr]::Zero, $false, 0, [IntPtr]::Zero, [IntPtr]::Zero, [ref]$si, [ref]$pi)
     $ownPid = $pi.pid
+    # Record the launch identity immediately, while the pid is certainly still
+    # this process. Stop-VerifiedWord refuses a pid it cannot match on both name
+    # and StartTime, so without this the teardown would decline every time and
+    # silently become a leak. A failed read leaves $null, which declines out loud
+    # rather than killing on the pid alone.
+    $ownStart = Get-WordStartTime $ownPid
     Rep "launched (no doc)" "$ok pid=$ownPid"
 
     Start-Sleep -Seconds 3
@@ -189,7 +197,12 @@ try {
 catch { Rep "ERROR" $_.Exception.Message }
 finally {
     if ($origTheme -ne $null) { Set-ItemProperty -Path $themeKey -Name 'UI Theme' -Value $origTheme -Type DWord }
-    if ($ownPid -and (Get-Process -Id $ownPid -ErrorAction SilentlyContinue)) { Stop-Process -Id $ownPid -Force }
+    # $ownPid came back from CreateProcess, so it is a fact the kernel returned
+    # about a process it made for us -- not a census difference (#136). The kill
+    # is kept for that reason and routed through Stop-VerifiedWord, which
+    # re-verifies name and StartTime against a pinned handle before terminating.
+    # Strictly narrower than the bare existence test this replaced.
+    Rep "teardown pid $ownPid" (Stop-VerifiedWord $ownPid $ownStart)
     Start-Sleep -Milliseconds 600
     [P2]::CloseDesktop($desk) | Out-Null
     Rep "cleanup" "done; theme=$((Get-ItemProperty -Path $themeKey -Name 'UI Theme').'UI Theme')"

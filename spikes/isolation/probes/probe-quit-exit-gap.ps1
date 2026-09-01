@@ -8,9 +8,12 @@
 #
 # Attribution: census-diff at creation, and it ABORTS rather than guessing if
 # the diff is not exactly one pid (concurrent creation misattributes -- #25).
-# Kills only the pid it minted, and only if Quit failed to take it.
+# Kills nothing. The pid it once called "minted" was differenced (#136).
 
 $ErrorActionPreference = 'Stop'
+
+. (Join-Path $PSScriptRoot '_common.ps1')
+
 "interpreter : $($PSVersionTable.PSVersion) ($($PSVersionTable.PSEdition))"
 
 function Get-WordPids { @(Get-Process -Name WINWORD -ErrorAction SilentlyContinue | ForEach-Object { $_.Id }) }
@@ -88,8 +91,17 @@ foreach ($rep in 1..$reps) {
     "         would a fixed 300 ms wait have seen it exit? $(if ($null -ne $exitedAt -and $exitedAt -le 300) { 'YES' } else { 'NO' })"
 
     if ($null -eq $exitedAt) {
-        "         killing the one pid I minted ($pid_)"
-        Stop-Process -Id $pid_ -Force -ErrorAction SilentlyContinue
+        # This used to kill $pid_, describing it as "the one pid I minted". It
+        # was not minted, it was DIFFERENCED, and the abort above narrows that
+        # without repairing it: the exact-count guard catches the 2-for-1 case
+        # probe-init-attribution.ps1 measured, but not the case where our own
+        # pid misses the 400 ms window at the diff above while a stranger's
+        # WINWORD appears inside it -- the diff is then 1, and it is the wrong
+        # process. A census control measured 2 strangers' WINWORDs appearing in
+        # a 40 s window with nothing launched, so that window is not empty in
+        # practice. Report; do not kill (#136).
+        "         pid $pid_ never exited -- NOT killed, see the note in the source"
+        Write-CensusSurvivors @($pid_)
     }
     try { [Runtime.InteropServices.Marshal]::ReleaseComObject($app) | Out-Null } catch { }
     $app = $null

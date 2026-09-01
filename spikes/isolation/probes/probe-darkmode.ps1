@@ -15,6 +15,8 @@
 # contaminated. The dark page is not fixable through this registry value.
 $ErrorActionPreference = 'Continue'
 
+. (Join-Path $PSScriptRoot '_common.ps1')
+
 function Rep($l, $v) { Write-Output ("{0,-38} {1}" -f $l, $v) }
 
 function Test-ComProperty($obj, $name) {
@@ -34,8 +36,10 @@ $before = @(Get-Process WINWORD -ErrorAction SilentlyContinue | ForEach-Object I
 $word = New-Object -ComObject Word.Application
 $word.Visible = $false
 $word.DisplayAlerts = 0
-$owned = @(Get-Process WINWORD -ErrorAction SilentlyContinue | ForEach-Object Id | Where-Object { $before -notcontains $_ })
-Rep "owned pid" ($owned -join ',')
+$appeared = @(Get-Process WINWORD -ErrorAction SilentlyContinue | ForEach-Object Id | Where-Object { $before -notcontains $_ })
+# NOT ownership -- a census difference, which this repo has measured over-reports
+# (#136). Reported so a leak is visible; never used as permission to kill.
+Rep "WINWORD that appeared" ($appeared -join ',')
 
 try {
     foreach ($name in @('DarkModeDocumentColor', 'DarkMode', 'DisableDarkMode', 'UseDarkModeDocumentColor')) {
@@ -80,7 +84,7 @@ finally {
     $started = Get-Date
     $exitedAfterMs = @{}
     while ($true) {
-        foreach ($p in $owned) {
+        foreach ($p in $appeared) {
             if (-not $exitedAfterMs.ContainsKey($p)) {
                 # Name-checked, so a recycled pid cannot read as a survivor.
                 $proc = Get-Process -Id $p -ErrorAction SilentlyContinue
@@ -89,19 +93,27 @@ finally {
                 }
             }
         }
-        if ($exitedAfterMs.Count -eq $owned.Count -or (Get-Date) -ge $deadline) { break }
+        if ($exitedAfterMs.Count -eq $appeared.Count -or (Get-Date) -ge $deadline) { break }
         Start-Sleep -Milliseconds 250
     }
     $waitedMs = [int]((Get-Date) - $started).TotalMilliseconds
-    foreach ($p in $owned) {
+    $survivors = @()
+    foreach ($p in $appeared) {
         if ($exitedAfterMs.ContainsKey($p)) {
             Rep "exited on Quit()" ("pid {0} after {1} ms" -f $p, $exitedAfterMs[$p])
         }
-        else {
-            Stop-Process -Id $p -Force -ErrorAction SilentlyContinue
-            Rep ("STILL ALIVE after {0} ms, killed" -f $waitedMs) $p
-        }
+        else { $survivors += $p }
     }
+    # $appeared is a census DIFFERENCE (see its assignment above), and this used to
+    # force-kill whatever survived the poll. That is measured unsound (#136):
+    # probe-init-attribution.ps1 differenced 2 new pids for 1 instance created,
+    # and a census control saw 2 strangers' WINWORDs appear in a 40 s window with
+    # nothing launched -- so a survivor here can be another session's Word, and
+    # Stop-Process -Force destroys unsaved work with no prompt. The poll stays,
+    # because it is the instrument: without it a survivor count is a stopwatch
+    # artefact rather than a leak. What follows it is now a report.
+    if ($survivors.Count -gt 0) { Rep "still alive after" ("{0} ms" -f $waitedMs) }
+    Write-CensusSurvivors $survivors
 }
 
 # The theme itself is a per-user registry value Word reads at startup. Report, never change.

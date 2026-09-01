@@ -67,6 +67,13 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+. (Join-Path $PSScriptRoot '_common.ps1')
+
+# Set when a worker powershell.exe misses its deadline and is force-killed, which
+# orphans the Word that worker was driving. The census report at the end is the
+# only place that leak is now named, so it must know.
+$script:workerKilled = $false
+
 function Get-WordPids {
     @(Get-Process -Name WINWORD -ErrorAction SilentlyContinue | ForEach-Object { $_.Id }) | Sort-Object
 }
@@ -340,7 +347,20 @@ function Invoke-Arm([string] $arm, [string] $title) {
     while (-not $p.HasExited -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 250 }
     if (-not $p.HasExited) {
         Write-Host "  HUNG (no exit within 120s)"
+        # Sound: $p.Id came back from Start-Process, so this is a fact about a
+        # process we made, not a census difference (#136). But killing a COM
+        # client orphans the Word it was driving -- recorded so the census
+        # report at the end can name a cause it actually knows.
         try { Stop-Process -Id $p.Id -Force } catch { }
+        Start-Sleep -Milliseconds 500
+        # Set on the OBSERVED exit, never on the attempt. The report below turns
+        # this flag into the sentence "this probe orphaned a Word", which is a
+        # CAUSE; a flag set on the attempt asserts that cause after a kill that
+        # threw, was refused, or lost the exit race -- the failure mode this
+        # repo keeps hitting, a correct code carrying a message the code cannot
+        # know is true.
+        if ($p.HasExited) { $script:workerKilled = $true }
+        else { Write-Host "  worker pid $($p.Id) did NOT exit after Stop-Process; still up, no Word orphaned by us" }
     }
 
     if (Test-Path -LiteralPath $out) { Get-Content -LiteralPath $out | ForEach-Object { Write-Host $_ } }
@@ -357,9 +377,19 @@ Invoke-Arm 'T' 'tables, and the chr(7) position/length discrepancy'
 
 $leaked = @(Get-WordPids | Where-Object { $pidsBefore -notcontains $_ })
 Write-Host ""
+# This used to force-kill $leaked. It is a census DIFFERENCE, which is measured
+# unsound here (#136): probe-init-attribution.ps1 differenced 2 new pids for 1
+# instance, and a census control saw 2 strangers' WINWORDs appear in a 40 s
+# window with nothing launched. The variable name claimed an attribution the
+# code never had.
+#
+# Removing the sweep exposes a leak it was masking, so it is named rather than
+# left silent: when the deadline above expires this probe force-kills its own
+# worker powershell.exe, and killing a COM client orphans the Word it was
+# driving. That kill is sound -- the pid came from Start-Process -- but its
+# consequence for Word was only ever reaped by this sweep.
 if ($leaked.Count -gt 0) {
-    Write-Host "cleaning up WINWORD started by this probe: $($leaked -join ', ')"
-    foreach ($p in $leaked) { try { Stop-Process -Id $p -Force -ErrorAction SilentlyContinue } catch { } }
+    Write-CensusSurvivors $leaked -WorkerKilled:$script:workerKilled
 } else {
     Write-Host "no WINWORD left behind"
 }

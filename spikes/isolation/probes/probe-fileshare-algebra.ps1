@@ -12,6 +12,9 @@
 # Run:  powershell -File probe-fileshare-algebra.ps1
 
 $ErrorActionPreference = 'Stop'
+
+. (Join-Path $PSScriptRoot '_common.ps1')
+
 $scratch = Join-Path $env:TEMP ("fileshare-probe-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
 New-Item -ItemType Directory -Path $scratch | Out-Null
 
@@ -217,26 +220,29 @@ try {
         try { $word.Quit() } catch { }
         [System.Runtime.InteropServices.Marshal]::ReleaseComObject($word) | Out-Null
     }
-    # Only ever reap a Word this probe started. Wait first, because Quit() returns
-    # in 3-28 ms (measured, probe-quit-exit-gap.ps1) while the process lives on
-    # for seconds; then force-terminate,
-    # because the two documented ways Word blocks here -- a held file and
-    # mark-of-the-web -- both *hang* rather than fail, so a patient wait alone
-    # leaks a WINWORD.EXE. That is not hypothetical: an earlier run of this probe
-    # left one alive past the full 20 s wait.
+    # $startedPids is a census DIFFERENCE, not an ownership fact. Differencing is
+    # measured unsound here (#136): probe-init-attribution.ps1 got 2 new pids for
+    # 1 instance created, and a census control saw 2 strangers' WINWORDs appear
+    # in a 40 s window with nothing launched. The old comment here said "only
+    # ever reap a Word this probe started", which is the claim the measurement
+    # falsifies.
+    #
+    # The wait stays and is still worth its 20 s: Quit() returns in 3-28 ms
+    # (measured, spikes/isolation/probes/probe-quit-exit-gap.ps1) while the
+    # process lives on for seconds, so a survivor observed without the wait is a
+    # stopwatch artefact. What follows the wait is now a report. The earlier run
+    # that left a WINWORD alive past the full 20 s is still visible -- it is just
+    # reported instead of resolved by killing a process we cannot identify.
     foreach ($p in $startedPids) {
         $proc = Get-Process -Id $p -ErrorAction SilentlyContinue
         if ($proc) {
             $proc.WaitForExit(20000) | Out-Null
         }
-        $still = Get-Process -Id $p -ErrorAction SilentlyContinue
-        if ($still) {
-            Write-Output ("  reaping hung WINWORD pid {0}" -f $p)
-            Stop-Process -Id $p -Force -ErrorAction SilentlyContinue
-        }
     }
+    $survivors = @($startedPids | Where-Object { Get-Process -Id $_ -ErrorAction SilentlyContinue })
+    Write-CensusSurvivors $survivors
     Write-Output ''
-    Write-Output ("word processes started by this probe: {0}" -f ($startedPids -join ', '))
+    Write-Output ("WINWORD that appeared during this probe: {0}" -f ($startedPids -join ', '))
     Remove-Item -Recurse -Force $scratch -ErrorAction SilentlyContinue
 }
 

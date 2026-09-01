@@ -84,9 +84,20 @@ try {
     try { [Runtime.InteropServices.Marshal]::ReleaseComObject($app) | Out-Null } catch { }
     [GC]::Collect(); [GC]::WaitForPendingFinalizers()
 
-    # Only processes this probe started, identified by differencing, and only
-    # after polling: Quit() returns in ~120ms and the process outlives it by
-    # seconds. Never kill a Word this script cannot attribute to itself.
+    # $before is a census taken before this probe started Word, so $mine/$leaked
+    # below are census DIFFERENCES. The comment here used to read "Only processes
+    # this probe started, identified by differencing ... Never kill a Word this
+    # script cannot attribute to itself", which asserts an attribution the code
+    # does not have and cannot get: probe-init-attribution.ps1 differenced 2 new
+    # pids for 1 instance, and a census control saw 2 strangers' WINWORDs appear
+    # in a 40 s window with nothing launched (#136). Nothing here kills, so this
+    # is a reporting inaccuracy rather than a destructive one -- but a safety
+    # comment read as evidence of soundness is how the differencing rule spread
+    # through this tree in the first place.
+    #
+    # The poll is still worth its 30 s: Quit() returns in ~120 ms and the process
+    # outlives it by seconds, so a survivor observed without it would be a
+    # stopwatch artefact rather than a leak.
     $deadline = [Diagnostics.Stopwatch]::StartNew()
     while ($deadline.ElapsedMilliseconds -lt 30000) {
         $mine = @(Get-Process -Name WINWORD -ErrorAction SilentlyContinue | Where-Object { $before -notcontains $_.Id })
@@ -94,5 +105,5 @@ try {
         Start-Sleep -Milliseconds 250
     }
     $leaked = @(Get-Process -Name WINWORD -ErrorAction SilentlyContinue | Where-Object { $before -notcontains $_.Id })
-    if ($leaked.Count -gt 0) { Write-Host ("`nLEAKED: {0}" -f ($leaked.Id -join ', ')) }
+    if ($leaked.Count -gt 0) { Write-Host ("`nWINWORD still up that was not up before: {0} -- may be ours, may be another session's" -f ($leaked.Id -join ', ')) }
 }

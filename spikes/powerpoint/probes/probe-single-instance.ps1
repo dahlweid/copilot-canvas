@@ -157,48 +157,53 @@ try {
 }
 catch { Rep "  ERROR (Word control)" $_.Exception.Message.Split([char]10)[0] }
 finally {
-    # Quit only the instance this iteration is actually holding. The previous gate
-    # asked "has ANY new WINWORD appeared since the probe started?" and then quit
-    # $w -- a decision about one instance taken from a fact about the whole
-    # machine. Two ways that reaches the wrong answer, and neither needs a bug
-    # anywhere else:
-    #   - Quit() returns seconds before its process exits (2.7-6.1 s idle, ADR
-    #     0005), so $w2's still-exiting pid keeps the gate open for the $w1 pass.
-    #   - an external producer creates WINWORDs on this machine at a measured
-    #     rate (census control: 2 appeared in a 40 s window with nothing
-    #     launched), so a stranger's Word can unlock the gate on its own.
-    # Harmless while Quit(0) threw and the call could never execute; the fix to
-    # that made this gate load-bearing for the first time.
+    # Quit the instance this iteration holds, unconditionally. Both earlier
+    # versions of this gate consulted a pid census before allowing Quit(); the
+    # per-instance narrowing above fixed *which* population was consulted, but
+    # consulting one at all is the remaining defect, and it is mine (#136).
     #
-    # $wOwned1/$wOwned2 are pid-differenced, so they are not sound attribution
-    # (#37) -- but they are evidence about *this* instance rather than about the
-    # population, which is the property the decision needs. The sound instrument
-    # is the hwnd route, and it is deliberately not retrofitted here: ActiveWindow
-    # throws without a document, so taking it would mean adding one, and S3
-    # measures what bare New-Object does. Changing the experiment to police the
-    # teardown is the wrong trade.
+    # Why no gate is the right gate here. Quit() is invoked on $w, an RCW that
+    # refers to one specific instance. It is not a pid, it cannot be recycled,
+    # and it cannot be another session's Word by accident -- so unlike a
+    # Stop-Process on a differenced pid, the destructive reach of this call is
+    # already bounded by the object we hold. The only question the census could
+    # answer is "is this instance ours", and probe-newobject-attach.ps1 answered
+    # that directly and better: New-Object Word.Application never attached to a
+    # running Word in either arm. Word is multi-instance, so an instance we
+    # created is ours.
     #
-    # Separately measured (probe-newobject-attach.ps1): New-Object never attached
-    # to a running Word in either arm, so on that evidence both instances here are
-    # ours. The gate no longer relies on that being true.
+    # Note this is the OPPOSITE of the PowerPoint situation in S1/S2 above, and
+    # importing that conclusion here would be the mistake that split #136 from
+    # #139: PowerPoint is single-instance, a New-Object may attach to the user's
+    # running instance, and quitting it destroys their work. Word never attaches.
+    #
+    # What the gate actually cost. $wOwned1/$wOwned2 are census differences, and
+    # a difference can come up EMPTY for an instance we did own -- Quit() returns
+    # 2.7-6.1 s before its process exits (ADR 0005), so $w2's pid can still be in
+    # $wAfter1 when $wOwned1 is computed, and the 600 ms sleep is not a guarantee
+    # either. Every such miss took the else branch and released the RCW without
+    # quitting, leaking a WINWORD this probe created. The gate could only ever
+    # turn a Word we own into a leak; it could never prevent a wrong Quit,
+    # because Quit() was never aimed at the census in the first place.
+    #
+    # $wOwned1/$wOwned2 stay as REPORTED evidence below. They are no longer
+    # permission.
     foreach ($inst in @(
             [pscustomobject]@{ App = $w2; Owned = @($wOwned2); Label = '2nd' },
             [pscustomobject]@{ App = $w1; Owned = @($wOwned1); Label = '1st' })) {
         $w = $inst.App
         if ($w) {
-            if ($inst.Owned.Count -gt 0) {
-                try {
-                    # Quit(), never Quit(<arg>): under Windows PowerShell 5.1 -- the
-                    # runtime every .ps1 here runs under -- the argument form throws
-                    # and the Word survives, and process exit does not reap it either
-                    # (probe-quit0-leak.ps1).
-                    $w.Quit()
-                }
-                catch { Rep "  Quit() FAILED (Word may leak)" $_.Exception.Message.Split([char]10)[0] }
+            if ($inst.Owned.Count -eq 0) {
+                Rep "  $($inst.Label) New-Object: census attributed no pid" 'quitting anyway - the RCW is the evidence, not the census'
             }
-            else {
-                Rep "  $($inst.Label) New-Object: no pid attributed to it, NOT quit" 'released only'
+            try {
+                # Quit(), never Quit(<arg>): under Windows PowerShell 5.1 -- the
+                # runtime every .ps1 here runs under -- the argument form throws
+                # and the Word survives, and process exit does not reap it either
+                # (spikes/isolation/probes/probe-quit0-leak.ps1).
+                $w.Quit()
             }
+            catch { Rep "  Quit() FAILED (Word may leak)" $_.Exception.Message.Split([char]10)[0] }
             try { [Runtime.InteropServices.Marshal]::ReleaseComObject($w) | Out-Null } catch { }
         }
     }
@@ -206,8 +211,9 @@ finally {
     # $ourPids is pid-differenced, and the comment above already concedes that is
     # "not sound attribution" -- a stranger's Word appearing in the census window
     # lands in this set at a measured rate. It used to be force-killed anyway, and
-    # Stop-Process -Force destroys unsaved work with no prompt. Removed (#139);
-    # #136 owns the Quit() gate above.
+    # Stop-Process -Force destroys unsaved work with no prompt. Removed (#139).
+    # The Quit() gate above no longer consults it either (#136); it survives here
+    # only as something to REPORT on, which is all a difference can support.
     #
     # The wait stays, because it is the instrument: Quit() reaps slowly, so
     # without it a survivor count would be a stopwatch artefact rather than a
@@ -223,8 +229,12 @@ finally {
         }
         else { Say "  WINWORD pid $p exited on Quit()" }
     }
+    # "unattributed", not "not ours" -- the code knows only that this pid is
+    # absent from two census reads, and this file's own reasoning above admits a
+    # census can miss a pid we made. Asserting "not this probe's" is the same
+    # error as #136 read backwards: a difference used as an attribution.
     foreach ($p in (@(Get-Process WINWORD -ErrorAction SilentlyContinue | ForEach-Object Id) | Where-Object { $wordBefore -notcontains $_ -and $ourPids -notcontains $_ })) {
-        Rep "  new WINWORD pid $p is NOT attributable to this probe, left alone" 'not killed'
+        Rep "  new WINWORD pid $p appeared during this run and is unattributed" 'not killed; may be ours or another session''s -- confirm by hand'
     }
     Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue
 }

@@ -75,6 +75,8 @@ $ErrorActionPreference = 'Stop'
 
 $WD_DO_NOT_SAVE = 0
 
+. (Join-Path $PSScriptRoot '_common.ps1')
+
 function Get-WordPids {
     @(Get-Process -Name WINWORD -ErrorAction SilentlyContinue | ForEach-Object { $_.Id }) | Sort-Object
 }
@@ -358,11 +360,14 @@ finally {
     $pidsAfter = Get-WordPids
     $leaked = @($pidsAfter | Where-Object { $pidsBefore -notcontains $_ })
     Write-Host "WINWORD after: [$($pidsAfter -join ', ')]"
-    foreach ($leakedPid in $leaked) {
-        Write-Host "      reaping this probe's own Word, pid $leakedPid"
-        try { Stop-Process -Id $leakedPid -Force -ErrorAction Stop } catch { }
-    }
-    Check 'no WINWORD was left behind' ($leaked.Count -eq 0) $(if ($leaked.Count) { "leaked $($leaked -join ', ') (reaped)" } else { '' })
+    # This used to force-kill $leaked, calling it "this probe's own Word". It is
+    # a census DIFFERENCE, and differencing is measured unsound here (#136):
+    # probe-init-attribution.ps1 got 2 new pids for 1 instance, and a census
+    # control saw 2 strangers' WINWORDs appear in a 40 s window with nothing
+    # launched. The check below still fails on a leak; it just no longer
+    # destroys someone else's unsaved document to make itself pass.
+    Write-CensusSurvivors $leaked
+    Check 'no WINWORD was left behind' ($leaked.Count -eq 0) $(if ($leaked.Count) { "leaked $($leaked -join ', ') (NOT reaped -- see above)" } else { '' })
 }
 
 if ($failures -gt 0) {
