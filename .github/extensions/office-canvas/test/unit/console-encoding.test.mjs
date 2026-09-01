@@ -273,26 +273,53 @@ test("the probe that varies the encoding is still present", async (t) => {
 // (#104). It is the one assertion of that file's four which this one did not
 // already make over a set containing `word-host.ps1`.
 //
-// **Why this test names one file while its three neighbours sweep.** The
-// encoding *assignment* is swept because every stdin-reading script must make
-// it, and the defect's history is that it reappears in whichever file nobody
-// named. The *citation* is asserted on the shipped host alone, because that is
-// the file this rule travels with into an install, and the only one a reader
-// without a checkout can still find.
+// Two deliberate departures from the original, so this is a move plus two
+// strengthenings rather than a move:
 //
-// That is not a smaller ambition, it is the reason this test is here at all.
-// `spikes/live-word/live-word.ps1` -- the other entry in `MUST_BE_COVERED` --
-// carries the same citation today, so sweeping both would pass. But `spikes/`
-// is outside the extension folder and is excluded from the artefact by
-// `tools/package-extension.mjs`, so a swept version could not resolve against
-// `EXTENSION`; it would have to go through `REPO` and back behind
-// `gitAvailable()` with its neighbours. Every other test in this file is
-// already there. This one is the whole of what the file still asserts in an
-// installed folder, and broadening it would take that to nothing.
+//   * the preamble boundary is `USES_CONSOLE` (`In|Out|Error`) rather than the
+//     original's `In|Out`. An extra alternative can only pull a first match
+//     earlier, so the boundary can only shrink -- fail-closed. Measured in
+//     `word-host.ps1` it does not move at all today: `:88-89` are the encoding
+//     *properties*, which `\b` excludes, the first real use is `[Console]::Out`
+//     at `:142`, and the first `Error` is at `:344`. It would shrink only if a
+//     stderr write were ever added above the assignments, which is the case
+//     worth reddening on.
+//   * the pattern is the probe's full path, not its basename.
+//     `tools/check-citations.mjs` resolves basenames repo-wide and several
+//     collide across `spikes/isolation/` and `spikes/powerpoint/`, so a
+//     basename match would accept a citation naming the wrong probe.
+//
+// **What the fold costs, stated beside what it keeps.** All four tests of the
+// deleted file were extension-relative and unguarded, so in an installed folder
+// `main` asserts four properties of `word-host.ps1` and this file asserts one.
+// The other three -- both `assignsUtf8` checks and the ordering check -- are
+// absorbed into the swept tests above and now run only in a checkout. Measured
+// with `PATH` cleared: the deleted file was 4 passed / 0 skipped; this file is
+// 1 passed / 6 skipped, against 0 passed / 6 skipped before.
+//
+// That is the right trade, and the reason is that these are source assertions.
+// They guard against an *edit* to `word-host.ps1`, and every edit happens in a
+// checkout; an installed folder holds a copy nobody modifies. What breadth buys
+// in exchange is the thing depth structurally could not -- it is why #50 was
+// found in `live-word.ps1` and the depth check could not see it.
+//
+// **Why this test names one file while its three neighbours sweep.** Not
+// because install-mode coverage is precious -- the paragraph above spends three
+// quarters of it deliberately. Because here it is free. The encoding
+// *assignment* must be swept: every stdin-reading script has to make it, and
+// the defect reappears in whichever file nobody named. The *citation* gains
+// nothing from being swept in the same test. `spikes/live-word/live-word.ps1`,
+// the other `MUST_BE_COVERED` entry, carries the citation today, so widening
+// this test would pass -- and would also drag it through `REPO` and behind
+// `gitAvailable()`, because `spikes/` is outside the extension folder and
+// excluded from the artefact by `tools/package-extension.mjs`. That spends the
+// remainder and buys nothing, since covering `live-word.ps1` needs only a
+// second, guarded test that leaves this one alone.
 //
 // So: not an oversight, and not an invitation to narrow the neighbours to
-// match. Extending the citation rule to `live-word.ps1` is a real gap, it is
-// pre-existing rather than introduced here, and it is filed separately.
+// match. The `live-word.ps1` citation gap is real, is pre-existing rather than
+// introduced here, and is filed as #147 -- which records that it must not be
+// closed by widening this test.
 test("the probe backing the encoding claim is cited where the encodings are set", async () => {
     // This repo's rule is that a claim about platform behaviour is backed by a
     // probe that was actually run. The citation is what makes the next reader
