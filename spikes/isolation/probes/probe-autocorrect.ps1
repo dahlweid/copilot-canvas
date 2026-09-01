@@ -55,6 +55,13 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+. (Join-Path $PSScriptRoot '_common.ps1')
+
+# Set when a worker powershell.exe misses its deadline and is force-killed, which
+# orphans the Word that worker was driving. The census report at the end is the
+# only place that leak is now named, so it must know.
+$script:workerKilled = $false
+
 function Get-WordPids {
     @(Get-Process -Name WINWORD -ErrorAction SilentlyContinue | ForEach-Object { $_.Id }) | Sort-Object
 }
@@ -604,7 +611,11 @@ function Invoke-Arm([string] $arm, [string] $title) {
     while (-not $p.HasExited -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 250 }
     if (-not $p.HasExited) {
         Write-Host "  HUNG (no exit within 120s)"
+        # Sound: $p.Id came back from Start-Process. But killing a COM client
+        # orphans the Word it was driving -- recorded so the census report at the
+        # end can name a cause it actually knows (#136).
         try { Stop-Process -Id $p.Id -Force } catch { }
+        $script:workerKilled = $true
     }
 
     if (Test-Path -LiteralPath $out) { Get-Content -LiteralPath $out | ForEach-Object { Write-Host $_ } }
@@ -625,9 +636,13 @@ Invoke-Arm 'C' 'is switching them off scoped to one instance?'
 
 $leaked = @(Get-WordPids | Where-Object { $pidsBefore -notcontains $_ })
 Write-Host ""
+# This used to force-kill $leaked. It is a census DIFFERENCE, measured unsound
+# here (#136): 2 new pids for 1 instance in probe-init-attribution.ps1, and 2
+# strangers' WINWORDs in a 40 s window with nothing launched. Removing the sweep
+# exposes the leak it masked -- a force-killed worker orphans its Word -- so that
+# is named rather than left silent.
 if ($leaked.Count -gt 0) {
-    Write-Host "cleaning up WINWORD started by this probe: $($leaked -join ', ')"
-    foreach ($p in $leaked) { try { Stop-Process -Id $p -Force -ErrorAction SilentlyContinue } catch { } }
+    Write-CensusSurvivors $leaked -WorkerKilled:$script:workerKilled
 } else {
     Write-Host "no WINWORD left behind"
 }

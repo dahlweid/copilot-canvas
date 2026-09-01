@@ -5,6 +5,8 @@
 
 $ErrorActionPreference = 'Stop'
 
+. (Join-Path $PSScriptRoot '_common.ps1')
+
 Add-Type -TypeDefinition @"
 using System;
 using System.Drawing;
@@ -99,11 +101,22 @@ try {
     # Guarded the same way as the other probes: an unresolved hwnd yields pid 0
     # (the Idle process, which never exits) and a recycled pid can name something
     # that is not Word. Either way, refuse to name it rather than act on it.
+    #
+    # Note what makes this route sound, because it is NOT the reason the
+    # CreateProcess probes are sound (#136). Those hold a pid the kernel returned
+    # for a process it made for them. This one never consults the WINWORD
+    # population at all: the hwnd comes off our own RCW's ActiveWindow, so there
+    # is no window in which a stranger's Word could enter the answer. That is the
+    # stronger of the two properties, and it is why this repo calls the hwnd route
+    # the sound instrument.
     $wp = 0
     [void][Probe]::GetWindowThreadProcessId($hwnd, [ref]$wp)
     $wproc = Get-Process -Id $wp -ErrorAction SilentlyContinue
     if ($wp -gt 4 -and $wproc -and $wproc.ProcessName -eq 'WINWORD') { $ownPid = $wp }
     else { Report "attribution FAILED (teardown cannot verify)" "hwnd resolved to pid $wp ($($wproc.ProcessName))" }
+    # Recorded here, while the pid is certainly still the process the hwnd named.
+    # Stop-VerifiedWord declines a pid whose StartTime was never captured.
+    $ownStart = Get-WordStartTime $ownPid
     Report "owned pid" $ownPid
 
     Report "ex-style before" ("0x{0:X8}" -f [Probe]::ExStyle($hwnd))
@@ -163,22 +176,20 @@ finally {
             Start-Sleep -Milliseconds 250
         }
         if ((Get-Process -Id $ownPid -ErrorAction SilentlyContinue).ProcessName -eq 'WINWORD') {
-            # The pid can exit between the test above and this call, and under
-            # $ErrorActionPreference = 'Stop' an unguarded Stop-Process then throws
-            # a terminating error *inside this finally* -- measured, the statements
-            # after it do not run, so the race would silently truncate the teardown
-            # report. Swallow the race, then observe the outcome: reporting "killed"
-            # without checking is the same fabricated label this probe's poll exists
-            # to avoid.
-            Stop-Process -Id $ownPid -Force -ErrorAction SilentlyContinue
-            $killDeadline = (Get-Date).AddSeconds(15)
-            while ((Get-Date) -lt $killDeadline -and (Get-Process -Id $ownPid -ErrorAction SilentlyContinue).ProcessName -eq 'WINWORD') {
-                Start-Sleep -Milliseconds 250
+            # Quit() did not take it. The kill stays -- $ownPid came off our own
+            # RCW's window handle, never off a census difference (#136) -- but it
+            # is routed through Stop-VerifiedWord, which pins the handle and
+            # re-verifies name and StartTime first. That also settles the race
+            # this comment used to be about: the pid can exit between the test
+            # above and the call, and under $ErrorActionPreference = 'Stop' an
+            # unguarded terminate throws inside this finally and silently
+            # truncates the teardown report. The helper swallows that race and
+            # returns 'gone'. Report the outcome; never label a kill unobserved.
+            $outcome = Stop-VerifiedWord $ownPid $ownStart
+            Report "STILL ALIVE after 30 s, teardown" "$ownPid -> $outcome"
+            if ($outcome -like 'declined:*') {
+                Report "pid $ownPid NOT terminated -- this probe's own Word has leaked" 'close it by hand'
             }
-            if ((Get-Process -Id $ownPid -ErrorAction SilentlyContinue).ProcessName -eq 'WINWORD') {
-                Report "STILL ALIVE after 30 s, kill FAILED (leaked)" $ownPid
-            }
-            else { Report "STILL ALIVE after 30 s, killed" $ownPid }
         }
         else { Report "exited on Quit()" $ownPid }
     }

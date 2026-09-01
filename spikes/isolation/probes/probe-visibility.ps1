@@ -6,6 +6,8 @@
 #   - Does it appear in the Alt+Tab candidate set?
 $ErrorActionPreference = 'Stop'
 
+. (Join-Path $PSScriptRoot '_common.ps1')
+
 Add-Type -TypeDefinition @"
 using System;
 using System.Collections.Generic;
@@ -88,6 +90,9 @@ try {
     $cmd = '"' + $exe + '" /w /q "' + $doc + '"'
     [P4]::CreateProcess([IntPtr]::Zero, $cmd, [IntPtr]::Zero, [IntPtr]::Zero, $false, 0, [IntPtr]::Zero, [IntPtr]::Zero, [ref]$si, [ref]$pi) | Out-Null
     $ownPid = $pi.pid
+    # Recorded immediately: Stop-VerifiedWord declines a pid whose StartTime was
+    # never captured, and a silent decline in teardown is a leak.
+    $ownStart = Get-WordStartTime $ownPid
     Rep "Word pid on hidden desktop" $ownPid
     Start-Sleep -Seconds 12
 
@@ -111,7 +116,11 @@ try {
 }
 catch { Rep "ERROR" $_.Exception.Message }
 finally {
-    if ($ownPid -and (Get-Process -Id $ownPid -ErrorAction SilentlyContinue)) { Stop-Process -Id $ownPid -Force }
+    # $ownPid came back from CreateProcess -- a kernel fact about a process made
+    # for us, not a census difference (#136) -- so the kill is kept, and routed
+    # through Stop-VerifiedWord, which pins the handle and re-verifies name and
+    # StartTime before terminating.
+    Rep "teardown pid $ownPid" (Stop-VerifiedWord $ownPid $ownStart)
     Start-Sleep -Milliseconds 600
     [P4]::CloseDesktop($desk) | Out-Null
     Rep "cleanup" "done"
