@@ -28,7 +28,9 @@
 //      reached the instance through a factory or a parameter rather than
 //      through a literal `New-Object`.
 //   3. `Stop-VerifiedPpt` itself decides correctly, checked by executing a
-//      model of its extracted decision sequence.
+//      model of its extracted decision sequence -- in which the KILL is a step
+//      with a position, not a footnote, so a kill hoisted above the guards is
+//      caught rather than hidden behind declines that have become dead code.
 //
 // Why a source assertion rather than a leak or liveness assertion: these are
 // probes. CI cannot run them -- they need a licensed PowerPoint -- and nobody
@@ -51,7 +53,10 @@
 //   * Against the parent commit test 3 fails at EXTRACTION -- `Stop-VerifiedPpt`
 //     does not exist there -- not on a case. So test 3 has no coverage of the
 //     parent's behaviour and is not claimed to; tests 1 and 2 are what fail on
-//     the defect, and they fail by naming its sites.
+//     the defect, and they fail by naming its sites. Measured, by running this
+//     file against `7ff59bb` in a worktree of that commit: all four tests fail,
+//     test 3 and the existence test on extraction, and tests 1 and 2 between
+//     them name 15 sites -- 10 kills and 5 `Quit()`s.
 //
 // Office-free. Reads tracked files and runs `git ls-files`.
 //
@@ -138,6 +143,25 @@ test(`${KILLER} still exists and still kills`, async (t) => {
     const body = functionBody(source, KILLER);
     assert.ok(body, `${KILLER} is not in ${KILLER_FILE}; test 1's exemption now covers nothing`);
     assert.match(body.text, /Stop-Process\s+-Id\s+\$ProcessId\s+-Force/, `${KILLER} no longer kills the pid it was given`);
+
+    // And that it checks what the kill did. `Stop-Process -ErrorAction
+    // SilentlyContinue` swallows its errors, so without this re-check 'killed'
+    // is a claim about a CALL, not about a process, and a caller that reads it
+    // as "reaped" hides a leak.
+    //
+    // Pinned HERE rather than in test 3 because test 3's model deliberately
+    // cannot see it: reaching the kill is what decides 'killed' there, and what
+    // the helper reports afterwards cannot terminate a process the guards would
+    // have spared, so the model treats it as outside the decision. That leaves
+    // presence unpinned -- measured, by deleting the re-check and watching test
+    // 3 stay green. Test 3 pins the check's POSITION (it may only appear after
+    // the kill); this pins its EXISTENCE. Neither implies the other.
+    assert.match(
+        body.text,
+        /Get-Process\s+-Id\s+\$ProcessId\s+-ErrorAction\s+SilentlyContinue\)\s*\{\s*return\s+'killed:survived'/,
+        `${KILLER} issues the kill but no longer verifies it, so 'killed' has gone back to being a claim about a call ` +
+            "that swallowed its errors rather than about a process",
+    );
 });
 
 // --- 2: no .Quit() on a COM-obtained PowerPoint -------------------------------
@@ -227,61 +251,121 @@ test("spikes/powerpoint: nothing quits a PowerPoint obtained through COM", async
 const CONDITIONS = [
     [/^-not \$ProcessId$/, (w) => !w.processId],
     [/^-not \$p$/, (w) => !w.exists],
-    [/^\$p\.ProcessName -ne 'POWERPNT'$/, (w) => w.name !== "POWERPNT"],
+    [/^\$name -ne 'POWERPNT'$/, (w) => w.name !== "POWERPNT"],
     [/^\$null -eq \$ExpectedStart$/, (w) => w.expectedStart === null],
     [/^\$actual -ne \$ExpectedStart$/, (w) => w.actualStart !== w.expectedStart],
 ];
 
 // A `try { STMT } catch { return 'x' }` guard: the read failing IS the
-// condition. Both of these are reads of a live process that can vanish or be
+// condition. All three are reads of a live process that can vanish or be
 // protected, which is why they are expressed as exceptions rather than tests.
 const READS = [
     [/^\$null = \$p\.Handle$/, (w) => !w.handleReadable],
+    [/^\$name = \$p\.ProcessName$/, (w) => !w.nameReadable],
     [/^\$actual = \$p\.StartTime$/, (w) => !w.startReadable],
 ];
 
-/** The ordered guard sequence in a function body, plus its fall-through return. */
-function guardsOf(body) {
-    const guards = [];
-    let fallthrough = null;
+/**
+ * Conditions that may only appear AFTER the kill: observations of what the
+ * machine did, not decisions about whether to act.
+ *
+ * They are listed rather than ignored so their POSITION is asserted. One of
+ * these appearing above the kill would be a `Get-Process` existence test
+ * standing in for attribution -- precisely the reasoning #139 is about -- and
+ * `decisionsOf` refuses it.
+ */
+const POST_KILL = [/^Get-Process -Id \$ProcessId -ErrorAction SilentlyContinue$/];
+
+/**
+ * The ordered decision sequence in a function body: guards AND the kill, in
+ * source order.
+ *
+ * The kill is a step, not a footnote. Without it in the sequence the model
+ * describes only which worlds return early, and a rewrite that hoisted the
+ * `Stop-Process` to the FIRST line of the helper -- killing before a single
+ * guard runs -- would satisfy every case below, because each case's expected
+ * decline is still reachable further down as dead code. That mutation is the
+ * single most dangerous regression this helper has, and it is caught only
+ * because reaching the kill terminates the walk.
+ *
+ * Plain `return` lines are deliberately NOT collected. An earlier version of
+ * this extractor took the LAST one as a fall-through, which models a function
+ * that cannot exist: a body with two plain returns at one nesting level returns
+ * at the FIRST, so the last-wins reading describes the wrong function. Nothing
+ * needs them now -- reaching the kill is what decides `killed`.
+ */
+function decisionsOf(body) {
+    const steps = [];
+    let kills = 0;
     for (const raw of body.split("\n")) {
         const line = raw.trim();
         if (!line) continue;
 
-        const conditional = /^if \((.+)\)\s*\{\s*return '([\w:]+)'\s*\}$/.exec(line);
+        const conditional = /^if \((.+)\)\s*\{\s*return '([\w:-]+)'\s*\}$/.exec(line);
         if (conditional) {
             const [, condition, state] = conditional;
+            if (POST_KILL.some((pattern) => pattern.test(condition.trim()))) {
+                assert.equal(kills, 1, `\`${condition.trim()}\` in ${KILLER} is an observation of the kill's effect, but it appears BEFORE the kill, where it would be an existence test doing attribution's job (#139)`);
+                steps.push({ postKill: true, state });
+                continue;
+            }
             const known = CONDITIONS.find(([pattern]) => pattern.test(condition.trim()));
             assert.ok(known, `unrecognised condition \`${condition.trim()}\` in ${KILLER} -- the model no longer describes the code, so update it deliberately`);
-            guards.push({ test: known[1], state });
+            steps.push({ test: known[1], state });
             continue;
         }
 
-        const guarded = /^try \{\s*(.+?)\s*\} catch \{\s*return '([\w:]+)'\s*\}$/.exec(line);
+        const guarded = /^try \{\s*(.+?)\s*\} catch \{\s*return '([\w:-]+)'\s*\}$/.exec(line);
         if (guarded) {
             const [, statement, state] = guarded;
             const known = READS.find(([pattern]) => pattern.test(statement.trim()));
             assert.ok(known, `unrecognised guarded read \`${statement.trim()}\` in ${KILLER} -- update the model deliberately`);
-            guards.push({ test: known[1], state });
+            steps.push({ test: known[1], state });
             continue;
         }
 
-        const plain = /^return '([\w:]+)'$/.exec(line);
-        if (plain) fallthrough = plain[1];
+        // A returning line the patterns above did not understand must FAIL, not
+        // be skipped. On the sibling guard `declined:unreadable-name` was
+        // silently dropped because the state pattern's character class had no
+        // hyphen, and the model then reported that world as reaching the kill.
+        // A guard the model cannot see is a guard the model reports as absent.
+        assert.ok(
+            !/^(?:if\s*\(|try\s*\{)/.test(line) || !/\breturn\b/.test(line),
+            `unparsed returning line \`${line}\` in ${KILLER} -- it decides something the model cannot see, so extend the model deliberately`,
+        );
+
+        if (/^Stop-Process\b/.test(line)) {
+            kills += 1;
+            steps.push({ kill: true });
+        }
     }
-    assert.ok(fallthrough, `${KILLER} has no fall-through return`);
-    return { guards, fallthrough };
+    // Exactly one. Two would mean a world can be killed down a path the cases
+    // below never walk; zero would mean test 1's exemption covers nothing.
+    assert.equal(kills, 1, `${KILLER} contains ${kills} Stop-Process calls; the sanctioned kill must be exactly one, reached only after every guard`);
+    return steps;
 }
 
-/** Walk the extracted sequence: the first matching guard decides. */
-const evaluate = ({ guards, fallthrough }, world) => {
-    for (const guard of guards) if (guard.test(world)) return guard.state;
-    return fallthrough;
+/**
+ * Walk the sequence: the first matching guard decides, and reaching the kill
+ * decides `killed`.
+ *
+ * `killed` here means REACHED THE KILL. What the helper reports afterwards
+ * ('killed' vs 'killed:survived') is an observation about the machine, not an
+ * attribution decision, and is deliberately outside this model -- no value of it
+ * can terminate a process that the guards would have spared.
+ */
+const evaluate = (steps, world) => {
+    for (const step of steps) {
+        if (step.postKill) continue;
+        if (step.kill) return "killed";
+        if (step.test(world)) return step.state;
+    }
+    return "fell-through-without-killing";
 };
 
 const OURS = 1_700_000_000_000;
 const THEIRS = 1_600_000_000_000;
-const ok = { processId: 4242, exists: true, name: "POWERPNT", handleReadable: true, startReadable: true, actualStart: OURS, expectedStart: OURS };
+const ok = { processId: 4242, exists: true, name: "POWERPNT", handleReadable: true, nameReadable: true, startReadable: true, actualStart: OURS, expectedStart: OURS };
 
 // Every world names the result it must produce. "Handled somehow" is not the
 // property: a helper that declined EVERY case would satisfy a looser test while
@@ -293,6 +377,12 @@ const CASES = [
     ["B: pid already gone -- sound, and not a decline", { ...ok, exists: false }, "gone"],
     ["C: handle cannot be pinned", { ...ok, handleReadable: false }, "declined:handle"],
     ["D: pid recycled onto something that is not PowerPoint", { ...ok, name: "notepad" }, "declined:name"],
+    // F2 is why the read is guarded at all. ProcessName on a Process whose
+    // process has exited can throw, and this helper is called from a finally in
+    // both of its callers -- so an uncaught throw skips a CloseDesktop and, in
+    // probe-second-process.ps1, the leak census itself. Declining is the only
+    // outcome that leaves the caller's cleanup running.
+    ["F2: name unreadable -- must decline, not throw out of the caller's finally", { ...ok, nameReadable: false }, "declined:unreadable-name"],
     ["E: launcher never recorded a StartTime", { ...ok, expectedStart: null }, "declined:unverified"],
     ["F: StartTime unreadable", { ...ok, startReadable: false }, "declined:unreadable"],
     ["G: pid recycled onto another POWERPNT", { ...ok, actualStart: THEIRS }, "declined:start"],
@@ -306,6 +396,19 @@ const CASES = [
     // StartTime null when the launch-time read fails, and that process may well
     // have exited by teardown.
     ["I: pid absent AND no recorded StartTime", { ...ok, exists: false, expectedStart: null }, "gone"],
+    // J is the mirror of I for the handle pin. The pin must sit ABOVE the
+    // identity reads, so that a pid recycled between the reads cannot be killed
+    // under a name checked on its predecessor. Moving the pin below the name
+    // check leaves this world reporting a name verdict for a process whose
+    // handle was never held.
+    ["J: handle unpinnable AND recycled onto another name", { ...ok, handleReadable: false, name: "notepad" }, "declined:handle"],
+    // K sits in the intersection that pins the kill's POSITION. Every other
+    // world here would still be decided correctly by a helper that killed on its
+    // first line, because the decline it expects is reachable below the kill as
+    // dead code -- the walk simply never gets there. K is a world where the
+    // guards are unanimous and the correct answer is a decline, so a hoisted
+    // kill turns it into 'killed' and nothing else has to change.
+    ["K: nothing about this pid verifies -- a hoisted kill would take it", { ...ok, name: "notepad", expectedStart: null, startReadable: false }, "declined:name"],
     // H is the one that fails if the helper is made to refuse everything.
     ["H: our own process, fully verified", ok, "killed"],
 ];
@@ -314,22 +417,17 @@ test(`${KILLER} kills a verified pid and declines every other world`, async () =
     const source = blankComments(await readFile(path.join(REPO, KILLER_FILE), "utf8"));
     const body = functionBody(source, KILLER);
     assert.ok(body, `${KILLER} not found in ${KILLER_FILE} -- re-point or remove this test`);
-    const sequence = guardsOf(body.text);
+    const steps = decisionsOf(body.text);
 
-    // Deliberately far below the real guard count: this only exists so a
+    // Deliberately far below the real step count: this only exists so a
     // degenerate parse reports itself instead of surfacing as confusing case
     // failures. It must NOT sit at or near the actual number, or the test
     // degenerates into counting lines and would pass any rewrite that kept the
     // count while inverting a verdict.
-    assert.ok(sequence.guards.length >= 3, `only ${sequence.guards.length} guards recognised in ${KILLER}; a degenerate parse must not pass`);
+    assert.ok(steps.length >= 4, `only ${steps.length} decision steps recognised in ${KILLER}; a degenerate parse must not pass`);
 
-    // Pins the ORDER, not just the presence: E's `declined:unverified` must sit
-    // AFTER B's absence check. Hoisted above it, an absent pid -- which is sound
-    // without any recorded StartTime, because no process holds it -- would come
-    // back as a decline, and the caller would print a leak warning about a
-    // process that is already gone.
     const failures = CASES.flatMap(([label, world, expected]) => {
-        const actual = evaluate(sequence, world);
+        const actual = evaluate(steps, world);
         return actual === expected ? [] : [`${label}: expected '${expected}', got '${actual}'`];
     });
     assert.deepEqual(failures, [], `${failures.length} of ${CASES.length} worlds decided wrongly\n  ${failures.join("\n  ")}`);

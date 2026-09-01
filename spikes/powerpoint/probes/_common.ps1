@@ -87,13 +87,39 @@ function Close-PowerPointInstance($ctx) {
 #
 # Takes a pid that came back from CreateProcess plus the StartTime recorded for
 # it at launch, and refuses unless the live process still matches both. Mirrors
-# Stop-VerifiedWord in src/word/word-host.ps1.
+# Stop-VerifiedWord in spikes/isolation/probes/_common.ps1, step for step and
+# state for state.
+#
+# NOT a mirror of Stop-VerifiedWord in
+# .github/extensions/office-canvas/src/word/word-host.ps1, which this comment
+# used to claim. That one terminates with $p.Kill() inside a try/catch -- which
+# THROWS where Stop-Process -ErrorAction SilentlyContinue swallows -- and
+# returns 'gone' for a pid that is not Word where both spikes helpers decline.
+# Whether the shipped host should converge is a question about shipped
+# behaviour with its own callers, and is filed separately.
 #
 # Order matters. The handle is pinned FIRST, because everything after it is a
 # read of a process that could otherwise exit and have its pid reused
 # underneath the checks. Absence is distinguished from non-verification: a pid
 # that is gone is 'gone' and fine, whereas a pid we cannot verify is declined
 # and said out loud.
+#
+# The ProcessName read is GUARDED rather than bare. ProcessName on a Process
+# object whose process has exited can throw, and an uncaught throw here does not
+# decline -- it propagates into the caller's finally and skips everything below
+# the call. Both callers are exactly that shape: Stop-IsolatedPowerPoint
+# (spikes/powerpoint/probes/_isolated.ps1) runs from
+# spikes/powerpoint/probes/probe-cross-instance-lock.ps1's finally and closes a
+# desktop after this call, and spikes/powerpoint/probes/probe-second-process.ps1
+# calls this from a finally that then releases the RCW, closes a desktop and
+# prints the leak census. And this helper is reached precisely where the throw
+# is likeliest -- _isolated.ps1 calls it on a process it has just spent 8
+# seconds expecting to exit. The isolation tree has already paid for this once,
+# as a leaked desktop handle.
+#
+# 'killed' vs 'killed:survived': both mean every guard passed and the terminate
+# was issued. They differ only in what was then OBSERVED. Only 'gone' and
+# 'killed' mean no PowerPoint is left behind.
 #
 # HYPOTHESIS, not a measured fact: the PROCESS_INFORMATION.hProcess handle from
 # CreateProcess is never closed by these probes (no CloseHandle anywhere in
@@ -107,12 +133,19 @@ function Stop-VerifiedPpt([int]$ProcessId, $ExpectedStart) {
     $p = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
     if (-not $p) { return 'gone' }
     try { $null = $p.Handle } catch { return 'declined:handle' }
-    if ($p.ProcessName -ne 'POWERPNT') { return 'declined:name' }
+    try { $name = $p.ProcessName } catch { return 'declined:unreadable-name' }
+    if ($name -ne 'POWERPNT') { return 'declined:name' }
     if ($null -eq $ExpectedStart) { return 'declined:unverified' }
     try { $actual = $p.StartTime } catch { return 'declined:unreadable' }
     if ($actual -ne $ExpectedStart) { return 'declined:start' }
     Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
     Start-Sleep -Milliseconds 800   # the call returns before the process is gone
+    # Report the OBSERVED outcome, not the attempted one. Stop-Process here
+    # swallows its errors, so without this check 'killed' would be a claim about
+    # a call rather than about a process, and a caller that treats 'killed' as
+    # "reaped" would hide the leak. Both states mean the guards passed and the
+    # kill was issued; they differ only in what the machine did next.
+    if (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue) { return 'killed:survived' }
     return 'killed'
 }
 

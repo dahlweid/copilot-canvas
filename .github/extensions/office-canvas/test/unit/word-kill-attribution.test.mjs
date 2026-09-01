@@ -63,6 +63,37 @@
 //     the first of those (an unrecognised target is an offender) and test 2
 //     fails OPEN (an unrecognised source is untainted), which is the safe
 //     direction for each.
+//   * Test 2's taint is keyed on a VARIABLE NAME, per file, with no notion of
+//     rebinding, and the analysis is flow-insensitive: it does not know where in
+//     the file an assignment sits relative to a kill. So one tainted binding
+//     taints every `Stop-Process` consuming that NAME anywhere in that file,
+//     and the two bindings of a name are not distinguished. This over-reports
+//     SITES -- it can name a kill that is sound -- and never under-reports them,
+//     which is the direction a guard should err in. (Not to be confused with the
+//     census over-reporting PIDS, which is the defect itself and is what the
+//     failure message below is about.)
+//
+//     Measured on `ff31de9`, the pre-fix tree: this test names FOURTEEN sites
+//     where #136's partition has eleven. The three extra are the §C worker kills
+//     in `spikes/isolation/probes/probe-authoring.ps1`,
+//     `spikes/isolation/probes/probe-autocorrect.ps1` and
+//     `spikes/isolation/probes/probe-saveas-apartment.ps1`, which the partition
+//     classifies as sound and keeps. The cause is visible in the first of them
+//     on that tree: `$p` is bound from `Start-Process -PassThru`, used for a
+//     worker kill, and then REBOUND by `foreach ($p in $leaked)` over a census
+//     difference further down. Two sites confirm it from the other direction --
+//     `spikes/isolation/probes/probe-authoring-save.ps1` and
+//     `spikes/isolation/probes/probe-word-ownership.ps1` each pair a worker kill
+//     with a differenced sweep under DIFFERENT names, so neither collides and
+//     neither is flagged.
+//
+//     It is right on `main` today, but not because it tells the two bindings
+//     apart -- it cannot. It is right because the assignment that tainted the
+//     name was deleted. Anyone re-adding a differenced sweep to a file that
+//     holds a same-named worker kill will get two sites reported and one real,
+//     and should not have to re-derive that from the failure output. Making it
+//     flow-sensitive is deliberately NOT done: over-reporting is the safe
+//     direction, and the machinery would cost more than this paragraph.
 //   * It says nothing about `.Quit()`, `.Visible`, `.WindowState` or
 //     `DisplayAlerts`. Those write to an instance reached through our own RCW,
 //     not through a census, and the measurement above makes that instance ours.
