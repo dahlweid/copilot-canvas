@@ -9,9 +9,12 @@
 #       "something else changed it".
 #
 # ---------------------------------------------------------------------------
-# TEARDOWN. This probe ends only the Word instance it created, and it ends it
-# through the COM handle it holds rather than by pid -- it kills nothing. An
-# instance that turns out to predate the probe is released rather than quit.
+# TEARDOWN. This probe kills nothing. It ends the Word instance it is bound to
+# through the COM handle it holds rather than by pid, so it cannot reach a
+# process it never bound to, and an instance that turns out to predate the probe
+# is released rather than quit. The one residual case is an instance that could
+# not be attributed at all: that is still quit through its handle, because not
+# quitting is how a Word gets stranded -- see #114 for why that trade is made.
 #
 # It used to end its `finally` with an unfiltered
 # `Get-Process WINWORD | Stop-Process -Force`, which killed every Word on the
@@ -48,7 +51,7 @@ function Get-Token([string]$Path) {
 }
 
 $word = $null
-
+$d = $null             # the document this probe opens; closed in `finally`
 # --- ownership: attribute by window handle, never by differencing (#114) ----
 # `Add-Type` is hoisted here, outside the `try`, so its one-time ~800 ms compile
 # can never land between a warm-up and a stopwatch.
@@ -92,14 +95,21 @@ function Get-WordStartTime([int]$candidate) {
 # attribution and never overwritten, but it IS re-read and compared on every
 # poll: a pid recycled onto another process would otherwise be reported as our
 # Word surviving. Only a matching name AND start time is a survivor.
+#
+# The whole observation is wrapped, not just the StartTime read: a process can
+# exit between `Get-Process` returning and a property being fetched, which
+# throws rather than reporting absence. This runs inside `finally`, where an
+# escaping error would displace a real failure from the probe body.
 function Get-WordLiveness([int]$candidate, $expectedStart) {
-    $p = Get-Process -Id $candidate -ErrorAction SilentlyContinue
-    if ($null -eq $p) { return 'gone' }
-    if ($p.ProcessName -ne 'WINWORD') { return 'gone' }
-    $actual = try { $p.StartTime } catch { $null }
-    if ($null -eq $actual) { return 'unknown' }
-    if ($actual -ne $expectedStart) { return 'gone' }
-    return 'alive'
+    try {
+        $p = Get-Process -Id $candidate -ErrorAction SilentlyContinue
+        if ($null -eq $p) { return 'gone' }
+        if ($p.ProcessName -ne 'WINWORD') { return 'gone' }
+        $actual = $p.StartTime
+        if ($null -eq $actual) { return 'unknown' }
+        if ($actual -ne $expectedStart) { return 'gone' }
+        return 'alive'
+    } catch { return 'unknown' }
 }
 
 $ownedPid = $null      # created here and attributed -- the only pid ever polled
@@ -206,7 +216,7 @@ try {
     "  cost of computing a token: $($sw.ElapsedMilliseconds) ms"
 }
 finally {
-    # Teardown acts only on what this probe owns, and it kills nothing. `Quit`
+    # Teardown kills nothing, and acts through handles rather than pids. `Quit`
     # is addressed to the RCW we created, so it can only ever end the instance
     # we are bound to; a kill is addressed to a coordinate and can land on a
     # Word we never started. Destroy by handle is safe where destroy by
@@ -214,6 +224,19 @@ finally {
     #
     # Every step below is individually wrapped: an error escaping this block
     # would replace a real failure from the probe body.
+    #
+    # Close this probe's document first. On the attached path nothing else
+    # would: `Quit` is skipped there, so without this our temp document is left
+    # open in someone else's Word -- and the directory holding it is removed a
+    # few lines below, leaving them a document backed by a deleted file. Close(0)
+    # rather than Close(): argument-less Close prompts on a dirty document, and a
+    # prompt on a hidden instance is a hang. Already closed is the normal case
+    # and throws, so the result is ignored.
+    if ($d) {
+        try { $d.Close(0) } catch { }
+        try { [Runtime.InteropServices.Marshal]::ReleaseComObject($d) | Out-Null } catch { }
+    }
+
     if ($word) {
         if ($attachedPid) {
             "  pid $attachedPid predates this probe -- released, NOT quit."
@@ -252,8 +275,11 @@ finally {
         }
         else {
             $verdict = 1
-            "  *** our Word (pid $ownedPid) is STILL RUNNING after 90 s. Nothing is killed here."
-            "  *** End it by hand: Stop-Process -Id $ownedPid"
+            "  *** our Word (pid $ownedPid, started $ownedStart) is STILL RUNNING after 90 s."
+            "  *** Nothing is killed here, and no kill command is offered on purpose:"
+            "  *** a pid is a coordinate, and by the time anyone reads this it may"
+            "  *** belong to a different process. End it by hand only after confirming"
+            "  *** that pid $ownedPid is still a WINWORD started at $ownedStart."
         }
     }
     elseif ($word -and -not $attachedPid) {
