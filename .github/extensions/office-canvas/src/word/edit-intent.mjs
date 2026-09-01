@@ -288,17 +288,29 @@ export function validateIntent(input) {
  * table above and not to that switch described itself as its own bare name.
  * That was not a visibly broken string — nothing downstream could tell it from
  * a deliberate one — and it dropped the *address*, which for this string's two
- * consumers is the part carrying the information. A revert manifest naming the
- * operation and not the paragraph it was applied to would have been a recovery
- * path with the recovery taken out.
+ * consumers is the part carrying the information.
+ *
+ * Precisely: `revertToLatest` picks a snapshot by recency and restores its
+ * bytes, so it never reads this string and a lost address does not break the
+ * restore itself. What it breaks is the account of it. The description is
+ * written into the manifest and handed back by `revert_document` as the record
+ * of *what was undone*, so an operation describing itself as its bare name
+ * leaves the caller told that something happened and not to which paragraph.
  *
  * Which is why this throws instead of degrading: with no fallback left, an
  * operation carrying no prose never reaches a manifest at all. The message says
  * that and no more. Predicting the old behaviour here would be this repo's own
  * defect — an error naming a consequence the code has just made impossible.
+ *
+ * The lookup is `Object.hasOwn`-guarded for the reason `validateIntent`'s is:
+ * `OPERATIONS["__proto__"]` resolves to `Object.prototype`, so a plain
+ * member read would consult the prototype chain for a name the table does not
+ * contain. Measured, every such name throws here today — `Object.prototype`
+ * carries no `describe` — so this closes a latent path rather than a live one,
+ * and it costs one call to match the check ten lines up.
  */
 function describerFor(op) {
-    const describe = OPERATIONS[op]?.describe;
+    const describe = Object.hasOwn(OPERATIONS, op) ? OPERATIONS[op].describe : undefined;
     if (typeof describe !== "function") {
         throw new Error(
             `Operation ${JSON.stringify(op)} has no \`describe\` in OPERATIONS, so it is refused rather than ` +
@@ -314,6 +326,11 @@ function describerFor(op) {
 // operation added to the table with no prose of its own fails before the
 // extension loads, rather than at the moment a manifest is being written for
 // an edit that is about to happen.
+//
+// Deleting this line leaves every runtime test green -- they all reach
+// `describerFor` through `describeIntent`, which guards itself. It is pinned
+// instead by "an operation added to the table with no prose fails at import",
+// which loads a spliced copy of this module and asserts the import throws.
 for (const name of OPERATION_NAMES) describerFor(name);
 
 /** A short, human-readable description, used in snapshot manifests and logs. */

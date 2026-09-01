@@ -6,9 +6,10 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
     describeIntent,
@@ -440,7 +441,81 @@ test("set_heading_level is described by its value, not by its name alone", () =>
         describeIntent(validateIntent({ op: "set_heading_level", address: ADDRESS, headingLevel }));
 
     assert.match(describe(MIN_HEADING_LEVEL), /body text/);
-    assert.doesNotMatch(describe(MIN_HEADING_LEVEL), /heading/, "level 0 is body text, not a level 0 heading");
+    // The defect is the flattened branch emitting "a level 0 heading", so match
+    // that and not a bare /heading/, which would also reject legitimate wording
+    // like "remove the heading and make it body text" -- a test failing for a
+    // reason its name does not claim.
+    assert.doesNotMatch(describe(MIN_HEADING_LEVEL), /level 0 heading/, "level 0 is body text, not a level 0 heading");
     assert.match(describe(3), /a level 3 heading/);
     assert.doesNotMatch(describe(3), /body text/);
+});
+
+// --- The guard that runs at import ------------------------------------------
+
+/**
+ * Imports a copy of `edit-intent.mjs` with one extra operation spliced into
+ * `OPERATIONS`.
+ *
+ * The module imports nothing, so a copy loads standalone from a temp directory
+ * and the real file is never touched. The URL is uniquified because ESM caches
+ * a module per resolved URL and both cases here load one.
+ */
+const importWithExtraOperation = async (entrySource) => {
+    const source = await readFile(path.join(here, "..", "..", "src", "word", "edit-intent.mjs"), "utf8");
+    const spliced = source.replace("export const OPERATIONS = {", `export const OPERATIONS = {\n${entrySource}`);
+    assert.notEqual(spliced, source, "the OPERATIONS table declaration moved; this test spliced nothing in");
+
+    const dir = await mkdtemp(path.join(os.tmpdir(), "edit-intent-guard-"));
+    try {
+        const file = path.join(dir, "edit-intent.mjs");
+        await writeFile(file, spliced, "utf8");
+        return await import(pathToFileURL(file).href);
+    } finally {
+        await rm(dir, { recursive: true, force: true });
+    }
+};
+
+const WITHOUT_DESCRIBE = `    duplicate_paragraph: {
+        text: "rejected",
+        headingLevel: "rejected",
+        help: "copy it directly below itself",
+    },`;
+
+const WITH_DESCRIBE = `    duplicate_paragraph: {
+        text: "rejected",
+        headingLevel: "rejected",
+        help: "copy it directly below itself",
+        describe: ({ address }) => \`duplicate \${address}\`,
+    },`;
+
+test("an operation added to the table with no prose fails at import", async () => {
+    // The experiment from #131, automated: add a sixth operation and touch
+    // nothing else. Before the fix this produced the bare string
+    // "duplicate_paragraph" and the suite stayed green.
+    //
+    // This is the only check on the import-time loop. The runtime tests above
+    // all reach `describerFor` through `describeIntent`, so deleting that loop
+    // leaves every one of them passing -- which would make the loop exactly the
+    // silent, unpinned line this PR exists to remove.
+    await assert.rejects(
+        () => importWithExtraOperation(WITHOUT_DESCRIBE),
+        /duplicate_paragraph[\s\S]*refused rather than described/,
+        "an operation with no `describe` was allowed to load",
+    );
+});
+
+test("the import guard passes an operation that does carry prose", async () => {
+    // The control, and it is what makes the test above falsifiable. `rejects`
+    // is satisfied by *any* rejection, so a splice that produced a syntax error
+    // -- or a temp copy that could not resolve -- would pass it while proving
+    // nothing. This asserts the same splice loads when the only difference is
+    // the field under test, so the rejection above is attributable to that
+    // field and not to the harness.
+    const mutated = await importWithExtraOperation(WITH_DESCRIBE);
+    assert.ok(mutated.OPERATION_NAMES.includes("duplicate_paragraph"));
+    assert.equal(
+        mutated.describeIntent({ op: "duplicate_paragraph", address: ADDRESS }),
+        `duplicate ${ADDRESS}`,
+        "the spliced operation did not describe itself through the table",
+    );
 });
