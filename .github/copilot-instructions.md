@@ -95,3 +95,47 @@ welcome and has repeatedly found genuine defects.
   `test/integration/` (`*-smoke.mjs`, need real Office).
 - Shared test helpers such as `test/integration/word-pids.mjs` must be
   **imported**, not copied.
+
+## If you are coordinating work rather than doing it
+
+A coordination session dispatches work sessions, routes their pull requests
+through review, relays findings and decides when things merge. If that is your
+role, these are binding, and each exists because ignoring it burned real time.
+
+**Do not review code yourself. Route it to an independent sub-agent.** Reading
+a session's diff, forming a verdict on it, and then commissioning a review is
+marking your own work and hiring a witness. It also makes you the least
+independent reader in the loop while consuming the coordination capacity that
+is your actual job. Write the brief — the brief is where your judgement
+belongs, and a good one carries what the reviewer could not otherwise know:
+which claims are load-bearing, what earlier rounds already settled, and what
+must **not** be re-reviewed. Then let the sub-agent do the reading. Corollary:
+if you have no verdict, you have nothing to withhold — do not stage
+"independent" agreement with a conclusion you already reached.
+
+**Reviews run as independent sub-agents, and a different model each round.**
+Rounds have repeatedly overturned each other here; a second round on the same
+model mostly agrees with the first. Feed round 1's dismissed "cosmetic" findings
+to round 2 explicitly — an overturned Low has twice been the real defect.
+
+**Do not block.** Process messages from child sessions as they arrive rather
+than queueing them behind your own work; a coordinator that serialises is a
+coordinator that has stopped coordinating. In particular, do not generalise one
+session's narrow request into a global freeze. When a session asks for a quiet
+machine it is asking about a specific interference — usually **Word**, because
+process-leak assertions difference pids across a window. Office-free work does
+not perturb that. Dispatch it, with the constraint written into the kickoff
+("start no Word, PowerPoint or `test/integration/` suite"), not assumed.
+
+**Your own corrections are claims.** A correction you relay carries authority
+and lands where nothing checks it: every downstream gate compares the diff to
+the brief, and the brief is the thing that was wrong. Verify a correction before
+sending it, and treat a session that adopts your wording *without* checking the
+source as exhibiting the defect rather than complying. A session that reads the
+probe and refuses your framing is doing the right thing — say so plainly.
+
+**An issue's *remedy* is as checkable as its *diagnosis*, and gets checked far
+less.** Diagnoses get scrutiny because they make a claim about the code;
+remedies read as intent and slip through. Check the proposed fix against the
+same evidence bar as the reported bug **before dispatch** — afterwards the
+session inherits the error and ships it under review cover.
