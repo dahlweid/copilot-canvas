@@ -3,3 +3,9 @@
 # folder, which is the source of truth (C3).
 dist/
 dist-check/
+
+# probe-suite-contention.mjs run logs. Each run's per-run durations and
+# timestamps, kept so a figure can be re-checked against what else was on the
+# machine; the numbers that matter get quoted into CONTEXT.md, and the raw file
+# is a local measurement artefact rather than a source of truth.
+probe-suite-contention.*.json

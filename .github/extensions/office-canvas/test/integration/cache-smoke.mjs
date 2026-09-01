@@ -11,6 +11,7 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { RenderCache, DocumentError, normalizeDocPath } from "../../src/render-cache.mjs";
 import { assertNoLeakedWord, ownedWordLedger, wordPids } from "./word-pids.mjs";
+import { acquireWordSuiteLock } from "./word-suite-lock.mjs";
 
 const execFileAsync = promisify(execFile);
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -29,6 +30,10 @@ async function check(name, fn) {
 
 const workRoot = await mkdtemp(path.join(tmpdir(), "word-cache-test-"));
 const fixture = path.join(workRoot, "doc.docx");
+// Before the census, never after: every pid assertion below diffs against it,
+// and a neighbour's Word starting in between lands inside the window. See
+// word-suite-lock.mjs. Released when this process exits.
+await acquireWordSuiteLock("cache-smoke");
 const pidsBefore = await wordPids();
 
 process.stderr.write("generating fixture...\n");

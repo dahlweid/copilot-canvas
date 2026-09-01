@@ -24,6 +24,7 @@ import { fileURLToPath } from "node:url";
 import { RenderCache } from "../../src/render-cache.mjs";
 import { fileRevisionToken, tokensMatch } from "../../src/revision-token.mjs";
 import { assertNoLeakedWord, newWordPids, ownedWordLedger, wordPids } from "./word-pids.mjs";
+import { acquireWordSuiteLock } from "./word-suite-lock.mjs";
 
 // Hold `target` open from a second process with a given FileShare mode, and do
 // not return until the handle is provably taken.
@@ -123,6 +124,10 @@ const makeFixture = (out, { chapters = 2, duplicates = true } = {}) =>
 
 const workRoot = await mkdtemp(path.join(tmpdir(), "word-read-test-"));
 const fixture = path.join(workRoot, "docs", "structured.docx");
+// Before the census, never after: every pid assertion below diffs against it,
+// and a neighbour's Word starting in between lands inside the window. See
+// word-suite-lock.mjs. Released when this process exits.
+await acquireWordSuiteLock("read-smoke");
 const pidsBefore = await wordPids();
 
 process.stderr.write("generating fixture...\n");
