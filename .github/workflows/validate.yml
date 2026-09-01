@@ -47,19 +47,54 @@ jobs:
       # dot-directory `.github`. A green run that tested nothing is the one CI
       # result nobody looks twice at.
       #
-      # So there is one globber and one check: if the shell finds no files, fail
-      # before Node runs. Note that a count check on Node's summary would *not*
-      # add anything -- measured, a file containing no `test()` calls is still
-      # reported as `tests 1`, so "collected zero tests" is not a state reachable
-      # once the file list is known to be non-empty.
+      # So there is one globber and two checks, both on the file list, because
+      # the file list is the only place a check can live. Node's summary is no
+      # help for either case, but for two different reasons:
+      #
+      #   * everything lost -- measured, a file containing no `test()` calls is
+      #     still reported as `tests 1`, so "collected zero tests" is not a state
+      #     reachable once the file list is known to be non-empty;
+      #   * *some* files lost -- the summary would report a smaller but entirely
+      #     plausible number, and there is no expected count to compare it
+      #     against. The `tests 1` quirk is not what defeats this one; the
+      #     absence of a baseline is.
+      #
+      # Hence the second check. `*.test.mjs` does not descend, so a test added
+      # under test/unit/<subdir>/ would never be handed to Node while the count
+      # stayed plausible. `find` only counts; the shell still expands the list
+      # Node receives, so the property above is unchanged. A mismatch is a hard
+      # error rather than a silent widening: absorbing the subdirectory would
+      # make the layout change invisible in the other direction, whereas failing
+      # puts it in front of whoever moved the file.
+      #
+      # Order matters. `find` runs *after* the empty check: a missing directory
+      # makes it exit non-zero, and under `set -e` that would abort the step
+      # before the annotation naming that exact cause was ever printed
+      # (measured). `-printf '.' | wc -c` counts files; `wc -l` would count
+      # lines, which a newline in a filename breaks.
+      #
+      # The second message names no cause, because the check establishes none:
+      # it compares two counts. There are at least two routes to a disagreement,
+      # both measured -- a file in a subdirectory, and a `.dot.test.mjs` sitting
+      # *flat*, which `find -name '*.test.mjs'` matches and the shell's `*` does
+      # not without `dotglob` (glob 2, find 3, zero subdirectories). Saying "in a
+      # subdirectory" would send a reader hunting one that need not exist. For
+      # the same reason it reports both counts rather than their difference:
+      # subtracting presumes a direction the check has not established.
       - name: Run Office-free unit tests
         run: |
           set -euo pipefail
           shopt -s nullglob
-          files=(.github/extensions/office-canvas/test/unit/*.test.mjs)
+          dir=.github/extensions/office-canvas/test/unit
+          files=("$dir"/*.test.mjs)
           echo "unit test files: ${#files[@]}"
           if [ "${#files[@]}" -eq 0 ]; then
             echo "::error::no unit test files found; the path moved and nothing would have run"
+            exit 1
+          fi
+          all=$(find "$dir" -name '*.test.mjs' -printf '.' | wc -c)
+          if [ "${#files[@]}" -ne "$all" ]; then
+            echo "::error::flat glob and recursive count disagree: the glob hands Node ${#files[@]} file(s), find matches $all under $dir. The check compares counts and does not establish why they differ; a file in a subdirectory and a leading-dot filename are both routes the glob misses and find does not."
             exit 1
           fi
           node --test "${files[@]}"
