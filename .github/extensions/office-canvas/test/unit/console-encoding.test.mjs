@@ -9,13 +9,43 @@
 // PR #46. The identical shape was then found still living in
 // `spikes/live-word/live-word.ps1` (#50): outbound set, inbound never.
 //
-// `word-host-encoding.test.mjs` is the depth check on the one host -- ordering,
-// citation, comment-blanking. This is the breadth check, and it exists because
-// the depth check could not see #50 at all: a per-file assertion covers exactly
-// the file it names, and the defect's whole history is that it reappears in the
-// next file nobody named. The rule is enforced against whatever is in the tree,
-// so a host added tomorrow is covered on the day it lands rather than on the day
+// There was a second file, `word-host-encoding.test.mjs`, asserting the same
+// three properties of `word-host.ps1` alone. It is folded in here (#104): with
+// that host pinned into `MUST_BE_COVERED` below, every assertion it made is one
+// this file already makes over a set that contains it. Only its citation test
+// was unique, and it is the last test in this file.
+//
+// What the fold does not fold away is the reason breadth won. A per-file
+// assertion covers exactly the file it names, and this defect's whole history is
+// that it reappears in the next file nobody named -- the depth check could not
+// see #50 at all. The rule is enforced against whatever is in the tree, so a
+// host added tomorrow is covered on the day it lands rather than on the day
 // someone remembers to extend a list.
+//
+// Three things the deleted file recorded, which are the argument for this file
+// existing at all and would otherwise have gone with it:
+//
+// The corruption **compounds**, which is why it is not merely cosmetic. The read
+// direction stays faithful, so an agent gets the on-disk mojibake back exactly,
+// and sending that in re-decodes the previous result's UTF-8 bytes as OEM a
+// second time (measured: `Gr├╝nchen` in, `GrÔö£ÔòØnchen` out). One transform
+// applied to both sides would cancel; this expands, so a non-ASCII paragraph
+// becomes permanently *uneditable* -- `expectedText` can never equal what is
+// stored, for any number of retries.
+//
+// It survived two merged layers not because anything hid it -- a faithful read
+// makes it visible end to end on first look -- but because every fixture in the
+// repo was ASCII, including the line in `make-fixture.ps1` labelled "Umlaut
+// check:" that contained no umlaut.
+//
+// A source assertion is not merely the half that runs without Word. It is the
+// only half that cannot be silenced by the machine it runs on. The integration
+// checks can see this defect only where the OEM codepage differs from UTF-8 --
+// measured here as 850, with `chcp`. Configure a host for UTF-8 system-wide and
+// an unset `InputEncoding` defaults to UTF-8: nothing is corrupted, and those
+// checks go green with the fix reverted, reporting a passing suite for an
+// environment that could not produce the input. This file has no such blind
+// spot, because it never decodes anything.
 //
 // Probe code is in scope deliberately. This repo's evidence fails by returning a
 // plausible wrong answer rather than by crashing, so a probe that mangles its
@@ -30,9 +60,20 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { assignsUtf8, blankComments, READS_STDIN, USES_CONSOLE, WRITES_CONSOLE } from "./ps-encoding-rule.mjs";
 import { REPO, gitAvailable, trackedFiles } from "./tracked-files.mjs";
+
+// The extension folder, resolved from this file rather than from `REPO`.
+//
+// `REPO` is five levels up and only means anything in a checkout. An installed
+// extension folder is the extension root, so five levels up from `test/unit/`
+// there lands outside the install entirely. Everything in this file that
+// enumerates goes through `REPO` and skips without git; the one test that names
+// a single shipped file goes through this instead, and so keeps working.
+const EXTENSION = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+const SHIPPED_HOST = path.join(EXTENSION, "src", "word", "word-host.ps1");
 
 // The one script allowed to read stdin without pinning the encoding, because
 // varying that assignment across arms is the measurement it performs. The test
@@ -83,6 +124,23 @@ test("the enumeration finds the scripts it is supposed to be checking", async (t
                 `moved and this guard is now sweeping a tree that does not contain it.`,
         );
     }
+
+    // `SHIPPED_HOST` and `MUST_BE_COVERED[0]` are two records of one path,
+    // written against different roots because they answer to different
+    // conditions -- one has to survive an install, the other has to be
+    // comparable against `git ls-files` output. Two records of one quantity are
+    // free to disagree, which is the failure `tracked-files.mjs` was extracted
+    // to stop, so they are tied together here rather than left to drift.
+    //
+    // Here and not at module scope: this equality is path arithmetic through
+    // `REPO`, and `REPO` is meaningless in an installed folder. Asserting it
+    // beside the constant would redden the one test that is supposed to run
+    // there. This test already only runs where `REPO` means something.
+    assert.equal(
+        path.resolve(REPO, MUST_BE_COVERED[0]),
+        SHIPPED_HOST,
+        "the repo-relative pin and the extension-relative one name different files; one of them moved",
+    );
 });
 
 test("every stdin-reading .ps1 decodes its stdin as UTF-8", async (t) => {
@@ -208,5 +266,49 @@ test("the probe that varies the encoding is still present", async (t) => {
     assert.ok(
         files.includes(VARIES_THE_ENCODING),
         `${VARIES_THE_ENCODING} is exempt from the rule above but is not in the tree; the exemption is stale`,
+    );
+});
+
+// Moved here from `word-host-encoding.test.mjs` when that file was folded in
+// (#104). It is the one assertion of that file's four which this one did not
+// already make over a set containing `word-host.ps1`.
+//
+// **Why this test names one file while its three neighbours sweep.** The
+// encoding *assignment* is swept because every stdin-reading script must make
+// it, and the defect's history is that it reappears in whichever file nobody
+// named. The *citation* is asserted on the shipped host alone, because that is
+// the file this rule travels with into an install, and the only one a reader
+// without a checkout can still find.
+//
+// That is not a smaller ambition, it is the reason this test is here at all.
+// `spikes/live-word/live-word.ps1` -- the other entry in `MUST_BE_COVERED` --
+// carries the same citation today, so sweeping both would pass. But `spikes/`
+// is outside the extension folder and is excluded from the artefact by
+// `tools/package-extension.mjs`, so a swept version could not resolve against
+// `EXTENSION`; it would have to go through `REPO` and back behind
+// `gitAvailable()` with its neighbours. Every other test in this file is
+// already there. This one is the whole of what the file still asserts in an
+// installed folder, and broadening it would take that to nothing.
+//
+// So: not an oversight, and not an invitation to narrow the neighbours to
+// match. Extending the citation rule to `live-word.ps1` is a real gap, it is
+// pre-existing rather than introduced here, and it is filed separately.
+test("the probe backing the encoding claim is cited where the encodings are set", async () => {
+    // This repo's rule is that a claim about platform behaviour is backed by a
+    // probe that was actually run. The citation is what makes the next reader
+    // able to re-run it rather than re-derive it, and `tools/check-citations.mjs`
+    // is what stops the path going stale -- but only for citations that exist.
+    // That it exists at all is what this asserts.
+    const rawSource = await readFile(SHIPPED_HOST, "utf8");
+
+    // Against `rawSource`, not the blanked copy: the citation *is* a comment,
+    // and the comment-blanking the tests above rely on would erase the thing
+    // being asserted. The offset is still taken from the blanked copy, so a `#`
+    // inside a comment cannot move the boundary.
+    const preamble = rawSource.slice(0, blankComments(rawSource).search(USES_CONSOLE));
+    assert.match(
+        preamble,
+        /spikes\/isolation\/probes\/probe-console-input-encoding\.mjs/,
+        "the encoding preamble in src/word/word-host.ps1 must cite spikes/isolation/probes/probe-console-input-encoding.mjs, the probe that measured it",
     );
 });
