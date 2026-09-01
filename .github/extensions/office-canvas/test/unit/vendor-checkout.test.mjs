@@ -37,9 +37,10 @@ const execFileAsync = promisify(execFile);
 // A general `git` runner is still needed here: `tracked-files.mjs` exports
 // `trackedFiles` and `gitAvailable`, not a way to run `check-attr`, `ls-files`
 // or `cat-file`. The `maxBuffer` is headroom, not a measured requirement --
-// `check-attr` over the seven vendored files answers in 553 bytes against a
-// 1 MiB default -- and matches what `trackedFiles` already runs under, so the
-// two agree rather than differing for no stated reason.
+// `check-attr` over the seven vendored files answers in 554 bytes, trailing
+// newline included, against a 1 MiB default -- and matches what `trackedFiles`
+// already runs under, so the two agree rather than differing for no stated
+// reason.
 async function git(...args) {
     const { stdout } = await execFileAsync("git", args, { cwd: REPO, maxBuffer: 8 * 1024 * 1024 });
     return stdout;
