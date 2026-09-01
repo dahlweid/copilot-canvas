@@ -105,6 +105,14 @@ function Get-WordLiveness([int]$candidate, $expectedStart) {
         $p = Get-Process -Id $candidate -ErrorAction SilentlyContinue
         if ($null -eq $p) { return 'gone' }
         if ($p.ProcessName -ne 'WINWORD') { return 'gone' }
+        # No recorded start time means identity cannot be tested at all. Falling
+        # through would compare a real DateTime against $null, which is -ne, and
+        # so report a RUNNING Word as 'gone' -- a clean teardown nobody observed.
+        # Note the asymmetry this preserves: absence, checked above, is sound
+        # without a start time, because no process holds the pid. Presence is
+        # not, because the pid may have been recycled. Only the sound half is
+        # allowed to conclude.
+        if ($null -eq $expectedStart) { return 'unknown' }
         $actual = $p.StartTime
         if ($null -eq $actual) { return 'unknown' }
         if ($actual -ne $expectedStart) { return 'gone' }
@@ -144,6 +152,9 @@ try {
         $ownedPid = $attributed
         $ownedStart = Get-WordStartTime $ownedPid
         "  ownership: this probe created pid $ownedPid."
+        if ($null -eq $ownedStart) {
+            "  ownership: its start time could not be read, so its exit can be confirmed only by the pid going absent."
+        }
     }
 
     $d.Content.InsertAfter("") | Out-Null            # no-op to warm the object model
@@ -261,8 +272,12 @@ finally {
         # exit on its own (test/integration/word-pids.mjs:130-137). Polling
         # makes the budget free on success.
         $deadline = (Get-Date).AddSeconds(90)
+        # Poll until the pid is absent, not merely until it is identified. An
+        # 'unknown' keeps watching rather than concluding: it may still resolve
+        # to a sound 'gone', and a transient failure to read a start time no
+        # longer ends the observation early. The deadline still bounds it.
         $state = Get-WordLiveness $ownedPid $ownedStart
-        while ($state -eq 'alive' -and (Get-Date) -lt $deadline) {
+        while ($state -ne 'gone' -and (Get-Date) -lt $deadline) {
             Start-Sleep -Milliseconds 250
             $state = Get-WordLiveness $ownedPid $ownedStart
         }
