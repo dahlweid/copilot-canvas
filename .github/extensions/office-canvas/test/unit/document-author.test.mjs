@@ -389,41 +389,45 @@ test("a document that cannot be read back is still reported as created", async (
     });
 });
 
-test("a save that hangs is bounded and surfaces as a typed word_timeout, not silence", async () => {
+test("a save that hangs surfaces as a typed word_timeout, on a budget the caller spends down", async () => {
     // The failure #96 is about: `SaveAs2` is an unbounded COM call, the class
     // this repo singles out as where a call "hangs indefinitely rather than
     // failing" (Documents.Open, Quit). If the save wedges, the user must get a
     // typed error they can act on -- never a hang and never a create the agent
     // is tempted to retry into an overwrite.
     //
-    // The bound is `document-author.mjs` handing the host a finite `timeoutMs`
-    // (`remaining(...)`), which `WordHost.#send` turns into a `setTimeout` that
-    // rejects with `word_timeout` and tears the host down. This test injects a
-    // host that rejects `create` exactly as `#send` does on that timer, and
-    // asserts both halves of the guarantee.
+    // This is the author's half of the guarantee, and it is deliberately narrow
+    // about what it proves. `DocumentAuthor` cannot bound anything itself; the
+    // timer that actually stops a hang lives in `WordHost.#send`
+    // (word-host-timeout.test.mjs covers it). What the author owns is *spending
+    // one wall clock down across the operation* -- it hands the host
+    // `remaining(...)`, a value bounded by `CREATE_BUDGET_MS` and shrinking as
+    // the create proceeds -- and *not reshaping* the host's `word_timeout` on
+    // the way back out.
     //
-    // It can fail for the reason its name claims:
-    //   - Delete `timeoutMs: remaining("the authoring itself")` at
-    //     document-author.mjs (so the host gets `undefined` and `#send` would run
-    //     unbounded): the first assertion goes red -- no finite budget is handed
-    //     down. Measured with that line removed: this test fails, "the save was
-    //     handed no finite timeout".
-    //   - Have the caller swallow or re-wrap the host's `word_timeout` into a
-    //     generic failure: the second assertion goes red.
+    // What deleting `timeoutMs: remaining("the authoring itself")` at
+    // document-author.mjs actually costs, stated straight because the mutant is
+    // the evidence: the host's `create` defaults `timeoutMs` to
+    // `STARTUP_TIMEOUT_MS` (180 s), so the save does NOT run unbounded -- it
+    // still surfaces as `word_timeout`. What is lost is the *shared* clock: the
+    // bound stops being spent across authoring and read-back and reverts to a
+    // flat per-call default, so a create can outlive the budget its own error
+    // text quotes. This test sees that as the handed value going from a finite
+    // number `<= CREATE_BUDGET_MS` to `undefined`.
     await withTemp(async (dir) => {
         const doc = path.join(dir, "report.docx");
 
-        let handedTimeout;
+        let handedTimeout = "unset";
         const author = new DocumentAuthor({
             reader: stubReader(doc),
             host: {
-                create: async ({ timeoutMs }) => {
+                create: async ({ timeoutMs } = {}) => {
                     handedTimeout = timeoutMs;
-                    // What `WordHost.#send` produces when the SaveAs2 command
+                    // What `WordHost.#send` produces when the `create` command
                     // does not answer within its budget: a typed rejection, the
                     // child already killed. No file is written -- a hung save
                     // wrote nothing.
-                    throw Object.assign(new Error(`Word did not respond to 'create' within ${Math.round(timeoutMs / 1000)}s.`), {
+                    throw Object.assign(new Error("Word did not respond to 'create' within 300s."), {
                         code: "word_timeout",
                     });
                 },
@@ -434,8 +438,8 @@ test("a save that hangs is bounded and surfaces as a typed word_timeout, not sil
         assert.ok(err, "a hung save resolved instead of failing");
 
         assert.ok(
-            Number.isFinite(handedTimeout) && handedTimeout > 0,
-            `the save was handed no finite timeout (got ${handedTimeout}); SaveAs2 would run unbounded`,
+            Number.isFinite(handedTimeout) && handedTimeout > 0 && handedTimeout <= 300_000,
+            `the save was not handed a spent-down budget (got ${handedTimeout}); the shared wall clock was lost`,
         );
 
         assert.equal(err.code, "word_timeout", "a hung save reached the caller as something other than word_timeout");

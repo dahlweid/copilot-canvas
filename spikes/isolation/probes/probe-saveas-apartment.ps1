@@ -9,7 +9,7 @@
 # `Selection.TypeText` all returned in milliseconds in the same job.
 #
 # `word-host.ps1`'s `create_document` path now calls
-# `$doc.SaveAs2($path, $WD_FORMAT_XML_DOCUMENT)` (word-host.ps1:1991); the edit
+# `$doc.SaveAs2($path, $WD_FORMAT_XML_DOCUMENT)` (in `Cmd-Create`); the edit
 # path calls `Save()` on a document it opened. So the shipping code does exercise
 # `SaveAs2`, and the hang seen under `Start-Job` had to be explained before that
 # authoring code could be trusted.

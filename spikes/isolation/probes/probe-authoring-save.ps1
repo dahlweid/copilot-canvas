@@ -6,9 +6,10 @@
 # can be written to disk with `Document.SaveAs2`, and what style identity comes
 # back when the saved file is reopened.
 #
-# This matters because nothing in the shipping host has ever authored a document.
-# `word-host.ps1` only ever calls `Save()` on a document it opened, so `SaveAs2`
-# was entirely unmeasured ground before `create_document`.
+# This matters because when this probe was written nothing in the shipping host
+# authored a document. `word-host.ps1`'s `create_document` path now calls
+# `$doc.SaveAs2($path, $WD_FORMAT_XML_DOCUMENT)` (Cmd-Create); before that,
+# `SaveAs2` was entirely unmeasured ground.
 #
 # A retraction this probe exists to correct
 # -----------------------------------------
