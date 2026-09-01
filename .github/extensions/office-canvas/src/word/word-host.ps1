@@ -257,6 +257,11 @@ function Get-AttributedWordPid($app) {
 # hidden Word that nothing will ever clean up -- and worse, a later CreateObject
 # can attach to that orphan, at which point the census below sees a pid that
 # predates us and (correctly, but unhelpfully) refuses to quit it.
+# Measured once, while investigating #51: an orphan was still alive 45 s after
+# its host was killed, no document open, no client attached. One observation on
+# one machine -- read it as that, not as "a Word never self-exits".
+# The reap itself is covered both ways by host-smoke.mjs: it declines an entry
+# whose identity it cannot prove, and it ends one it can.
 
 function Get-PidFilePath {
     if ([string]::IsNullOrWhiteSpace($PidDir)) { return $null }
@@ -370,6 +375,16 @@ function Clear-OrphanedWord {
             }
             if ($wordPid -gt 0) {
                 $outcome = Stop-VerifiedWord $wordPid $expectedStart
+                # A kill is reported as well as a refusal, because 'killed' and
+                # 'gone' are otherwise indistinguishable from outside: 'gone'
+                # covers both no process at that pid and a non-Word one, so
+                # silence on success leaves "we ended the orphan" and "it was
+                # already gone" sharing one observable. Nothing downstream can
+                # then tell whether this branch ran, which is the situation
+                # Get-WordStartTime's comment above warns about.
+                if ($outcome -eq 'killed') {
+                    Write-HostDiagnostic "[word-host] reaped orphaned WINWORD ${wordPid} recorded by host ${hostPid}: its start time matched the one recorded beside the pid, and the terminate was accepted."
+                }
                 if ($outcome -notin @('killed', 'gone')) {
                     Write-HostDiagnostic "[word-host] refusing to reap pid ${wordPid} recorded by host ${hostPid}: $($outcome -replace '^declined:', ''). Not killed; it is either a leaked Word or an unrelated process that inherited the pid."
                 }
