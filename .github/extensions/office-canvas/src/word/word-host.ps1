@@ -375,6 +375,16 @@ function Clear-OrphanedWord {
             }
             if ($wordPid -gt 0) {
                 $outcome = Stop-VerifiedWord $wordPid $expectedStart
+                # A kill is reported as well as a refusal, because 'killed' and
+                # 'gone' are otherwise indistinguishable from outside: 'gone'
+                # covers both no process at that pid and a non-Word one, so
+                # silence on success leaves "we ended the orphan" and "it was
+                # already gone" sharing one observable. Nothing downstream can
+                # then tell whether this branch ran, which is the situation
+                # Get-WordStartTime's comment above warns about.
+                if ($outcome -eq 'killed') {
+                    Write-HostDiagnostic "[word-host] reaped orphaned WINWORD ${wordPid} recorded by host ${hostPid}: its start time matched the one recorded beside the pid, and the terminate was accepted."
+                }
                 if ($outcome -notin @('killed', 'gone')) {
                     Write-HostDiagnostic "[word-host] refusing to reap pid ${wordPid} recorded by host ${hostPid}: $($outcome -replace '^declined:', ''). Not killed; it is either a leaked Word or an unrelated process that inherited the pid."
                 }

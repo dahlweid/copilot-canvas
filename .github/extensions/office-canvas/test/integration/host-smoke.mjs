@@ -576,13 +576,33 @@ try {
                 `the sweep refused the one entry whose identity it could prove: ${declined.join(" | ")}`,
             );
 
+            // The positive instrument, and the assertion this case turns on.
+            // Everything above is satisfied without a kill: the entry file is
+            // removed on every outcome, and a refusal is silent on 'gone' as
+            // well as on 'killed' -- `Stop-VerifiedWord` returns 'gone' both for
+            // no process at that pid and for a non-Word one. So without this
+            // line the case would rest on a Word being unable to end itself
+            // inside 90 s, which is exactly what word-host.ps1's own note
+            // declines to claim from one 45 s observation. Presence-shaped on
+            // purpose: an absence check here would also pass if the log were
+            // never fed at all.
+            const reaped = reaperLog.filter((line) => line.includes(`reaped orphaned WINWORD ${orphanPid}`));
+            assert.equal(
+                reaped.length,
+                1,
+                `the sweep never reported reaping Word ${orphanPid}, so nothing separates "the sweep ended it" from ` +
+                    `"it was already gone". The reaper said: ${reaperLog.join(" | ") || "(nothing)"}`,
+            );
+
+            // Confirmation, not the evidence: the line above says the terminate
+            // was accepted, and `Kill()` only requests termination.
             const { gone, waitedMs } = await waitForWordGone(orphanPid);
             process.stderr.write(`       orphan ${orphanPid} gone ${(waitedMs / 1000).toFixed(1)}s after the sweep\n`);
             assert.equal(
                 gone,
                 true,
-                `the sweep processed the entry naming Word ${orphanPid} and declined nothing, but that Word was ` +
-                    `still running ${(waitedMs / 1000).toFixed(1)}s later`,
+                `the sweep reported reaping Word ${orphanPid}, but that Word was still running ` +
+                    `${(waitedMs / 1000).toFixed(1)}s later`,
             );
 
             // And it reaped *that* Word, not Word in general. The sweep read one
