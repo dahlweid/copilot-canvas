@@ -98,6 +98,60 @@ export const OPERATION_NAMES = Object.keys(OPERATIONS);
  */
 export const OPERATION_HELP = OPERATION_NAMES.map((name) => `${name} — ${OPERATIONS[name].help}.`).join(" ");
 
+const REQUIREMENT_LEVELS = ["required", "optional", "rejected"];
+
+function joinNames(names) {
+    if (names.length <= 2) return names.join(" and ");
+    return `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
+}
+
+/**
+ * Which operations require, allow and refuse one of the per-operation fields,
+ * phrased for a caller.
+ *
+ * `edit_document`'s tool schema used to hand-write this same split as prose in
+ * the `text` and `headingLevel` descriptions, which made the schema a second
+ * copy of the table above and left the two free to drift — the restatement this
+ * repo has corrected four times before (issue #28). The reasoning is
+ * `OPERATION_HELP`'s: the rule the validator enforces and the rule the model
+ * reads are one rule, so there is one place to change it.
+ */
+function fieldRequirementHelp(field) {
+    const byLevel = new Map(REQUIREMENT_LEVELS.map((level) => [level, []]));
+
+    for (const name of OPERATION_NAMES) {
+        const level = OPERATIONS[name][field];
+        const names = byLevel.get(level);
+        if (!names) {
+            throw new Error(`${name}.${field} is ${JSON.stringify(level)}, which is not a requirement level.`);
+        }
+        names.push(name);
+    }
+
+    const phrases = {
+        required: (names) => `Required by ${joinNames(names)}`,
+        optional: (names) => `optional on ${joinNames(names)}`,
+        rejected: (names) => `refused by ${joinNames(names)}`,
+    };
+
+    return `${REQUIREMENT_LEVELS.filter((level) => byLevel.get(level).length > 0)
+        .map((level) => phrases[level](byLevel.get(level)))
+        .join("; ")}.`;
+}
+
+/**
+ * The `text` and `headingLevel` descriptions `edit_document`'s schema carries.
+ *
+ * They live beside the table for the same reason `OPERATION_HELP` does: they
+ * are generated from it, and they are importable, so a test can assert on the
+ * text a caller actually reads rather than on `extension.mjs`'s source.
+ */
+export const TEXT_HELP = `The new text. ${fieldRequirementHelp("text")} One paragraph: line breaks are refused, because a second paragraph would move the addresses after it.`;
+
+export const HEADING_LEVEL_HELP = `Heading level: ${MIN_HEADING_LEVEL + 1}–${MAX_HEADING_LEVEL} for a heading, ${MIN_HEADING_LEVEL} for body text. ${fieldRequirementHelp(
+    "headingLevel",
+)} An insert given no \`headingLevel\` follows the style Word would use itself.`;
+
 /**
  * Text a paragraph may be given.
  *

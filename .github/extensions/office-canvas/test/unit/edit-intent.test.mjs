@@ -13,10 +13,12 @@ import { fileURLToPath } from "node:url";
 import {
     describeIntent,
     EditIntentError,
+    HEADING_LEVEL_HELP,
     OPERATION_HELP,
     MAX_HEADING_LEVEL,
     MIN_HEADING_LEVEL,
     OPERATION_NAMES,
+    TEXT_HELP,
     validateIntent,
 } from "../../src/word/edit-intent.mjs";
 import { mintAddress } from "../../src/word/structure-map.mjs";
@@ -231,4 +233,104 @@ test("the heading range the help advertises is the range the validator enforces"
     }
     assert.equal(codeOf(at(highest + 1)), "invalid_heading_level", `the validator accepts ${highest + 1}, which the help does not advertise`);
     assert.equal(codeOf(at(body - 1)), "invalid_heading_level", `the validator accepts ${body - 1}, which the help does not advertise`);
+});
+// The `text` and `headingLevel` schema descriptions, read the way a caller
+// reads them.
+//
+// These parse the rendered sentence and then put the validator through what it
+// claims, rather than comparing the string against the table that built it --
+// the tautology `CONTEXT.md` documents, which passes with the defect fully
+// reintroduced. Here a mislabelled clause (an operation advertised as taking a
+// field it refuses, or the phrasing for two levels swapped) goes red, because
+// the expectation comes out of the prose and the answer comes out of
+// `validateIntent`. An operation named in the prose that does not exist goes
+// red too: the validator answers `unknown_operation`, which is not the code any
+// branch below expects.
+
+const namesIn = (clause) =>
+    clause
+        .split(/,| and /)
+        .map((name) => name.trim())
+        .filter(Boolean);
+
+const requirementsFrom = (help) => {
+    const clause = (pattern) => {
+        const found = help.match(pattern);
+        return found ? namesIn(found[1]) : [];
+    };
+    return {
+        required: clause(/Required by ([^;.]+)/),
+        optional: clause(/optional on ([^;.]+)/),
+        refused: clause(/refused by ([^;.]+)/),
+    };
+};
+
+const textRules = requirementsFrom(TEXT_HELP);
+const headingRules = requirementsFrom(HEADING_LEVEL_HELP);
+
+/** The smallest intent the `text` prose says is complete apart from `headingLevel`. */
+const baseIntent = (op) =>
+    textRules.required.includes(op) ? { op, address: ADDRESS, text: "Hello" } : { op, address: ADDRESS };
+
+test("the `text` rule the schema advertises is the rule the validator enforces", () => {
+    assert.ok(textRules.required.length > 0, `no "Required by" clause in: ${TEXT_HELP}`);
+    assert.ok(textRules.refused.length > 0, `no "refused by" clause in: ${TEXT_HELP}`);
+
+    for (const op of textRules.required) {
+        assert.equal(validateIntent({ op, address: ADDRESS, text: "Hello" }).text, "Hello");
+        assert.equal(
+            codeOf(() => validateIntent({ op, address: ADDRESS })),
+            "invalid_text",
+            `the schema says ${op} requires \`text\`, but the validator accepts it without one`,
+        );
+    }
+
+    for (const op of textRules.optional) {
+        assert.equal(validateIntent({ op, address: ADDRESS, text: "Hello" }).text, "Hello");
+        assert.equal(
+            validateIntent({ op, address: ADDRESS }).text,
+            undefined,
+            `the schema says \`text\` is optional on ${op}, but the validator will not go without it`,
+        );
+    }
+
+    for (const op of textRules.refused) {
+        assert.equal(
+            codeOf(() => validateIntent({ op, address: ADDRESS, text: "Hello" })),
+            "invalid_intent",
+            `the schema says ${op} refuses \`text\`, but the validator took one`,
+        );
+    }
+});
+
+test("the `headingLevel` rule the schema advertises is the rule the validator enforces", () => {
+    assert.ok(headingRules.required.length > 0, `no "Required by" clause in: ${HEADING_LEVEL_HELP}`);
+    assert.ok(headingRules.optional.length > 0, `no "optional on" clause in: ${HEADING_LEVEL_HELP}`);
+    assert.ok(headingRules.refused.length > 0, `no "refused by" clause in: ${HEADING_LEVEL_HELP}`);
+
+    for (const op of headingRules.required) {
+        assert.equal(validateIntent({ ...baseIntent(op), headingLevel: 1 }).headingLevel, 1);
+        assert.equal(
+            codeOf(() => validateIntent(baseIntent(op))),
+            "invalid_heading_level",
+            `the schema says ${op} requires \`headingLevel\`, but the validator accepts it without one`,
+        );
+    }
+
+    for (const op of headingRules.optional) {
+        assert.equal(validateIntent({ ...baseIntent(op), headingLevel: 1 }).headingLevel, 1);
+        assert.equal(
+            validateIntent(baseIntent(op)).headingLevel,
+            undefined,
+            `the schema says \`headingLevel\` is optional on ${op}, but the validator will not go without it`,
+        );
+    }
+
+    for (const op of headingRules.refused) {
+        assert.equal(
+            codeOf(() => validateIntent({ ...baseIntent(op), headingLevel: 1 })),
+            "invalid_intent",
+            `the schema says ${op} refuses \`headingLevel\`, but the validator took one`,
+        );
+    }
 });
