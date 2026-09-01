@@ -352,7 +352,15 @@ function Invoke-Arm([string] $arm, [string] $title) {
         # client orphans the Word it was driving -- recorded so the census
         # report at the end can name a cause it actually knows.
         try { Stop-Process -Id $p.Id -Force } catch { }
-        $script:workerKilled = $true
+        Start-Sleep -Milliseconds 500
+        # Set on the OBSERVED exit, never on the attempt. The report below turns
+        # this flag into the sentence "this probe orphaned a Word", which is a
+        # CAUSE; a flag set on the attempt asserts that cause after a kill that
+        # threw, was refused, or lost the exit race -- the failure mode this
+        # repo keeps hitting, a correct code carrying a message the code cannot
+        # know is true.
+        if ($p.HasExited) { $script:workerKilled = $true }
+        else { Write-Host "  worker pid $($p.Id) did NOT exit after Stop-Process; still up, no Word orphaned by us" }
     }
 
     if (Test-Path -LiteralPath $out) { Get-Content -LiteralPath $out | ForEach-Object { Write-Host $_ } }

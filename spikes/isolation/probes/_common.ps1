@@ -49,12 +49,22 @@
 #      open, so from that point the identity read and the terminate are provably
 #      about the same process.
 #   2. ProcessName, so a pid already recycled onto something else is refused
-#      before we look at times at all.
+#      before we look at times at all. The read itself is guarded: `ProcessName`
+#      on a Process object whose process has exited can throw, and an uncaught
+#      throw here is a failure path that does NOT decline -- it propagates into
+#      the caller's `finally` and skips the cleanup below it. That has already
+#      cost this tree a leaked desktop handle once (see
+#      spikes/isolation/probes/probe-desktop.ps1's teardown comment).
 #   3. `$null -eq $ExpectedStart` BEFORE any comparison against it. This is not
 #      style. Under PowerShell, `$someDateTime -ne $null` evaluates to $true, so
 #      a missing expected time compared directly would pass the mismatch test and
 #      reach the kill. Issue #114 shipped exactly that inversion.
 #   4. Only then the StartTime match.
+#
+# 'killed' vs 'killed:survived': both mean every guard passed and the terminate
+# was issued. They differ in what was then OBSERVED. Only 'gone' and 'killed'
+# mean no Word is left behind; everything else is a leak the caller must say out
+# loud.
 #
 # Absence is distinguished from non-verification. A pid that is gone is 'gone'
 # and fine -- no process holds it, so nothing we launched is running under it,
@@ -68,12 +78,19 @@ function Stop-VerifiedWord([int]$ProcessId, $ExpectedStart) {
     $p = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
     if (-not $p) { return 'gone' }
     try { $null = $p.Handle } catch { return 'declined:handle' }
-    if ($p.ProcessName -ne 'WINWORD') { return 'declined:name' }
+    try { $name = $p.ProcessName } catch { return 'declined:unreadable-name' }
+    if ($name -ne 'WINWORD') { return 'declined:name' }
     if ($null -eq $ExpectedStart) { return 'declined:unverified' }
     try { $actual = $p.StartTime } catch { return 'declined:unreadable' }
     if ($actual -ne $ExpectedStart) { return 'declined:start' }
     Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
     Start-Sleep -Milliseconds 800   # the call returns before the process is gone
+    # Report the OBSERVED outcome, not the attempted one. Stop-Process here
+    # swallows its errors, so without this check 'killed' would be a claim about
+    # a call rather than about a process, and a caller that treats 'killed' as
+    # "reaped" would hide the leak. Both states mean the guards passed and the
+    # kill was issued; they differ only in what the machine did next.
+    if (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue) { return 'killed:survived' }
     return 'killed'
 }
 

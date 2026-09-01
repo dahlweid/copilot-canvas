@@ -203,7 +203,10 @@ finally {
     # Outcome observed rather than asserted.
     $outcome = Stop-VerifiedWord $ownPid $ownStart
     Write-Output "teardown pid ${ownPid}: $outcome"
-    if ($outcome -like 'declined:*') {
+    if ($outcome -ne 'killed' -and $outcome -ne 'gone') {
+        # Not `-like 'declined:*'`: 'killed:survived' means the guards passed and
+        # the terminate was issued and the process is STILL THERE, which is the
+        # same leak and would have been reported as a success.
         Write-Output "pid $ownPid NOT terminated -- this probe's own Word has leaked; close it by hand"
     }
     Start-Sleep -Milliseconds 500

@@ -229,8 +229,12 @@ finally {
         }
         else { Say "  WINWORD pid $p exited on Quit()" }
     }
+    # "unattributed", not "not ours" -- the code knows only that this pid is
+    # absent from two census reads, and this file's own reasoning above admits a
+    # census can miss a pid we made. Asserting "not this probe's" is the same
+    # error as #136 read backwards: a difference used as an attribution.
     foreach ($p in (@(Get-Process WINWORD -ErrorAction SilentlyContinue | ForEach-Object Id) | Where-Object { $wordBefore -notcontains $_ -and $ourPids -notcontains $_ })) {
-        Rep "  new WINWORD pid $p is NOT attributable to this probe, left alone" 'not killed'
+        Rep "  new WINWORD pid $p appeared during this run and is unattributed" 'not killed; may be ours or another session''s -- confirm by hand'
     }
     Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue
 }

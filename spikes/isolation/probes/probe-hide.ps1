@@ -187,7 +187,10 @@ finally {
             # returns 'gone'. Report the outcome; never label a kill unobserved.
             $outcome = Stop-VerifiedWord $ownPid $ownStart
             Report "STILL ALIVE after 30 s, teardown" "$ownPid -> $outcome"
-            if ($outcome -like 'declined:*') {
+            if ($outcome -ne 'killed' -and $outcome -ne 'gone') {
+                # Not `-like 'declined:*'`: 'killed:survived' means the guards
+                # passed and the terminate was issued and the process is STILL
+                # THERE, which is the same leak reported as a success.
                 Report "pid $ownPid NOT terminated -- this probe's own Word has leaked" 'close it by hand'
             }
         }
