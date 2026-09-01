@@ -54,32 +54,52 @@ export class EditIntentError extends Error {
  *
  * `text` and `headingLevel` are listed per operation rather than validated ad
  * hoc so that an operation cannot quietly accept a field it then ignores.
+ *
+ * `help` and `describe` are the two things an operation says about itself:
+ * `help` is what the schema tells the model beforehand, `describe` is what a
+ * snapshot manifest and a log line record afterwards. Both sit on the entry so
+ * that adding an operation is one edit in one place. `describe` was a `switch`
+ * at the foot of this file ending in `default: return intent.op` — a second,
+ * silent list of the same names (issue #131).
+ *
+ * A describer is only ever called for its own operation and so never branches
+ * on one; the single conditional here is `set_heading_level`'s, and it is on
+ * the *value*, not the operation. That is the whole reason these are functions
+ * rather than strings: level 0 is body text, not a level 0 heading.
  */
 export const OPERATIONS = {
     replace_text: {
         text: "required",
         headingLevel: "rejected",
         help: "rewrite the paragraph's text, keeping its style",
+        describe: ({ address }) => `replace the text of ${address}`,
     },
     insert_paragraph_after: {
         text: "required",
         headingLevel: "optional",
         help: "add a new paragraph after it",
+        describe: ({ address }) => `insert a paragraph after ${address}`,
     },
     insert_paragraph_before: {
         text: "required",
         headingLevel: "optional",
         help: "add a new paragraph before it",
+        describe: ({ address }) => `insert a paragraph before ${address}`,
     },
     delete_paragraph: {
         text: "rejected",
         headingLevel: "rejected",
         help: "remove it",
+        describe: ({ address }) => `delete ${address}`,
     },
     set_heading_level: {
         text: "rejected",
         headingLevel: "required",
         help: `make it a heading (${MIN_HEADING_LEVEL + 1}–${MAX_HEADING_LEVEL}) or body text (${MIN_HEADING_LEVEL})`,
+        describe: ({ address, headingLevel }) =>
+            headingLevel === MIN_HEADING_LEVEL
+                ? `make ${address} body text`
+                : `make ${address} a level ${headingLevel} heading`,
     },
 };
 
@@ -260,22 +280,36 @@ export function validateIntent(input) {
     return normalized;
 }
 
+/**
+ * The describer for an operation, or a throw.
+ *
+ * The failure this refuses to be quiet about is issue #131's. `describeIntent`
+ * used to end in `default: return intent.op`, so an operation added to the
+ * table above and not to that switch described itself as its own bare name.
+ * That is not a visibly broken string — nothing downstream can tell it from a
+ * deliberate one — and it drops the *address*, which for this string's two
+ * consumers is the part carrying the information. A revert manifest that names
+ * the operation and not the paragraph it was applied to is a recovery path
+ * with the recovery taken out.
+ */
+function describerFor(op) {
+    const describe = OPERATIONS[op]?.describe;
+    if (typeof describe !== "function") {
+        throw new Error(
+            `Operation ${JSON.stringify(op)} has no description. A snapshot manifest or log line for it would ` +
+                `name the operation and not the paragraph it was applied to.`,
+        );
+    }
+    return describe;
+}
+
+// Runs at import, the way `fieldRequirementHelp`'s level check does: an
+// operation added to the table with no prose of its own fails before the
+// extension loads, rather than at the moment a manifest is being written for
+// an edit that is about to happen.
+for (const name of OPERATION_NAMES) describerFor(name);
+
 /** A short, human-readable description, used in snapshot manifests and logs. */
 export function describeIntent(intent) {
-    switch (intent.op) {
-        case "replace_text":
-            return `replace the text of ${intent.address}`;
-        case "insert_paragraph_after":
-            return `insert a paragraph after ${intent.address}`;
-        case "insert_paragraph_before":
-            return `insert a paragraph before ${intent.address}`;
-        case "delete_paragraph":
-            return `delete ${intent.address}`;
-        case "set_heading_level":
-            return intent.headingLevel === 0
-                ? `make ${intent.address} body text`
-                : `make ${intent.address} a level ${intent.headingLevel} heading`;
-        default:
-            return intent.op;
-    }
+    return describerFor(intent.op)(intent);
 }

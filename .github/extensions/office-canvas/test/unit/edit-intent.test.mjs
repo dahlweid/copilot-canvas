@@ -46,16 +46,26 @@ test("accepts an address minted by mintAddress", () => {
     assert.equal(intent.text, "New text");
 });
 
+/**
+ * The smallest valid intent for each operation.
+ *
+ * Op-keyed, like `OPERATIONS` — and deliberately so. This is the kind of second
+ * list issue #131 contrasts itself with: an operation added to the table with a
+ * required field and not added here goes *red*, because `validateIntent` then
+ * refuses the field it is missing. A fixture that makes the author look is not
+ * the defect a fallback that hides is.
+ */
+const REQUIRED_FIELDS = {
+    replace_text: { text: "x" },
+    insert_paragraph_after: { text: "x" },
+    insert_paragraph_before: { text: "x" },
+    delete_paragraph: {},
+    set_heading_level: { headingLevel: 2 },
+};
+
 test("every operation name is accepted with its required fields", () => {
-    const required = {
-        replace_text: { text: "x" },
-        insert_paragraph_after: { text: "x" },
-        insert_paragraph_before: { text: "x" },
-        delete_paragraph: {},
-        set_heading_level: { headingLevel: 2 },
-    };
     for (const op of OPERATION_NAMES) {
-        const intent = validateIntent({ op, address: ADDRESS, ...required[op] });
+        const intent = validateIntent({ op, address: ADDRESS, ...REQUIRED_FIELDS[op] });
         assert.equal(intent.op, op);
         assert.ok(describeIntent(intent).length > 0);
     }
@@ -373,4 +383,57 @@ test("the table carries no requirement level the derivation cannot render", () =
     for (const field of ["text", "headingLevel"]) {
         assert.ok(fieldRequirementHelp(field).endsWith("."), `${field} renders no sentence`);
     }
+});
+
+// --- The manifest description, which revert reads -------------------------
+//
+// `describeIntent` used to be a `switch` over the operation names ending in
+// `default: return intent.op` -- a second list of the same names, ten lines
+// below the table. Measured on `93dbe67` by adding a sixth operation to
+// `OPERATIONS` and touching nothing else: `describeIntent` returned
+// `"duplicate_paragraph"` where a listed operation returned
+// `"delete p:0123456789ab"`, and this file stayed at 20 pass, 0 fail.
+//
+// Note what did *not* catch it. `every operation name is accepted with its
+// required fields` calls `describeIntent` for every operation, but asserts only
+// `length > 0`, which the operation's own name satisfies. These three assert
+// the properties that string actually has to have.
+
+test("every operation's description says which paragraph it was applied to", () => {
+    // The harm #131 records is not that an undescribed operation reads badly --
+    // it is that the string loses the *address*. This runs against the editor's
+    // own list, so an operation whose prose drops the address goes red here.
+    for (const op of OPERATION_NAMES) {
+        const described = describeIntent(validateIntent({ op, address: ADDRESS, ...REQUIRED_FIELDS[op] }));
+        assert.ok(
+            described.includes(ADDRESS),
+            `${op} describes as ${JSON.stringify(described)}, which does not say which paragraph it was applied to`,
+        );
+    }
+});
+
+test("an operation the table does not describe is refused, not described as its own name", () => {
+    // The replaced fallback could not fail: it answered every unlisted
+    // operation with a plausible-looking string. A wrong answer here is written
+    // into a snapshot manifest and read back by `revert_document`, so it has to
+    // throw rather than guess.
+    assert.throws(
+        () => describeIntent({ op: "duplicate_paragraph", address: ADDRESS }),
+        /has no description/,
+        "an unlisted operation was described instead of refused",
+    );
+});
+
+test("set_heading_level is described by its value, not by its name alone", () => {
+    // The conditional that decided the remedy: this description is not a
+    // function of the operation alone, so a single `help`-style string per
+    // entry could not reproduce it. Pinned so a later flattening of the table
+    // has to notice.
+    const describe = (headingLevel) =>
+        describeIntent(validateIntent({ op: "set_heading_level", address: ADDRESS, headingLevel }));
+
+    assert.match(describe(MIN_HEADING_LEVEL), /body text/);
+    assert.doesNotMatch(describe(MIN_HEADING_LEVEL), /heading/, "level 0 is body text, not a level 0 heading");
+    assert.match(describe(3), /a level 3 heading/);
+    assert.doesNotMatch(describe(3), /body text/);
 });
