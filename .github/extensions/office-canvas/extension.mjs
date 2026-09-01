@@ -26,7 +26,14 @@ import { artifactsRoot } from "./src/store.mjs";
 import { createIdleShutdown } from "./src/word-lifecycle.mjs";
 import { createRenderCacheSlot } from "./src/render-cache-slot.mjs";
 import { normalizeReadArgs, DEFAULT_READ_LIMIT, MAX_READ_LIMIT } from "./src/word/read-args.mjs";
-import { MAX_HEADING_LEVEL, MIN_HEADING_LEVEL, OPERATION_HELP, OPERATION_NAMES } from "./src/word/edit-intent.mjs";
+import {
+    HEADING_LEVEL_HELP,
+    MAX_HEADING_LEVEL,
+    MIN_HEADING_LEVEL,
+    OPERATION_HELP,
+    OPERATION_NAMES,
+    TEXT_HELP,
+} from "./src/word/edit-intent.mjs";
 import { reportingFailures } from "./src/tool-error.mjs";
 import { changeRecordFrom } from "./src/change-record.mjs";
 import {
@@ -700,14 +707,13 @@ const editDocumentTool = {
             },
             text: {
                 type: "string",
-                description:
-                    "The new text, for replace_text and the insert operations. One paragraph: line breaks are refused, because a second paragraph would move the addresses after it.",
+                description: TEXT_HELP,
             },
             headingLevel: {
                 type: "integer",
                 minimum: MIN_HEADING_LEVEL,
                 maximum: MAX_HEADING_LEVEL,
-                description: `Heading level: ${MIN_HEADING_LEVEL + 1}–${MAX_HEADING_LEVEL} for a heading, ${MIN_HEADING_LEVEL} for body text. Required by set_heading_level; optional on an insert, which otherwise follows the style Word would use itself.`,
+                description: HEADING_LEVEL_HELP,
             },
         },
         required: ["path", "revisionToken", "op", "address"],
