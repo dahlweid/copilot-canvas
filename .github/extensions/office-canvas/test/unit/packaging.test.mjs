@@ -15,13 +15,12 @@ import assert from "node:assert/strict";
 import { cp, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile, appendFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
+import { REPO } from "./tracked-files.mjs";
+
 const execFileAsync = promisify(execFile);
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const REPO = path.resolve(HERE, "..", "..", "..", "..", "..");
 const EXT = path.join(".github", "extensions", "office-canvas");
 const NAME = "office-canvas";
 

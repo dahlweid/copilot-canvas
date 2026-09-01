@@ -60,8 +60,16 @@ export async function trackedFiles(pathspec) {
 /**
  * Whether there is a git checkout to ask at all.
  *
- * Memoized per process: every test in both guards calls it, and the answer
- * cannot change during a run.
+ * Only a *successful* answer is memoized. Caching the failure would be the
+ * cheaper thing to do and is what the two copies of this helper used to do, but
+ * it latches: measured by clearing `PATH`, calling this, restoring `PATH` and
+ * calling again, the second call still answered `false` while git was working.
+ * Every caller turns a `false` into `t.skip()`, so a single transient failure
+ * would silently retire the guards for the rest of the process -- the exact
+ * failure mode these callers exist to prevent. The failure path is left
+ * uncached so it can correct itself; it costs one fast-failing spawn per call
+ * in the only case it happens, an installed extension folder that is not a
+ * repository.
  *
  * Callers skip rather than fail when this is false -- an installed extension
  * folder is a plain directory, and these are properties of the repository, not
@@ -69,7 +77,7 @@ export async function trackedFiles(pathspec) {
  */
 let available = null;
 export async function gitAvailable() {
-    if (available !== null) return available;
+    if (available === true) return available;
     try {
         await execFileAsync("git", ["rev-parse", "--git-dir"], { cwd: REPO });
         available = true;

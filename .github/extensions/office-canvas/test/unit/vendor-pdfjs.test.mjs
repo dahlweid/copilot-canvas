@@ -17,14 +17,12 @@ import { promisify } from "node:util";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { joinWorker, readManifest, VendorAssetError, VENDOR_DIR } from "../../src/vendor-assets.mjs";
 import { callTool, readToolValue, cleanupBridge } from "./tool-bridge.mjs";
+import { REPO } from "./tracked-files.mjs";
 
 const execFileAsync = promisify(execFile);
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const REPO = path.resolve(HERE, "..", "..", "..", "..", "..");
 const VENDOR_TOOL = path.join(REPO, "tools", "vendor-pdfjs.mjs");
 const VALIDATOR = path.join(REPO, "tools", "validate-extensions.mjs");
 const APP_CSS = path.join(REPO, ".github", "extensions", "office-canvas", "src", "ui", "app.css");
