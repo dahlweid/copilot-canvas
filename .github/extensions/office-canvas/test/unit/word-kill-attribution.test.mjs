@@ -152,10 +152,20 @@ function kernelMinted(source) {
 /**
  * Variables holding, or derived from, a census DIFFERENCE.
  *
- * Seeded on the difference operators the tree actually uses -- `-notcontains`
- * and `-notin` inside a `Where-Object` over a `Get-Process` census -- then
- * propagated to a fixed point through the three forms that carried a differenced
- * set to a kill in the parent commit:
+ * Two-stage, because the difference and the census are frequently not the same
+ * statement. `spikes/isolation/probes/probe-quit-exit-gap.ps1` writes
+ * `$after = Get-WordPids` and then `$new = @($after | Where-Object { $before
+ * -notcontains $_ })`: the differencing line names no census call at all. A
+ * one-stage seed that looked for `Get-Process` beside `-notcontains` missed it
+ * entirely -- measured, by mutation, not by reading. So:
+ *
+ *   1. CENSUS variables: anything assigned from an enumeration of WINWORD
+ *      processes, directly or through this tree's `Get-WordPids` helper.
+ *   2. DIFFERENCED variables: an assignment using `-notcontains` or `-notin`
+ *      that mentions a census variable or performs a census inline.
+ *
+ * Then propagated to a fixed point through the three forms that carried a
+ * differenced set to a kill in the parent commit:
  *
  *   - `foreach ($p in $leaked)`, which is how eight of the eleven reached it;
  *   - `$pid_ = [int]$new[0]`, an index into the set;
@@ -165,11 +175,21 @@ function kernelMinted(source) {
  * kernel-minted pid, which is exactly why this is a taint set.
  */
 function censusDifferenced(source) {
+    const CENSUS = /Get-Process[^|\r\n]*WINWORD|WINWORD[^|\r\n]*Get-Process|Get-WordPids/i;
+    const mentions = (text, names) => [...names].some((n) => new RegExp(`\\$${n}\\b`).test(text));
+
+    const census = new Set();
+    for (const m of source.matchAll(/\$(\w+)\s*=/g)) {
+        if (CENSUS.test(statementAt(source, m.index))) census.add(m[1]);
+    }
+
     const tainted = new Set();
     for (const m of source.matchAll(/\$(\w+)\s*=/g)) {
         const statement = statementAt(source, m.index);
-        if (/-not(?:contains|in)\b/.test(statement) && /Get-Process|WordPids/i.test(statement)) tainted.add(m[1]);
+        if (!/-not(?:contains|in)\b/.test(statement)) continue;
+        if (CENSUS.test(statement) || mentions(statement, census)) tainted.add(m[1]);
     }
+
     for (let changed = true; changed; ) {
         changed = false;
         const add = (name) => {
@@ -179,16 +199,15 @@ function censusDifferenced(source) {
             }
         };
         for (const m of source.matchAll(/foreach\s*\(\s*\$(\w+)\s+in\s+([^)]+)\)/gi)) {
-            if ([...tainted].some((t) => new RegExp(`\\$${t}\\b`).test(m[2]))) add(m[1]);
+            if (mentions(m[2], tainted)) add(m[1]);
         }
         for (const m of source.matchAll(/\$(\w+)\s*=\s*([^\r\n]+)/g)) {
-            if (m[1] === "_" ) continue;
-            const rhs = m[2];
+            if (m[1] === "_") continue;
             // Only simple derivations: an index, a cast, or a bare alias. A
             // richer expression is left untainted deliberately -- test 2 fails
             // open, and test 1 fails closed over the same sites, so an escape
             // here is still caught there unless the pid is ALSO kernel-minted.
-            const simple = /^\s*(?:\[[\w.]+\])?\s*\$(\w+)\s*(?:\[[^\]]*\])?\s*$/.exec(rhs);
+            const simple = /^\s*(?:\[[\w.]+\])?\s*\$(\w+)\s*(?:\[[^\]]*\])?\s*$/.exec(m[2]);
             if (simple && tainted.has(simple[1])) add(m[1]);
         }
     }
