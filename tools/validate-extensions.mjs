@@ -30,6 +30,15 @@ const EXTENSIONS_DIR = path.join(ROOT, ".github", "extensions");
 const MAX_FILE_BYTES = 1_000_000; // C4: install per-file limit
 const MAX_TOTAL_BYTES = 5_000_000; // C4: install total limit
 
+// Bytes are printed only once they are about to decide something. Below this
+// point, no single file the per-file limit still permits can carry the total
+// past the envelope, so the number answers no question anyone is asking; above
+// it, the very next legal file can. Deriving the band from the two limits
+// rather than picking a percentage leaves no third number to quote, go stale,
+// or be mistaken for a property of the tree -- which is the misuse the routine
+// figure was removed for (#82).
+const WARN_TOTAL_BYTES = MAX_TOTAL_BYTES - MAX_FILE_BYTES;
+
 // The `version` key in copilot-extension.json is the manifest format version and
 // is parsed as a u32 — see checkManifest for the measurement.
 const MANIFEST_FORMAT_VERSION = 1;
@@ -167,8 +176,17 @@ async function checkPackagingEnvelope(name, files, dir) {
     }
     if (total > MAX_TOTAL_BYTES) {
         fail(name, `total ${total} bytes exceeds the C4 limit of ${MAX_TOTAL_BYTES}`);
+    } else if (total > WARN_TOTAL_BYTES) {
+        // Working-tree bytes, and a CRLF checkout holds more of them than an LF
+        // one at the same commit -- so this figure describes this checkout, not
+        // the tree, which is why it is not printed routinely. It is still the
+        // right number to print here: install copies the working tree, and the
+        // only question being answered is how much room is left in it.
+        console.log(
+            `${name}: ${total} of ${MAX_TOTAL_BYTES} bytes on disk, ${MAX_TOTAL_BYTES - total} left — ` +
+                `less than the ${MAX_FILE_BYTES}-byte per-file limit, so one more file could exceed the total`,
+        );
     }
-    return total;
 }
 
 /** Every .mjs must at least parse. */
@@ -207,8 +225,14 @@ for (const name of extensions) {
     await checkNoConsoleLog(name, files, dir);
     await checkSelfContained(name, files, dir);
     await checkSyntax(name, files, dir);
-    const total = await checkPackagingEnvelope(name, files, dir);
-    console.log(`${name}: ${files.length} files, ${(total / 1024).toFixed(0)} KB`);
+    await checkPackagingEnvelope(name, files, dir);
+    // The file count, and no byte total. The total was accumulated from disk, so
+    // a CRLF checkout and an LF checkout disagreed about the same commit
+    // (measured: ~23 KB apart across two clones) while the count was identical
+    // in both -- and the figure was being quoted between sessions as if it
+    // identified a tree. Bytes are reported by checkPackagingEnvelope instead,
+    // only where they are being compared against the envelope. See #82.
+    console.log(`${name}: ${files.length} files`);
 }
 
 if (problems.length > 0) {
