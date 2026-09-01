@@ -8,10 +8,11 @@
 # and the target directory already created. `Documents.Add`, `Range.Text` and
 # `Selection.TypeText` all returned in milliseconds in the same job.
 #
-# `word-host.ps1` never calls `SaveAs2` -- it only ever calls `Save()` on a
-# document it opened -- so nothing in the shipping code proves `SaveAs2` works.
-# `create_document` has to call it, so the hang has to be explained before any
-# authoring code is written on top of it.
+# `word-host.ps1`'s `create_document` path now calls
+# `$doc.SaveAs2($path, $WD_FORMAT_XML_DOCUMENT)` (in `Cmd-Create`); the edit
+# path calls `Save()` on a document it opened. So the shipping code does exercise
+# `SaveAs2`, and the hang seen under `Start-Job` had to be explained before that
+# authoring code could be trusted.
 #
 # The hypothesis: apartment state. `powershell.exe` 5.1 hosts the console
 # runspace in an STA, but `Start-Job` children run MTA. A COM call that pumps a

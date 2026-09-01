@@ -65,10 +65,19 @@ export class WordHost {
     /** docId -> the args it was opened with, so we can replay after a restart. */
     #openArgs = new Map();
 
-    constructor({ log = () => {}, onOwnedPid = () => {}, pidDir = null } = {}) {
+    constructor({ log = () => {}, onOwnedPid = () => {}, pidDir = null, launch = null } = {}) {
         this.log = log;
         this.onOwnedPid = onOwnedPid;
         this.pidDir = pidDir;
+        // How the host child is spawned. Defaults to the production command --
+        // `powershell.exe -File word-host.ps1` -- and is overridable only so a
+        // test can put a child that speaks the JSON-RPC line protocol in Word's
+        // place. `#send`'s timeout, the `#kill` on expiry and the typed
+        // `word_timeout` reject are the guarantee that a wedged COM call (the
+        // #96 `SaveAs2` hang) cannot hang a caller forever, and that guarantee
+        // is Office-free until the child answers -- so it is testable only if
+        // the child is substitutable. Production never passes this.
+        this.launch = launch;
         /**
          * The WINWORD process this host created, or null when it created none.
          *
@@ -114,19 +123,21 @@ export class WordHost {
             this.#stderr = "";
             this.#stderrLine = "";
 
-            const child = spawn(
-                "powershell.exe",
-                [
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-File",
-                    SCRIPT_PATH,
-                    ...(this.pidDir ? ["-PidDir", this.pidDir] : []),
-                ],
-                { stdio: ["pipe", "pipe", "pipe"], windowsHide: true },
-            );
+            const [command, args] = this.launch
+                ? [this.launch.command, this.launch.args]
+                : [
+                      "powershell.exe",
+                      [
+                          "-NoProfile",
+                          "-NonInteractive",
+                          "-ExecutionPolicy",
+                          "Bypass",
+                          "-File",
+                          SCRIPT_PATH,
+                          ...(this.pidDir ? ["-PidDir", this.pidDir] : []),
+                      ],
+                  ];
+            const child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
 
             child.stdout.setEncoding("utf8");
             child.stdout.on("data", (chunk) => this.#onStdout(chunk));
