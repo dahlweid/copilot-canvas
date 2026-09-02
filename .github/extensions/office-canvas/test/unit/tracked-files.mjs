@@ -109,8 +109,9 @@ export async function trackedFiles(pathspec) {
  * Node distinguishes them on the error *shape* rather than on a localized
  * message, which is the discrimination this repo requires: a spawn failure
  * carries a string `code` (`"ENOENT"` when the binary is not found), a child
- * that ran and exited non-zero carries a **numeric** `code`. That is measured,
- * both arms, in `git-available.test.mjs`, which runs in CI on every commit.
+ * that ran and exited non-zero carries a **numeric** `code`. Measured, both
+ * arms, by `spikes/git-guard/probes/probe-execfile-error-shapes.mjs`, and
+ * re-asserted on every commit by `git-available.test.mjs`.
  *
  * So the split below is `typeof err.code === "number"` and nothing finer. It is
  * deliberately fail-closed in the other direction: `EACCES`, a signal kill and
@@ -123,7 +124,7 @@ export async function trackedFiles(pathspec) {
  * failure, for the reason two paragraphs up.
  *
  * Throwing rather than returning is what keeps this a one-function change: all
- * 16 call sites still read `if (!(await gitAvailable())) return t.skip(...)`,
+ * 17 call sites still read `if (!(await gitAvailable())) return t.skip(...)`,
  * and simply fail instead of skipping when git itself cannot be run.
  */
 let available = null;
