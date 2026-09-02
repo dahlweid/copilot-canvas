@@ -100,18 +100,32 @@ export async function trackedFiles(pathspec) {
  *
  * **What this justifies, and what it does not.** All of the above is a reason to
  * skip when there is no *repository*. It is not a reason to skip when there is
- * no working *git*, and the bare `catch` below cannot tell those apart: a
- * `PATH` with no git fails the spawn, a plain directory fails the command, and
- * both land here as `false` and become `t.skip()` at all 16 call sites. So a
- * runner whose git installation is broken reports a green suite that executed
- * nothing -- the vacuous pass this file's callers exist to prevent.
+ * no working *git*, and until #148 the bare `catch` here could not tell those
+ * apart: a `PATH` with no git fails the spawn, a plain directory fails the
+ * command, and both landed here as `false` and became `t.skip()` at all 16 call
+ * sites. A runner whose git installation was broken reported a green suite that
+ * executed nothing -- the vacuous pass this file's callers exist to prevent.
  *
- * Node does distinguish them, on the error *shape* rather than on a localized
- * message: a spawn failure carries `code === "ENOENT"`, a non-zero exit carries
- * a numeric `code`. Splitting on that would let the first throw and the second
- * skip, with no call site changed. Not done here, because it is a behaviour
- * change under 16 dependents and the error shape is a platform claim this repo
- * requires a committed probe for. **See #148**, which carries both.
+ * Node distinguishes them on the error *shape* rather than on a localized
+ * message, which is the discrimination this repo requires: a spawn failure
+ * carries a string `code` (`"ENOENT"` when the binary is not found), a child
+ * that ran and exited non-zero carries a **numeric** `code`. Measured, both
+ * arms, by `spikes/git-guard/probes/probe-execfile-error-shapes.mjs`, and
+ * re-asserted on every commit by `git-available.test.mjs`.
+ *
+ * So the split below is `typeof err.code === "number"` and nothing finer. It is
+ * deliberately fail-closed in the other direction: `EACCES`, a signal kill and
+ * an absent `code` are all "the child never reported an exit status", and none
+ * of them is evidence about whether a repository exists. Only an answer that
+ * actually came back from git is allowed to produce a skip.
+ *
+ * The throw is not memoized either -- it happens before any assignment, so
+ * `available` is left `null` and the next call re-asks. Nothing here may cache a
+ * failure, for the reason two paragraphs up.
+ *
+ * Throwing rather than returning is what keeps this a one-function change: all
+ * 17 call sites still read `if (!(await gitAvailable())) return t.skip(...)`,
+ * and simply fail instead of skipping when git itself cannot be run.
  */
 let available = null;
 export async function gitAvailable() {
@@ -119,7 +133,21 @@ export async function gitAvailable() {
     try {
         await execFileAsync("git", ["rev-parse", "--git-dir"], { cwd: REPO });
         available = true;
-    } catch {
+    } catch (err) {
+        // On the error shape, never on the message: PowerShell and Windows
+        // report in German on the machine this repo is developed on, and git's
+        // own stderr is localized too.
+        if (typeof err?.code !== "number") {
+            // The message names only what was observed. A non-numeric `code`
+            // means the child never reported an exit status; it does not say
+            // git is uninstalled, and this code cannot know that.
+            throw new Error(
+                `git could not be run in ${REPO}: the process reported no exit status (code ${String(err?.code)}). ` +
+                    `That is not the "no repository here" case -- git answers that by exiting non-zero -- so these ` +
+                    `guards fail rather than skip, because skipping would report a green suite that asserted nothing.`,
+                { cause: err },
+            );
+        }
         available = false;
     }
     return available;

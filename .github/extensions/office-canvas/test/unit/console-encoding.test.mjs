@@ -75,6 +75,14 @@ import { REPO, gitAvailable, trackedFiles } from "./tracked-files.mjs";
 const EXTENSION = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const SHIPPED_HOST = path.join(EXTENSION, "src", "word", "word-host.ps1");
 
+// The probe that measured the console-encoding behaviour every preamble below
+// claims. One constant, two readers: the swept citation test and the unguarded
+// per-file one. Written as a full path, not a basename, because
+// `tools/check-citations.mjs` resolves basenames repo-wide and several collide
+// across `spikes/isolation/` and `spikes/powerpoint/`, so a basename match would
+// accept a citation naming the wrong probe.
+const ENCODING_PROBE = "spikes/isolation/probes/probe-console-input-encoding.mjs";
+
 // The one script allowed to read stdin without pinning the encoding, because
 // varying that assignment across arms is the measurement it performs. The test
 // below asserts it is still present, so the exemption cannot outlive the file
@@ -107,6 +115,25 @@ async function stdinReadingScripts() {
         if (READS_STDIN.test(source)) found.push({ file, source });
     }
     return found;
+}
+
+/**
+ * The part of a script above its first touch of the console.
+ *
+ * Takes the *raw* source and returns raw text: the citation being looked for
+ * **is** a comment, and the comment-blanking the sweeps above rely on would
+ * erase the thing being asserted. The offset is still taken from the blanked
+ * copy, so a `#` inside a comment cannot move the boundary.
+ *
+ * One copy, because the swept citation test and the unguarded per-file one ask
+ * the same question of two differently-rooted files, and two records of one
+ * quantity are free to disagree -- the failure `tracked-files.mjs` was
+ * extracted to stop.
+ *
+ * @param {string} rawSource
+ */
+function preambleOf(rawSource) {
+    return rawSource.slice(0, blankComments(rawSource).search(USES_CONSOLE));
 }
 
 test("the enumeration finds the scripts it is supposed to be checking", async (t) => {
@@ -255,6 +282,42 @@ test("every shipped .ps1 that writes to the console pins UTF-8 on the way out", 
     );
 });
 
+test("every stdin-reading .ps1 cites the probe that measured the encoding rule", async (t) => {
+    if (!(await gitAvailable())) return t.skip("no git checkout to enumerate");
+
+    // Swept rather than named, and that is the whole point of the shape. #147
+    // asked for "a second, guarded test covering live-word.ps1", which closes
+    // today's gap and leaves tomorrow's: the next stdin-reading script gets its
+    // encoding *assignment* swept automatically and its *citation* required by
+    // nothing. This file's own stated principle is that the defect reappears in
+    // the file nobody named.
+    //
+    // Note this adds no enumeration of its own. It runs over exactly the
+    // population `stdinReadingScripts()` already computes, so it inherits the
+    // one exemption that already exists -- `VARIES_THE_ENCODING`, the probe
+    // itself, which has nothing to cite because it *is* the measurement. An
+    // exemption list and a coverage list fail in opposite directions: a file
+    // missing from a coverage list is silently uncovered, while a file missing
+    // from an exemption list is covered. Only the second is safe to forget.
+    const offenders = [];
+    let checked = 0;
+    for (const { file } of await stdinReadingScripts()) {
+        checked += 1;
+        const raw = await readFile(path.join(REPO, file), "utf8");
+        if (!preambleOf(raw).includes(ENCODING_PROBE)) offenders.push(file);
+    }
+
+    // Same reason as the enumeration test above: an empty set would pass this
+    // without opening a file.
+    assert.ok(checked > 0, "no stdin-reading .ps1 was checked for a citation; the enumeration is broken, not the tree");
+    assert.deepEqual(
+        offenders,
+        [],
+        `these scripts pin the console encodings without citing ${ENCODING_PROBE}, the probe that measured the ` +
+            `behaviour they are relying on, above the first use of the console (#147):\n  ` + offenders.join("\n  "),
+    );
+});
+
 test("the probe that varies the encoding is still present", async (t) => {
     if (!(await gitAvailable())) return t.skip("no git checkout to enumerate");
 
@@ -284,10 +347,8 @@ test("the probe that varies the encoding is still present", async (t) => {
 //     at `:142`, and the first `Error` is at `:344`. It would shrink only if a
 //     stderr write were ever added above the assignments, which is the case
 //     worth reddening on.
-//   * the pattern is the probe's full path, not its basename.
-//     `tools/check-citations.mjs` resolves basenames repo-wide and several
-//     collide across `spikes/isolation/` and `spikes/powerpoint/`, so a
-//     basename match would accept a citation naming the wrong probe.
+//   * the pattern is the probe's full path, not its basename, for the reason
+//     given at `ENCODING_PROBE`.
 //
 // **What the fold costs, stated beside what it keeps.** All four tests of the
 // deleted file were extension-relative and unguarded, so in an installed folder
@@ -303,23 +364,18 @@ test("the probe that varies the encoding is still present", async (t) => {
 // in exchange is the thing depth structurally could not -- it is why #50 was
 // found in `live-word.ps1` and the depth check could not see it.
 //
-// **Why this test names one file while its three neighbours sweep.** Not
-// because install-mode coverage is precious -- the paragraph above spends three
-// quarters of it deliberately. Because here it is free. The encoding
-// *assignment* must be swept: every stdin-reading script has to make it, and
-// the defect reappears in whichever file nobody named. The *citation* gains
-// nothing from being swept in the same test. `spikes/live-word/live-word.ps1`,
-// the other `MUST_BE_COVERED` entry, carries the citation today, so widening
-// this test would pass -- and would also drag it through `REPO` and behind
-// `gitAvailable()`, because `spikes/` is outside the extension folder and
-// excluded from the artefact by `tools/package-extension.mjs`. That spends the
-// remainder and buys nothing, since covering `live-word.ps1` needs only a
-// second, guarded test that leaves this one alone.
-//
-// So: not an oversight, and not an invitation to narrow the neighbours to
-// match. The `live-word.ps1` citation gap is real, is pre-existing rather than
-// introduced here, and is filed as #147 -- which records that it must not be
-// closed by widening this test.
+// **Why this test still names one file when the test above sweeps.** #147 asked
+// for the citation gap on `live-word.ps1` to be closed without guarding this
+// assertion, and the sweep above is that fix. This one is *not* the redundant
+// half left behind: the two are rooted differently on purpose. The sweep goes
+// through `REPO`, which is meaningless in an installed extension folder, so it
+// sits behind `gitAvailable()` with its five neighbours. This one goes through
+// `EXTENSION` (`import.meta.url`) and is the only assertion this file makes
+// without a checkout. Widening it to cover `live-word.ps1` -- which is the
+// tidiest-looking diff available here -- would have dragged it through `REPO`
+// too and taken the install-mode pass count to zero, which is precisely what
+// #147 exists to prevent. The overlap on `word-host.ps1` is the price of that
+// and is cheap: one `readFile` of a file the sweep also reads.
 test("the probe backing the encoding claim is cited where the encodings are set", async () => {
     // This repo's rule is that a claim about platform behaviour is backed by a
     // probe that was actually run. The citation is what makes the next reader
@@ -328,14 +384,8 @@ test("the probe backing the encoding claim is cited where the encodings are set"
     // That it exists at all is what this asserts.
     const rawSource = await readFile(SHIPPED_HOST, "utf8");
 
-    // Against `rawSource`, not the blanked copy: the citation *is* a comment,
-    // and the comment-blanking the tests above rely on would erase the thing
-    // being asserted. The offset is still taken from the blanked copy, so a `#`
-    // inside a comment cannot move the boundary.
-    const preamble = rawSource.slice(0, blankComments(rawSource).search(USES_CONSOLE));
-    assert.match(
-        preamble,
-        /spikes\/isolation\/probes\/probe-console-input-encoding\.mjs/,
-        "the encoding preamble in src/word/word-host.ps1 must cite spikes/isolation/probes/probe-console-input-encoding.mjs, the probe that measured it",
+    assert.ok(
+        preambleOf(rawSource).includes(ENCODING_PROBE),
+        `the encoding preamble in src/word/word-host.ps1 must cite ${ENCODING_PROBE}, the probe that measured it`,
     );
 });
