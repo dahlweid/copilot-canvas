@@ -144,6 +144,21 @@ Taken alone, the visibility results are good:
 - Both windowless and windowed instances survived 45 s idle without
   self-terminating.
 
+Re-measured on the isolated `CreateProcess` instance (`probe-hide.ps1`, the H1/H3
+writes #141 restores), the picture is confirmed and sharpened. The write is still
+refused — `Application.Visible = msoFalse` comes back a `COMException`, reported
+by exception *type* since the message is German on this machine. But the isolated
+instance, launched as a real process on a private desktop, *reads* `Visible =
+msoTrue` (`-1`), where the COM-created instance above reads `msoFalse` — so on the
+isolated route the assignment is neither unnecessary nor possible, and H1 offers
+no way to hide. The documented fallback H3 does work: `Application.WindowState =
+ppWindowMinimized` (`2`) is **accepted** on the isolated instance (read back `3` →
+`2`). The probe captures the original `WindowState` before writing and restores
+it on the happy path *and*, demonstrated with an injected fault (`-InjectFailure`),
+in a `finally` that runs on the failure path — because "written and never
+restored" onto an instance was the defect #141 corrects, and a restore that only
+runs when nothing threw is that defect wearing a `finally`.
+
 The problem is upstream of visibility. **There is only ever one PowerPoint.**
 
 | Test | PowerPoint | Word (control) |
@@ -174,6 +189,39 @@ were offered to the binder; `MsoCommandBar` and `RICHEDIT60W` also answer, but
 their `.Application` is a stub with an empty `Version` and no `Presentations`.
 Only `mdiClass` hands back an object that can name the open deck. "It answered
 the binder" is not the test; "it can name the deck" is.
+
+### 4a. Does attribution need a window? `Application.HWND` and `ActiveWindow`
+
+Two claims had been imported to PowerPoint rather than measured on it, and both
+touch how a PowerPoint COM object is attributed to a pid. `probe-app-hwnd.ps1`
+measures them on the isolated instance.
+
+- **`Application.HWND` exists on PowerPoint but does not marshal through the
+  `OBJID_NATIVEOM` bind.** Reflection resolves the member: `InvokeMember('HWND',
+  GetProperty)` comes back a `COMException`, not a `MissingMemberException`, so
+  the IDispatch name is real — consistent with the aside in the Word probe
+  `spikes/isolation/probes/probe-word-ownership-hwnd.ps1` that PowerPoint has an
+  `Application.Hwnd` and Word does not. But read through the bound object,
+  `$app.HWND` returns **null without throwing**, as does `$app.ActiveWindow.Hwnd`.
+  The real `PPTFrameClass` window handle *does* exist and *does* attribute our
+  `CreateProcess` pid through `GetWindowThreadProcessId` — so attribution comes
+  from the external window enumeration the isolated route already performs, not
+  from an HWND read on the automation object. Because the member resolves, the
+  Word probe's aside is **not** falsified and is left unchanged; the nuance is
+  that the property reads null through this binding, not that it is absent from
+  the product.
+- **PowerPoint's `ActiveWindow` does not throw with no presentation open.** It
+  returned a live window object at `Presentations.Count = 0`, process alive,
+  reproduced twice. The claim that it throws is true and measured for *Word*
+  (`spikes/isolation`), where it is a design constraint — but it is **false for
+  PowerPoint** through this route. Importing the Word result to PowerPoint would
+  be wrong.
+
+Neither result changes the isolation design, because attribution (which pid is
+this COM object) is not exclusivity (is it safe to write to it). The isolated
+`CreateProcess` route is required because PowerPoint is single-instance and
+`New-Object` attaches — measured in `probe-single-instance.ps1` — regardless of
+how `HWND` or `ActiveWindow` behave.
 
 ### 5. Export cost per slide and per deck; cold start
 
@@ -324,9 +372,10 @@ Run `make-fixture.ps1` first; everything else is independent and re-runnable.
 | `probe-lock.ps1` | Q2 — external writers, lock detection cost |
 | `probe-bulk-read.ps1` | Q3 — COM walk vs OOXML zip |
 | `probe-localization.ps1` | Q6 — layout, placeholder and shape names |
-| `probe-hide.ps1` | Q4 — visibility and idle survival |
+| `probe-hide.ps1` | Q4 — visibility (H1/H3 on the isolated route, restored) and idle survival |
+| `probe-app-hwnd.ps1` | attribution — `Application.HWND` and `ActiveWindow` on PowerPoint (isolated route) |
 | `probe-saved-flag.ps1` | the `Saved` MsoTriState trap |
-| `probe-stability.ps1`, `probe-notes-control.ps1` | crash investigation, both negative |
+| `probe-stability.ps1`, `probe-notes-control.ps1` | crash investigation, both negative; FRESH arm re-measures `Quit()` reaping on the isolated route |
 
 Process hygiene, corrected by issue #139. These probes used to snapshot the
 `POWERPNT.EXE` pid set and treat the difference as processes they had created —
@@ -340,11 +389,28 @@ acting. The probes therefore no longer terminate a PowerPoint they did not
 start — but they may leave one running, and they still write `DisplayAlerts` on
 an instance they may have attached to. See `README.md`, *Process safety*.
 
-`probe-stability.ps1` is affected as an instrument. Its FRESH arm was defined as
+`probe-stability.ps1` was affected as an instrument. Its FRESH arm was defined as
 "open, export, close, **quit**" and its 15/15 figure above counted cycles where
 `Quit()` failed to reap the process, with a kill between cycles making the next
-one fresh. Both the quit and that kill are gone, so the arm as it now stands
-cannot establish a new process per cycle and cannot reproduce that measurement.
-The figures recorded above stand: they were measured on a clean machine, where
-the census genuinely was empty. Redesigning the arm onto the `CreateProcess`
-route in `_isolated.ps1` is filed as a follow-up.
+one fresh. #139 removed both the quit and that kill, so for a time the arm could
+not establish a new process per cycle and could not reproduce that measurement.
+The original figures were measured on a clean machine, where the census genuinely
+was empty, and they stand.
+
+#142 rebuilt the arm onto the `CreateProcess` route in `_isolated.ps1`. Each
+cycle now launches through `Start-IsolatedPowerPoint` — a pid the kernel handed
+us, provably not the user's — exports, closes the deck, calls `Quit()`, and polls
+whether the process reaps. The between-cycle sweep is `Stop-IsolatedPowerPoint`,
+which routes any survivor through `Stop-VerifiedPpt` — a kill gated on the
+recorded pid **and** `StartTime` that declines rather than guessing — never a
+census difference. Re-measured this way the arm reproduces the original exactly,
+and neither figure is discarded:
+
+| Measurement | Conditions | `Quit()` failed to reap |
+| --- | --- | --- |
+| original | `New-Object` per cycle, clean machine, empty census, kill between cycles | **15/15** |
+| #142 re-measure | `CreateProcess` isolated instance per cycle, verified between-cycle sweep | **15/15** (0 reaped, 0 self-exited; exports 15/15 clean, mean ~2.7 s; no OS fault logged; POWERPNT census empty before and after) |
+
+The two agree: the original was sound as taken, and the redesigned arm confirms
+it on an instance whose ownership is not in doubt, with a sweep that left nothing
+running.

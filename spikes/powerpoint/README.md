@@ -33,9 +33,10 @@ beyond generating the fixture first.
 | `probe-lock.ps1` | Q2 — external writers, lock detection cost. **T3/T3c invalid, see its header** |
 | `probe-bulk-read.ps1` | Q3 — COM walk vs reading the OOXML zip |
 | `probe-localization.ps1` | Q6 — layout, placeholder and shape names on German Office |
-| `probe-hide.ps1` | Q4 — visibility, windowless open, idle survival |
+| `probe-hide.ps1` | Q4 — visibility (H1/H3 restored on the isolated route), windowless open, idle survival |
+| `probe-app-hwnd.ps1` | attribution — does `Application.HWND` exist and does `ActiveWindow` throw with no deck, on PowerPoint? |
 | `probe-saved-flag.ps1` | the `Saved` MsoTriState trap |
-| `probe-stability.ps1` | crash investigation — fresh vs warm instances |
+| `probe-stability.ps1` | crash investigation — fresh vs warm instances; FRESH arm re-measures `Quit()` reaping on the isolated route |
 | `probe-notes-control.ps1` | crash investigation — notes-page export, exonerated |
 
 `probe-cross-instance-lock.ps1` takes ~2.5 minutes: one arm is a deliberate hang
@@ -82,7 +83,9 @@ So the old guard `if ($ctx.Owned.Count -gt 0) { Quit; Stop-Process }` passed
 
 What that buys, and what it does not. These probes no longer terminate or quit a
 PowerPoint they did not start. They **may still leave one running** — `Quit()`
-is measured not to reap `POWERPNT` (15/15 cycles) and the fallback kill on an
+is measured not to reap `POWERPNT` (15/15 cycles; reconfirmed 15/15 on the
+isolated route by `probe-stability.ps1`'s FRESH arm, see `FINDINGS.md`) and the
+fallback kill on an
 attached instance is gone — and they **may still change application-level
 settings** on an instance they attached to: `DisplayAlerts` is set on every
 instance obtained through `New-PowerPointInstance`, which is a write into the
