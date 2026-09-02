@@ -39,8 +39,9 @@
 //      because the differenced set reached the kill through `foreach ($p in
 //      $leaked)` and through `$pid_ = [int]$new[0]` -- neither of which looks
 //      like a census at the kill site.
-//   3. `Stop-VerifiedWord` still exists and still kills, so 1 cannot be
-//      satisfied by deleting the one sanctioned kill.
+//   3. `Stop-VerifiedWord` still exists, still kills, and still re-checks what
+//      the kill did -- so 1 cannot be satisfied by deleting the one sanctioned
+//      kill, and 'killed' cannot quietly go back to being a claim about a call.
 //   4. `Stop-VerifiedWord` itself decides correctly, checked by executing a
 //      model of its extracted decision sequence.
 //
@@ -381,6 +382,27 @@ test(`${KILLER} still exists and still kills`, async (t) => {
     const body = functionBody(source, KILLER);
     assert.ok(body, `${KILLER} is not in ${KILLER_FILE}; test 1's exemption now covers nothing`);
     assert.match(body.text, /Stop-Process\s+-Id\s+\$ProcessId\s+-Force/, `${KILLER} no longer kills the pid it was given`);
+
+    // And that it checks what the kill did. `Stop-Process -ErrorAction
+    // SilentlyContinue` swallows its errors, so without this re-check 'killed'
+    // is a claim about a CALL, not about a process, and a caller that reads it
+    // as "reaped" hides a leak.
+    //
+    // Pinned HERE rather than in test 4 because test 4's model deliberately
+    // cannot see it: reaching the kill is what decides 'killed' there, and what
+    // the helper reports afterwards cannot terminate a process the guards would
+    // have spared, so the model treats it as outside the decision. That leaves
+    // presence unpinned -- measured, by deleting the re-check and watching test
+    // 4 stay green. Test 4 pins the check's POSITION (it may only appear after
+    // the kill); this pins its EXISTENCE. Neither implies the other. The
+    // position pin is only as good as the extractor's line coverage, which is
+    // why `decisionsOf` fails any unparsed line carrying a `return`.
+    assert.match(
+        body.text,
+        /Get-Process\s+-Id\s+\$ProcessId\s+-ErrorAction\s+SilentlyContinue\)\s*\{\s*return\s+'killed:survived'/,
+        `${KILLER} issues the kill but no longer verifies it, so 'killed' has gone back to being a claim about a call ` +
+            "that swallowed its errors rather than about a process",
+    );
 });
 
 // --- 4: Stop-VerifiedWord decides correctly -----------------------------------
@@ -428,6 +450,17 @@ const READS = [
 const POST_KILL = [/^Get-Process -Id \$ProcessId -ErrorAction SilentlyContinue$/];
 
 function decisionsOf(body) {
+    // Every line after the guards names `$ProcessId`, so the guards' verdict
+    // only transfers to the kill and the re-check if that name still means the
+    // pid they verified. Rebinding it is invisible to the walk below, which
+    // matches on TEXT: measured on the sibling guard, inserting `$ProcessId =
+    // $OtherPid` between the kill and the re-check left every test green while
+    // the re-check queried a process nothing had verified.
+    assert.ok(
+        !/^\s*\$ProcessId\s*=[^=]/m.test(body),
+        `${KILLER} reassigns $ProcessId; every line after that names a pid the guards never verified, while still reading as though it did`,
+    );
+
     const steps = [];
     let kills = 0;
     for (const raw of body.split("\n")) {
@@ -462,8 +495,18 @@ function decisionsOf(body) {
         // because the state pattern's character class had no hyphen, and the
         // model then reported that world as reaching the kill. A guard the model
         // cannot see is a guard the model reports as absent.
+        //
+        // The test is `contains a return`, NOT `starts with if( or try{`. An
+        // earlier version asked the narrower question and could be blinded by a
+        // LINE BREAK: splitting the post-kill check as `if (` + `Get-Process
+        // ...) { return 'killed:survived' }` left the first line returnless and
+        // the second line not starting with `if (`, so both slipped past, the
+        // check never entered the sequence, and POST_KILL was never consulted --
+        // measured on the sibling guard, a re-check hoisted ABOVE the kill that
+        // way passed every test. The same widening also rejects a `return`
+        // hidden in a string literal or in a nested `function` declaration.
         assert.ok(
-            !/^(?:if\s*\(|try\s*\{)/.test(line) || !/\breturn\b/.test(line),
+            !/\breturn\b/.test(line) || /^return '[\w:-]+'$/.test(line),
             `unparsed returning line \`${line}\` in ${KILLER} -- it decides something the model cannot see, so extend the model deliberately`,
         );
 
@@ -531,13 +574,19 @@ const CASES = [
     // check leaves this world reporting a name verdict for a process whose
     // handle was never held.
     ["J: handle unpinnable AND recycled onto another name", { ...ok, handleReadable: false, name: "notepad" }, "declined:handle"],
-    // K sits in the intersection that pins the kill's POSITION. Every other
-    // world here would still be decided correctly by a helper that killed on its
-    // first line, because the decline it expects is reachable below the kill as
-    // dead code -- the walk simply never gets there. K is a world where the
-    // guards are unanimous and the correct answer is a decline, so a hoisted
-    // kill turns it into 'killed' and nothing else has to change.
-    ["K: nothing about this pid verifies -- a hoisted kill would take it", { ...ok, name: "notepad", expectedStart: null, startReadable: false }, "declined:name"],
+    // K pins the ORDER AMONG THE GUARDS: the name check must sit above both
+    // verification checks, so a pid that fails identity AND verification is
+    // reported by identity -- the fact about the process -- rather than by our
+    // own bookkeeping. Measured on the sibling guard: moving either the
+    // `$ExpectedStart` guard or the `$p.StartTime` read above the name check
+    // flips K and nothing else, in both cases 1 of 12.
+    //
+    // An earlier version of this comment claimed K was the only world a hoisted
+    // kill would flip. That was false: reaching the kill terminates the walk, so
+    // a kill on the first line returns 'killed' for every world, and the
+    // mutation is reported as 11 of 12 worlds decided wrongly. The kill's
+    // position is pinned by the walk itself, not by K.
+    ["K: identity and verification both fail -- identity must be the verdict", { ...ok, name: "notepad", expectedStart: null, startReadable: false }, "declined:name"],
     // H is the one that fails if the helper is made to refuse everything.
     ["H: our own process, fully verified", ok, "killed"],
 ];
