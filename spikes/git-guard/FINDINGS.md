@@ -4,8 +4,8 @@ One question, from #148: **can `gitAvailable()` tell "git is not runnable" from
 "this directory is not a repository"?** Those mean opposite things — the first
 is a broken environment and must fail loudly, the second is the installed
 extension folder and must skip — and a bare `catch` collapsed them into one
-`false` at 17 guarded call sites, so a runner with a broken git reported a green
-suite that had executed nothing.
+`false` at every guarded call site, so a runner with a broken git reported a
+green suite that had executed nothing.
 
 Probe: `probes/probe-execfile-error-shapes.mjs`. No Office, no Windows, no
 network. Run it with `node`.

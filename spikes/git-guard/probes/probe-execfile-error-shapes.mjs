@@ -7,7 +7,7 @@
 // the guards must fail loudly; a plain directory that is not a repository is the
 // installed-extension mode the guards exist to skip in. Before #148 a bare
 // `catch` collapsed both into "no repository here", so a runner with a broken
-// git reported a green suite that executed nothing at 17 call sites.
+// git reported a green suite that executed nothing at every guarded call site.
 //
 // The split has to be made on the error **shape**, never on the message: this
 // repo is developed on a German-language Windows, where both the platform's

@@ -229,8 +229,20 @@ test("the guarded tests skip, and the unguarded one still runs, in a non-reposit
 
         // The reporter's prefix is environment-dependent -- a TTY writes `ℹ`
         // and a pipe writes `#` -- so a filter hard-coded to either matches
-        // nothing in the other, and absence would read as green. `.` matches
-        // whichever arrived, and a parse failure is a failure.
+        // nothing in the other. `.` matches whichever arrived.
+        //
+        // The strictness is not style. A parse failure is asserted as a failure
+        // because the tally being *absent* is a real shape, not a hypothetical
+        // one: a nested `node --test` that inherits `NODE_TEST_CONTEXT`
+        // switches to the machine-readable protocol its parent expects and
+        // writes no human summary -- measured at 184 bytes with zero parseable
+        // tally lines -- and this test hit exactly that before `nonRepoInstall`
+        // began deleting the variable. A lenient parser would then have asserted
+        // `pass 1 / skipped 7` against empty stdout and passed forever.
+        // Verified against eleven inputs including that one: it refuses empty
+        // stdout, a TAP body with no summary, the machine-readable protocol,
+        // and near-miss lines such as `ok 1 - pass 1` and `# pass 1 of 8`,
+        // while still reading both prefixes and CRLF.
         const tally = (key) => {
             const m = stdout.match(new RegExp(String.raw`^.\s*${key}\s+(\d+)\s*$`, "m"));
             assert.ok(m, `could not parse '${key}' from the reporter output:\n${stdout}`);
