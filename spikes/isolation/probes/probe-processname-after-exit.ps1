@@ -176,6 +176,16 @@ if ($null -eq $sys) {
     $sysStart = $sys.StartTime
     Write-Output ("E  protected process: name '{0}', StartTime {1}, `$Error grew by {2}" -f $sys.ProcessName, $(if ($null -eq $sysStart) { '$null' } else { $sysStart }), ($Error.Count - $before))
     Write-Output '   [the same silent conversion: a guarded and an unguarded StartTime read agree here too]'
+    # E2 is the OTHER cause of a $null pin, and it is measured here rather than
+    # asserted: arm F2 below shows what an EXITED process answers, which says
+    # nothing about one that is present and refuses the open. pid 4 is opened
+    # for a handle and nothing else; no attempt is made to touch it.
+    $before = $Error.Count
+    $threwE = $false
+    $sysHandle = $null
+    try { $sysHandle = $sys.Handle } catch { $threwE = $true }
+    Write-Output ("E2 .Handle on that same process     -> {0}  threw={1}  `$Error grew by {2}" -f `
+        $(if ($null -eq $sysHandle) { '$null' } else { 'a handle' }), $threwE, ($Error.Count - $before))
 }
 Write-Output ''
 

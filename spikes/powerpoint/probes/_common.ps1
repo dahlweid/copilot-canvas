@@ -95,14 +95,26 @@ function Close-PowerPointInstance($ctx) {
 # used to claim. That one terminates with $p.Kill() inside a try/catch -- which
 # THROWS where Stop-Process -ErrorAction SilentlyContinue swallows -- and
 # returns 'gone' for a pid that is not Word where both spikes helpers decline.
-# Whether the shipped host should converge is a question about shipped
-# behaviour with its own callers, and is filed separately.
+# Whether the shipped host should converge was that question, and issue #150
+# answered it: it does not converge. The shipped host now returns 'gone' for a
+# process that exited before its terminate landed, and keeps 'gone' for a pid
+# that is not Word, on the ground that a pid cannot be reused while its Process
+# object lives -- so "nothing of ours is at this pid" is true there rather than
+# approximate. These two helpers still decline both. The divergence is settled,
+# not outstanding.
 #
-# Order matters. The handle is pinned FIRST, because everything after it is a
-# read of a process that could otherwise exit and have its pid reused
-# underneath the checks. Absence is distinguished from non-verification: a pid
-# that is gone is 'gone' and fine, whereas a pid we cannot verify is declined
-# and said out loud.
+# Order matters. The handle is pinned FIRST -- or rather, pinning is ATTEMPTED
+# first, which is not the same thing and this comment used to conflate them.
+# Everything after it is a read of a process that could otherwise exit and have
+# its pid reused underneath the checks, and line 149 kills by PID, so the pin is
+# what stands between a recycled pid and Stop-Process. But the catch on line 143
+# cannot fire: .Handle answers $null WITHOUT throwing on a process that has
+# exited or refuses the open (spikes/isolation/probes/probe-processname-after-exit.ps1,
+# arms E2/F1/F2/F3), so 'declined:handle' is unreachable and control continues
+# on an object that may never have been pinned. Filed rather than fixed in
+# passing -- see issue #155. Absence is distinguished from non-verification: a
+# pid that is gone is 'gone' and fine, whereas a pid we cannot verify is
+# declined and said out loud.
 #
 # The ProcessName read is wrapped in a try/catch whose catch CANNOT CURRENTLY
 # FIRE, and the justification that used to sit here was false. It claimed

@@ -33,9 +33,18 @@
 
 # Shares its SHAPE with Stop-VerifiedWord in
 # .github/extensions/office-canvas/src/word/word-host.ps1 and Stop-VerifiedPpt in
-# spikes/powerpoint/probes/_common.ps1: all three pin a handle, prove identity
-# against a recorded StartTime, and refuse rather than kill when the proof
-# fails. They are NOT a mirror, and this comment used to say they were.
+# spikes/powerpoint/probes/_common.ps1: all three ATTEMPT to pin a handle, prove
+# identity against a recorded StartTime, and refuse rather than kill when the
+# proof fails. Attempt, not achieve: only the shipped host checks that the pin
+# succeeded. `try { $null = $p.Handle } catch { ... }` below cannot tell, because
+# .Handle answers $null WITHOUT throwing on a process that has exited or refuses
+# the open (spikes/isolation/probes/probe-processname-after-exit.ps1, arms
+# E2/F1/F2/F3), so 'declined:handle' is unreachable and control continues on an
+# object that may never have been pinned. That matters more here than it did
+# there, because line 107 kills by PID: the pin is the only thing standing
+# between a recycled pid and Stop-Process. Left as it is deliberately, and filed
+# rather than fixed in passing -- see issue #155.
+# They are NOT a mirror, and this comment used to say they were.
 # Concretely they differ in the state vocabulary they return (the shipped host
 # returns prose, not these short tokens, and has no 'declined:nopid'), in the
 # kill primitive, and in whether the terminate is followed by a re-check --

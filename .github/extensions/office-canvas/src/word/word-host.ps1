@@ -332,20 +332,24 @@ function Stop-VerifiedWord([int]$candidate, $expectedStart) {
     # $Error growing by ZERO. Control reached the next line every time, so the
     # decline was dead code and the pin was assumed rather than taken.
     #
-    # That is not a cosmetic gap. Arm F4 walks the rest of this function on an
-    # unpinned object: the cached name still reads 'WINWORD' and StartTime still
-    # equals what was recorded, so every guard below passes and the terminate is
-    # reached -- unpinned, which is the one state the whole comment above says
-    # must not happen, since Kill() then re-opens by pid (arm D) and the pid may
-    # have been recycled in between.
+    # That is not a cosmetic gap. Arm F4 walks the rest of this function's READS
+    # on an unpinned object: the cached name still reads 'WINWORD' and StartTime
+    # still equals what was recorded, so no guard below can notice. That those
+    # passing guards then reach the terminate is read off the control flow above,
+    # not measured -- what IS measured is what the terminate does once reached,
+    # and unpinned it re-opens by pid (arm D, a different exception from the
+    # pinned case in arm C), which is the whole reason the pin is here: the pid
+    # may have been recycled in between.
     #
-    # $null covers two causes -- the process has exited, and the open was refused
-    # (arm F4 of the probe reads a live protected process the same way) -- so
-    # this declines rather than returning 'gone', and its reason names only the
-    # failure it observed and not which of the two produced it. The try/catch is
-    # kept because .NET's getter genuinely can throw and only PowerShell's
-    # adapter hides it; if this value is ever acquired by another route, it will
-    # throw again.
+    # $null covers two causes, and both are measured rather than assumed: the
+    # process has exited (arm F2) and the open was refused on a process that is
+    # still there (arm E2, on the kernel's protected System process -- $null,
+    # no throw, `$Error` unmoved, exactly as the exited case). They are
+    # indistinguishable here, so this declines rather than returning 'gone', and
+    # its reason names only the failure observed and not which cause produced it.
+    # The try/catch is kept because .NET's getter genuinely can throw and only
+    # PowerShell's adapter hides it; if this value is ever acquired by another
+    # route, it will throw again.
     $pinned = try { $p.Handle } catch { $null }
     if ($null -eq $pinned) { return 'declined:the process handle could not be opened, so the pid cannot be pinned' }
     # This read is deliberately UNGUARDED, and that is measured rather than
@@ -466,6 +470,20 @@ function Clear-OrphanedWord {
                     Write-HostDiagnostic "[word-host] reaped orphaned WINWORD ${wordPid} recorded by host ${hostPid}: its start time matched the one recorded beside the pid, and the terminate was accepted."
                 }
                 if ($outcome -notin @('killed', 'gone')) {
+                    # This sentence survives where the one at Stop-Word's
+                    # decline did not, and the difference is not an oversight to
+                    # be tidied. Checked state by state against the five declines
+                    # Stop-VerifiedWord can now return: an unpinnable handle, no
+                    # recorded start time, an unreadable start time, a start-time
+                    # mismatch, and a failed terminate. `Get-Process` succeeded,
+                    # so SOMETHING holds this pid; it is either the Word this
+                    # host recorded or whatever took the pid after it died, and
+                    # those two are exhaustive. Every state satisfies one
+                    # disjunct -- including the failed terminate, where identity
+                    # was proved and the leaked Word is the true one. Stop-Word's
+                    # sentence was deleted because for that same state BOTH of
+                    # its disjuncts were false, which is a different fault:
+                    # over-claiming a cause, not under-resolving one.
                     Write-HostDiagnostic "[word-host] refusing to reap pid ${wordPid} recorded by host ${hostPid}: $($outcome -replace '^declined:', ''). Not killed; it is either a leaked Word or an unrelated process that inherited the pid."
                 }
             }
@@ -1057,11 +1075,12 @@ function Stop-Word {
                 # given anything to observe.
                 #
                 # (This used to claim #33 "replaced every bare `catch {}` in
-                # this function". It did not, and the same file says so 120
-                # lines above: #33 instrumented 11 swallowing catches and
-                # replaced the ONE that was throwing. Two bare catches remain
-                # in this function -- the ReleaseComObject above and the one
-                # closing this very try. The claim was checkable and false.)
+                # this function". It did not, and the same file says so in
+                # Stop-Word's Quit catch, whose comment records instrumenting
+                # all 11 swallowing catches around Quit/Close/ReleaseComObject
+                # and finding this the only site throwing. Two bare catches
+                # remain in this function -- the ReleaseComObject above and the
+                # one closing this very try. The claim was checkable and false.)
                 #
                 # This line used to end "Either our Word exited and the pid was
                 # reused, or its identity could not be proved." Neither holds
