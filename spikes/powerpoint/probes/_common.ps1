@@ -105,41 +105,29 @@ function Close-PowerPointInstance($ctx) {
 # unverified state described below, in which reuse IS possible. These two helpers
 # still decline both. The divergence is settled, not outstanding.
 #
-# Order matters. The handle is pinned FIRST -- or rather, pinning is ATTEMPTED
-# first, which is not the same thing and this comment used to conflate them.
-# Everything after it is a read of a process that could otherwise exit and have
-# its pid reused underneath the checks, and this helper terminates by PID
-# (`Stop-Process -Id` below) rather than through the pinned object, so the pin is
-# what stands between a recycled pid and Stop-Process. But the `.Handle` catch
-# below cannot fire: .Handle answers $null WITHOUT throwing on a process that has
-# exited or refuses the open (spikes/isolation/probes/probe-processname-after-exit.ps1,
-# arms E2/F1/F2/F3), so 'declined:handle' is unreachable and control continues
-# on an object that may never have been pinned. Filed rather than fixed in
-# passing -- see issue #155. Absence is distinguished from non-verification: a
-# pid that is gone is 'gone' and fine, whereas a pid we cannot verify is
-# declined and said out loud.
+# Order matters. The handle is pinned FIRST, and the returned value is checked
+# before any identity read. Everything after it is a read of a process that
+# could otherwise exit and have its pid reused underneath the checks, and this
+# helper terminates by pid (`Stop-Process -Id` below) rather than through the
+# pinned object. Measured in
+# spikes/isolation/probes/probe-processname-after-exit.ps1: `.Handle` returns
+# $null without throwing after exit and when the open is refused (arms F2/E2),
+# merely reaching the statement after the getter proves nothing (F3), and the
+# cached identity reads still pass on the resulting unpinned object (F4).
+# Absence is distinguished from non-verification: a pid that is gone is 'gone'
+# and fine, whereas a pid whose handle value cannot prove a pin is declined and
+# said out loud.
 #
-# The ProcessName read is wrapped in a try/catch whose catch CANNOT CURRENTLY
-# FIRE, and the justification that used to sit here was false. It claimed
-# ProcessName on an exited process can throw into this caller, and that an
-# uncaught throw would propagate into the caller's finally and skip everything
-# below the call. The second half describes the callers correctly --
-# Stop-IsolatedPowerPoint (spikes/powerpoint/probes/_isolated.ps1) runs from
-# spikes/powerpoint/probes/probe-cross-instance-lock.ps1's finally and closes a
-# desktop after this call, and spikes/powerpoint/probes/probe-second-process.ps1
-# calls this from a finally that then releases the RCW, closes a desktop and
-# prints the leak census -- but the first half is not true, so the consequence
-# never arises. Measured, spikes/isolation/probes/probe-processname-after-exit.ps1
-# (the behaviour is System.Diagnostics.Process's, not Word's or PowerPoint's):
-# the .NET getter does throw, but PowerShell's property adapter converts it to
-# $null before any caller sees it, with `$Error` growing by zero even under
-# 'Stop' (arms A1/A2); and via `Get-Process -Id`, as this helper acquires it
-# below, the name is
-# materialized at acquisition and that copy outlives the process anyway (A1).
-# So 'declined:unreadable-name' is UNREACHABLE here: an unreadable name would
-# arrive below as $null and be refused as 'declined:name'. The try/catch is
-# kept as defence in depth should the acquisition route ever change; nothing
-# should be written that depends on the state existing.
+# The ProcessName and StartTime catches CANNOT CURRENTLY FIRE. Measured in
+# spikes/isolation/probes/probe-processname-after-exit.ps1 (the behaviour is
+# System.Diagnostics.Process's, not Word's or PowerPoint's): PowerShell's
+# property adapter converts the name getter's .NET exception to $null before the
+# caller sees it (arms A1/A2), while `Get-Process -Id` materializes a cached name
+# that outlives the process anyway (A1); StartTime on the protected process also
+# returns $null without throwing (E). The comparisons below then fail closed as
+# 'declined:name' or 'declined:start'. Both catches stay as defence in depth
+# should the acquisition route or adapter behaviour change; no caller may depend
+# on either catch state being reachable today.
 #
 # 'killed' vs 'killed:survived': both mean every guard passed and the terminate
 # was issued. They differ only in what was then OBSERVED. Only 'gone' and
@@ -156,7 +144,8 @@ function Stop-VerifiedPpt([int]$ProcessId, $ExpectedStart) {
     if (-not $ProcessId) { return 'declined:nopid' }
     $p = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
     if (-not $p) { return 'gone' }
-    try { $null = $p.Handle } catch { return 'declined:handle' }
+    $pinned = try { $p.Handle } catch { $null }
+    if ($null -eq $pinned) { return 'declined:handle' }
     try { $name = $p.ProcessName } catch { return 'declined:unreadable-name' }
     if ($name -ne 'POWERPNT') { return 'declined:name' }
     if ($null -eq $ExpectedStart) { return 'declined:unverified' }
