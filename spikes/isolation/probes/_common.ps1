@@ -41,7 +41,8 @@
 # the open (spikes/isolation/probes/probe-processname-after-exit.ps1, arms
 # E2/F1/F2/F3), so 'declined:handle' is unreachable and control continues on an
 # object that may never have been pinned. That matters more here than it did
-# there, because line 107 kills by PID: the pin is the only thing standing
+# there, because this helper terminates by PID (`Stop-Process -Id` below) rather
+# than through the pinned object: the pin is the only thing standing
 # between a recycled pid and Stop-Process. Left as it is deliberately, and filed
 # rather than fixed in passing -- see issue #155.
 # They are NOT a mirror, and this comment used to say they were.

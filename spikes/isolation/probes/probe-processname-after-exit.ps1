@@ -32,7 +32,7 @@
 #
 #   A1  name read after exit, via the helper's acquisition route
 #   A2  the same read forced through reflection, bypassing the adapter
-#   A3  the decision the shipped helper's line 326 then takes
+#   A3  the decision the shipped helper's name check then takes
 #   B   the full guard chain run against a corpse: does it reach the kill?
 #   C   Kill() on an exited subject, handle pinned -- and which catch fires
 #   D   Kill() on an exited subject, NOT pinned -- the file's own discriminator
@@ -101,7 +101,7 @@ try {
 }
 
 # So the guarded and unguarded forms are indistinguishable from PowerShell, and
-# the shipped helper's line 326 takes this branch on an unreadable name:
+# the shipped helper's name check takes this branch on an unreadable name:
 Write-Output ("A3 (`$name -ne 'WINWORD') where name is `$null -> {0}   [helper returns 'gone': the SAFE branch]" -f ($after -ne 'WINWORD'))
 Write-Output ''
 
@@ -109,7 +109,7 @@ Write-Output ''
 $b = Get-Corpse
 $q = $b.Proc
 $stillThere = Get-Process -Id $q.Id -ErrorAction SilentlyContinue
-Write-Output ("B0 Get-Process -Id, re-taken         -> {0}" -f $(if ($null -eq $stillThere) { "`$null   [a FRESH acquisition returns 'gone' at line 323]" } else { 'an object' }))
+Write-Output ("B0 Get-Process -Id, re-taken         -> {0}" -f $(if ($null -eq $stillThere) { "`$null   [a FRESH acquisition returns 'gone' at the helper's Get-Process]" } else { 'an object' }))
 # But the helper does not re-acquire. Within one call the object is taken once
 # and the process may exit at any point after. On THAT object:
 $name = $q.ProcessName
@@ -166,7 +166,7 @@ Write-Output ''
 # --- E: a live process whose reads are refused rather than absent -------------
 # Separated from the arms above because "the process is gone" and "the process
 # is there and will not answer" are different states, and only the first is
-# what the helper's line 326 is about. pid 4 is the kernel's System process; it
+# what the helper's name check is about. pid 4 is the kernel's System process; it
 # is only read here, never touched.
 $sys = Get-Process -Id 4 -ErrorAction SilentlyContinue
 if ($null -eq $sys) {

@@ -401,8 +401,8 @@ function Stop-VerifiedWord([int]$candidate, $expectedStart) {
     # the only thing knowable is that it exited. A pid cannot be recycled while
     # this handle is open, so an inherited pid is excluded by construction.
     # (Both quoted sentences have since been removed from their callers, for
-    # reasons recorded at each; they are quoted here as the defect they were,
-    # and will not be found by searching for them.)
+    # reasons recorded at each; neither is emitted anywhere now, and the only
+    # matches a search turns up are quotations of them like this one.)
     if ($failure -is [InvalidOperationException]) { return 'gone' }
     if ($null -ne $failure) { return "declined:the terminate failed ($($failure.Message.Split([char]10)[0]))" }
     # There is deliberately NO re-check that the process has gone, and this note

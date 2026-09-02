@@ -98,17 +98,20 @@ function Close-PowerPointInstance($ctx) {
 # Whether the shipped host should converge was that question, and issue #150
 # answered it: it does not converge. The shipped host now returns 'gone' for a
 # process that exited before its terminate landed, and keeps 'gone' for a pid
-# that is not Word, on the ground that a pid cannot be reused while its Process
-# object lives -- so "nothing of ours is at this pid" is true there rather than
-# approximate. These two helpers still decline both. The divergence is settled,
-# not outstanding.
+# that is not Word, on the ground that a pid cannot be recycled while a HANDLE to
+# the process is open -- and its name check runs only after it has verified the
+# pin by value, so "nothing of ours is at this pid" is true there rather than
+# approximate. A living Process object is not enough for that: it is exactly the
+# unverified state described below, in which reuse IS possible. These two helpers
+# still decline both. The divergence is settled, not outstanding.
 #
 # Order matters. The handle is pinned FIRST -- or rather, pinning is ATTEMPTED
 # first, which is not the same thing and this comment used to conflate them.
 # Everything after it is a read of a process that could otherwise exit and have
-# its pid reused underneath the checks, and line 149 kills by PID, so the pin is
-# what stands between a recycled pid and Stop-Process. But the catch on line 143
-# cannot fire: .Handle answers $null WITHOUT throwing on a process that has
+# its pid reused underneath the checks, and this helper terminates by PID
+# (`Stop-Process -Id` below) rather than through the pinned object, so the pin is
+# what stands between a recycled pid and Stop-Process. But the `.Handle` catch
+# below cannot fire: .Handle answers $null WITHOUT throwing on a process that has
 # exited or refuses the open (spikes/isolation/probes/probe-processname-after-exit.ps1,
 # arms E2/F1/F2/F3), so 'declined:handle' is unreachable and control continues
 # on an object that may never have been pinned. Filed rather than fixed in
@@ -130,7 +133,8 @@ function Close-PowerPointInstance($ctx) {
 # (the behaviour is System.Diagnostics.Process's, not Word's or PowerPoint's):
 # the .NET getter does throw, but PowerShell's property adapter converts it to
 # $null before any caller sees it, with `$Error` growing by zero even under
-# 'Stop' (arms A1/A2); and via `Get-Process -Id`, as on line 133, the name is
+# 'Stop' (arms A1/A2); and via `Get-Process -Id`, as this helper acquires it
+# below, the name is
 # materialized at acquisition and that copy outlives the process anyway (A1).
 # So 'declined:unreadable-name' is UNREACHABLE here: an unreadable name would
 # arrive below as $null and be refused as 'declined:name'. The try/catch is
