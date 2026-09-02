@@ -99,6 +99,32 @@
 //     `DisplayAlerts`. Those write to an instance reached through our own RCW,
 //     not through a census, and the measurement above makes that instance ours.
 //
+// STANDING MUTATION SET for the extraction model. Each of these is a post-kill
+// re-check that is PRESENT BUT WRONG, and each passed all four tests in this
+// file before `decisionsOf` was widened. Re-run them against any change to the
+// extractor: a change that admits one has re-opened the hole.
+//
+//   1. `$ProcessId` rebound between the kill and the re-check, so the check
+//      spells the verified pid and queries another one -- rejected by the
+//      reassignment assertion at the top of `decisionsOf`.
+//   2. The re-check hoisted ABOVE the kill and split across two physical lines
+//      (`if (` then `Get-Process ...) { return 'killed:survived' }`). The first
+//      line carries no `return` and the second does not start with `if (`, so
+//      both slipped the catch-all and POST_KILL was never consulted -- rejected
+//      by the unparsed-returning-line assertion.
+//   3. A nested `function Get-Process` shadowing the real lookup so its value
+//      cannot gate the state -- same assertion; the nested body carries a
+//      `return`.
+//   4. The pattern present only inside a string literal, with no re-check at
+//      all -- same assertion.
+//
+// Found by review round 1 on #145 and measured against the RUNNING guard rather
+// than against the regex alone, which is the distinction that made them
+// visible: all four green before, all four red after, each naming the assertion
+// above. Measured on THIS guard as well as the sibling, rather than inferred
+// from it. The general lesson outlives the four -- an existence assertion pins
+// TEXT, so it is worth exactly what the extractor's line coverage is worth.
+//
 // Office-free. Reads tracked files and runs `git ls-files`.
 //
 // Run: node --test ".github/extensions/office-canvas/test/unit/*.test.mjs"
