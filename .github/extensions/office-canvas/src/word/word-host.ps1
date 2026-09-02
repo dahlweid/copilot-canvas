@@ -400,6 +400,9 @@ function Stop-VerifiedWord([int]$candidate, $expectedStart) {
     # and the pid was reused" -- four assertions about a cause, all false, when
     # the only thing knowable is that it exited. A pid cannot be recycled while
     # this handle is open, so an inherited pid is excluded by construction.
+    # (Both quoted sentences have since been removed from their callers, for
+    # reasons recorded at each; they are quoted here as the defect they were,
+    # and will not be found by searching for them.)
     if ($failure -is [InvalidOperationException]) { return 'gone' }
     if ($null -ne $failure) { return "declined:the terminate failed ($($failure.Message.Split([char]10)[0]))" }
     # There is deliberately NO re-check that the process has gone, and this note
@@ -470,21 +473,42 @@ function Clear-OrphanedWord {
                     Write-HostDiagnostic "[word-host] reaped orphaned WINWORD ${wordPid} recorded by host ${hostPid}: its start time matched the one recorded beside the pid, and the terminate was accepted."
                 }
                 if ($outcome -notin @('killed', 'gone')) {
-                    # This sentence survives where the one at Stop-Word's
-                    # decline did not, and the difference is not an oversight to
-                    # be tidied. Checked state by state against the five declines
-                    # Stop-VerifiedWord can now return: an unpinnable handle, no
-                    # recorded start time, an unreadable start time, a start-time
-                    # mismatch, and a failed terminate. `Get-Process` succeeded,
-                    # so SOMETHING holds this pid; it is either the Word this
-                    # host recorded or whatever took the pid after it died, and
-                    # those two are exhaustive. Every state satisfies one
-                    # disjunct -- including the failed terminate, where identity
-                    # was proved and the leaked Word is the true one. Stop-Word's
-                    # sentence was deleted because for that same state BOTH of
-                    # its disjuncts were false, which is a different fault:
-                    # over-claiming a cause, not under-resolving one.
-                    Write-HostDiagnostic "[word-host] refusing to reap pid ${wordPid} recorded by host ${hostPid}: $($outcome -replace '^declined:', ''). Not killed; it is either a leaked Word or an unrelated process that inherited the pid."
+                    # This line used to end "it is either a leaked Word or an
+                    # unrelated process that inherited the pid". That is gone,
+                    # and NOT because Stop-Word's decline lost a similar
+                    # sentence -- a divergence is not on its own a defect. It is
+                    # gone because NO fixed suffix can be right here. Walked
+                    # against all five declines Stop-VerifiedWord can return,
+                    # they establish materially different things about the pid:
+                    #
+                    #   unpinnable handle   the pin FAILED, so nothing below it
+                    #                       ran. That $null has two measured
+                    #                       causes (arms F2 and E2) and on the
+                    #                       first the process exited BEFORE the
+                    #                       pin was taken, so at print time
+                    #                       nothing need hold the pid at all.
+                    #                       Both disjuncts false.
+                    #   no recorded start   pinned, so something IS held, but
+                    #   unreadable start    identity is unproven. Either
+                    #                       disjunct could be the true one.
+                    #   start mismatch      pinned; identity DISPROVEN. The code
+                    #                       knows it is not the recorded Word.
+                    #   terminate failed    pinned and matched; identity PROVEN.
+                    #                       The code knows it IS that Word.
+                    #
+                    # A constant sentence is therefore false in the first state
+                    # and weaker than what was determined in the last two, where
+                    # it offers the reader a choice the code has already made.
+                    # Widening it to three disjuncts fixes the first state by
+                    # making those last two worse. The `Get-Process` at the top
+                    # of Stop-VerifiedWord cannot rescue it either: that
+                    # observation was taken before the pin was attempted, and
+                    # the one state that invalidates it is the state that
+                    # reports the pin failing -- leaning on it here would be the
+                    # time-of-check/time-of-use gap the pin exists to close.
+                    # The interpolated reason is per-state and is the whole of
+                    # what was determined, so it stands alone.
+                    Write-HostDiagnostic "[word-host] refusing to reap pid ${wordPid} recorded by host ${hostPid}: $($outcome -replace '^declined:', ''). Not killed."
                 }
             }
             Remove-Item -LiteralPath $file.FullName -Force -ErrorAction SilentlyContinue
