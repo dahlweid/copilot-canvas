@@ -31,20 +31,17 @@
 # either arm. Quitting a Word we created is sound. Killing a pid we merely
 # observed appearing is not, and that distinction is the whole of issue #136.
 
-# Shares its SHAPE with Stop-VerifiedWord in
+# Shares its handle-pin SHAPE with Stop-VerifiedWord in
 # .github/extensions/office-canvas/src/word/word-host.ps1 and Stop-VerifiedPpt in
-# spikes/powerpoint/probes/_common.ps1: all three ATTEMPT to pin a handle, prove
-# identity against a recorded StartTime, and refuse rather than kill when the
-# proof fails. Attempt, not achieve: only the shipped host checks that the pin
-# succeeded. `try { $null = $p.Handle } catch { ... }` below cannot tell, because
-# .Handle answers $null WITHOUT throwing on a process that has exited or refuses
-# the open (spikes/isolation/probes/probe-processname-after-exit.ps1, arms
-# E2/F1/F2/F3), so 'declined:handle' is unreachable and control continues on an
-# object that may never have been pinned. That matters more here than it did
-# there, because this helper terminates by PID (`Stop-Process -Id` below) rather
-# than through the pinned object: the pin is the only thing standing
-# between a recycled pid and Stop-Process. Left as it is deliberately, and filed
-# rather than fixed in passing -- see issue #155.
+# spikes/powerpoint/probes/_common.ps1: all three bind `.Handle`, test the value,
+# prove identity against a recorded StartTime, and refuse rather than kill when
+# the proof fails. Testing the value is load-bearing. Measured in
+# spikes/isolation/probes/probe-processname-after-exit.ps1: `.Handle` returns
+# $null without throwing after exit and when the open is refused (arms F2/E2),
+# so merely reaching the statement after the getter does not prove a pin (F3).
+# On that unpinned object the cached name and StartTime still pass (F4). This
+# helper terminates by pid, so it must decline before `Stop-Process` unless the
+# value proves the pid is pinned.
 # They are NOT a mirror, and this comment used to say they were.
 # Concretely they differ in the state vocabulary they return (the shipped host
 # returns prose, not these short tokens, and has no 'declined:nopid'), in the
@@ -69,23 +66,17 @@
 #      open, so from that point the identity read and the terminate are provably
 #      about the same process.
 #   2. ProcessName, so a pid already recycled onto something else is refused
-#      before we look at times at all. The read is wrapped in a try/catch, and
-#      that catch CANNOT CURRENTLY FIRE -- measured, and the justification that
-#      used to sit here was false. It claimed `ProcessName` on an exited process
-#      can throw into this caller, and that an uncaught throw would propagate
-#      into the caller's `finally` and skip the cleanup below it. Neither half
-#      survives measurement, for two independent reasons
-#      (spikes/isolation/probes/probe-processname-after-exit.ps1):
-#      the .NET getter does throw, but PowerShell's property adapter converts it
-#      to $null before any caller sees it -- with `$Error` growing by zero, even
-#      under 'Stop' (arms A1/A2); and the object never reaches that state here
-#      anyway, because `Get-Process -Id` materializes the name and that copy
-#      outlives the process (arm A1). So 'declined:unreadable-name' is
-#      UNREACHABLE via this acquisition route: an unreadable name would arrive
-#      below as $null and be refused by step 2's own comparison as
-#      'declined:name'. The try/catch is kept as defence in depth should the
-#      acquisition route ever change -- deleting it is a separate decision --
-#      but nothing should be written that depends on the state existing.
+#      before we look at times at all. Neither this getter's catch nor the
+#      StartTime getter's catch can currently fire. Measured in
+#      spikes/isolation/probes/probe-processname-after-exit.ps1: PowerShell's
+#      property adapter converts the name getter's .NET exception to $null
+#      before the caller sees it (arms A1/A2), while `Get-Process -Id`
+#      materializes a cached name that outlives the process anyway (A1);
+#      StartTime on the protected process likewise returns $null without
+#      throwing (E). The comparisons below then fail closed as 'declined:name'
+#      or 'declined:start'. Both catches stay as defence in depth should the
+#      acquisition route or adapter behaviour change; no caller may depend on
+#      either catch state being reachable today.
 #   3. `$null -eq $ExpectedStart` BEFORE any comparison against it. This is not
 #      style. Under PowerShell, `$someDateTime -ne $null` evaluates to $true, so
 #      a missing expected time compared directly would pass the mismatch test and
@@ -108,7 +99,8 @@ function Stop-VerifiedWord([int]$ProcessId, $ExpectedStart) {
     if (-not $ProcessId) { return 'declined:nopid' }
     $p = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
     if (-not $p) { return 'gone' }
-    try { $null = $p.Handle } catch { return 'declined:handle' }
+    $pinned = try { $p.Handle } catch { $null }
+    if ($null -eq $pinned) { return 'declined:handle' }
     try { $name = $p.ProcessName } catch { return 'declined:unreadable-name' }
     if ($name -ne 'WINWORD') { return 'declined:name' }
     if ($null -eq $ExpectedStart) { return 'declined:unverified' }

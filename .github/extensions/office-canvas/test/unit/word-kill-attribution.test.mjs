@@ -435,27 +435,28 @@ test(`${KILLER} still exists and still kills`, async (t) => {
 
 // Each condition the model understands, as a predicate over a world. An
 // unlisted condition is a parse failure, not a pass.
+const HANDLE_UNREADABLE = (w) => !w.handleReadable;
 const CONDITIONS = [
     [/^-not \$ProcessId$/, (w) => !w.processId],
     [/^-not \$p$/, (w) => !w.exists],
+    [/^\$null -eq \$pinned$/, HANDLE_UNREADABLE, "requires-pin-binding"],
     [/^\$name -ne 'WINWORD'$/, (w) => w.name !== "WINWORD"],
     [/^\$null -eq \$ExpectedStart$/, (w) => w.expectedStart === null],
     [/^\$actual -ne \$ExpectedStart$/, (w) => w.actualStart !== w.expectedStart],
 ];
 
-// A `try { STMT } catch { return 'x' }` guard: the read failing IS the
-// condition. All three are reads of a live process that can vanish or be
-// protected -- but NONE of them surfaces that as an exception here, so all
-// three of these decline states are unreachable and the model walks worlds the
-// helper cannot actually produce. Measured, spikes/isolation/probes/probe-processname-after-exit.ps1:
-// .Handle answers $null without throwing on an exited process (F2) and on one
-// that refuses the open (E2); ProcessName is materialized by `Get-Process -Id`
-// and outlives the process (A1); StartTime on a protected process is likewise
-// $null, not a throw (E). `$Error` grows by zero in every case, even under
-// 'Stop'. The states are kept because the guards are (issue #155); this comment
-// used to give the throw as their justification, which was never probed.
+// The handle read is a value binding, and its $null test lives in CONDITIONS.
+// This is what makes the unpinnable world reachable: .Handle returns $null
+// without throwing after exit (F2) and when the open is refused (E2).
+//
+// The other two entries are `try { STMT } catch { return 'x' }` guards whose
+// catch states remain unreachable today. ProcessName is materialized by
+// `Get-Process -Id` and outlives the process (A1); StartTime on the protected
+// process is $null, not a throw (E). They stay as defence in depth should the
+// acquisition route or adapter behaviour change, so the model keeps their
+// hypothetical worlds and requires the source to keep failing closed.
 const READS = [
-    [/^\$null = \$p\.Handle$/, (w) => !w.handleReadable],
+    [/^\$pinned = try \{ \$p\.Handle \} catch \{ \$null \}$/, HANDLE_UNREADABLE, "value-binding"],
     [/^\$name = \$p\.ProcessName$/, (w) => !w.nameReadable],
     [/^\$actual = \$p\.StartTime$/, (w) => !w.startReadable],
 ];
@@ -497,9 +498,16 @@ function decisionsOf(body) {
 
     const steps = [];
     let kills = 0;
+    let pinBindings = 0;
     for (const raw of body.split("\n")) {
         const line = raw.trim();
         if (!line) continue;
+
+        const valueRead = READS.find(([pattern, , kind]) => kind === "value-binding" && pattern.test(line));
+        if (valueRead) {
+            pinBindings += 1;
+            continue;
+        }
 
         const conditional = /^if \((.+)\)\s*\{\s*return '([\w:-]+)'\s*\}$/.exec(line);
         if (conditional) {
@@ -511,6 +519,9 @@ function decisionsOf(body) {
             }
             const known = CONDITIONS.find(([pattern]) => pattern.test(condition.trim()));
             assert.ok(known, `unrecognised condition \`${condition.trim()}\` in ${KILLER} -- the model no longer describes the code, so update it deliberately`);
+            if (known[2] === "requires-pin-binding") {
+                assert.equal(pinBindings, 1, `${KILLER} tests $pinned without exactly one preceding value binding from $p.Handle`);
+            }
             steps.push({ test: known[1], state });
             continue;
         }
@@ -518,7 +529,7 @@ function decisionsOf(body) {
         const guarded = /^try \{\s*(.+?)\s*\} catch \{\s*return '([\w:-]+)'\s*\}$/.exec(line);
         if (guarded) {
             const [, statement, state] = guarded;
-            const known = READS.find(([pattern]) => pattern.test(statement.trim()));
+            const known = READS.find(([pattern, , kind]) => kind !== "value-binding" && pattern.test(statement.trim()));
             assert.ok(known, `unrecognised guarded read \`${statement.trim()}\` in ${KILLER} -- update the model deliberately`);
             steps.push({ test: known[1], state });
             continue;
@@ -551,6 +562,7 @@ function decisionsOf(body) {
     }
     // Exactly one. Two would mean a world can be killed down a path the cases
     // below never walk; zero would mean test 1's exemption covers nothing.
+    assert.equal(pinBindings, 1, `${KILLER} must bind $p.Handle by value exactly once before testing $pinned`);
     assert.equal(kills, 1, `${KILLER} contains ${kills} Stop-Process calls; the sanctioned kill must be exactly one, reached only after every guard`);
     return steps;
 }
@@ -587,9 +599,12 @@ const CASES = [
     ["B: pid already gone -- sound, and not a decline", { ...ok, exists: false }, "gone"],
     ["C: handle cannot be pinned", { ...ok, handleReadable: false }, "declined:handle"],
     ["D: pid recycled onto something that is not Word", { ...ok, name: "notepad" }, "declined:name"],
-    ["F2: name unreadable -- must decline, not throw out of the caller's finally", { ...ok, nameReadable: false }, "declined:unreadable-name"],
+    // These getter-throw worlds are hypothetical under the current acquisition
+    // route. They pin the defence-in-depth decision: if that route changes, an
+    // exception must still decline rather than escape the caller's cleanup.
+    ["defence: name getter throws", { ...ok, nameReadable: false }, "declined:unreadable-name"],
     ["E: launcher never recorded a StartTime", { ...ok, expectedStart: null }, "declined:unverified"],
-    ["F: StartTime unreadable", { ...ok, startReadable: false }, "declined:unreadable"],
+    ["defence: StartTime getter throws", { ...ok, startReadable: false }, "declined:unreadable"],
     ["G: pid recycled onto another WINWORD", { ...ok, actualStart: THEIRS }, "declined:start"],
     // I pins the ORDER, and it is the case #143's guard was missing. Absence is
     // sound WITHOUT a recorded StartTime -- no process holds the pid, so nothing
