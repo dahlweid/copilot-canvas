@@ -314,21 +314,101 @@ function Get-WordStartTime([int]$candidate) {
 # that immaterial: the pin is taken before the read, so anything the read sees
 # is what the kill will terminate.
 #
-# Returns one of: 'killed', 'gone' (nothing of ours is at this pid -- either no
-# process, or one that is not Word), or 'declined:<reason>' (a WINWORD is there
-# and we could not prove it is ours). Callers must report a decline rather than
+# Returns one of: 'killed', 'gone' (nothing of ours is at this pid -- no
+# process, one that is not Word, or one that exited before the terminate
+# landed), or 'declined:<reason>' (whatever is at this pid could not be proved
+# to be ours, so it was left alone). Callers must report a decline rather than
 # swallow it: it means a leaked Word, a pid collision, or both.
 function Stop-VerifiedWord([int]$candidate, $expectedStart) {
     $p = Get-Process -Id $candidate -ErrorAction SilentlyContinue
     if ($null -eq $p) { return 'gone' }
     # Pin first. Every check below is only meaningful once the pid is held.
-    try { $null = $p.Handle } catch { return 'declined:the process handle could not be opened, so the pid cannot be pinned' }
+    #
+    # The pin is checked by VALUE, not by reaching this line. Written as `try {
+    # $null = $p.Handle } catch { ... }` it never declined, because the same
+    # adapter conversion documented below applies here too: measured, arms
+    # F1/F2/F3 of probe-processname-after-exit.ps1 -- .Handle answers a handle on
+    # a live process, but $null on an exited one, without throwing and with
+    # $Error growing by ZERO. Control reached the next line every time, so the
+    # decline was dead code and the pin was assumed rather than taken.
+    #
+    # That is not a cosmetic gap. Arm F4 walks the rest of this function on an
+    # unpinned object: the cached name still reads 'WINWORD' and StartTime still
+    # equals what was recorded, so every guard below passes and the terminate is
+    # reached -- unpinned, which is the one state the whole comment above says
+    # must not happen, since Kill() then re-opens by pid (arm D) and the pid may
+    # have been recycled in between.
+    #
+    # $null covers two causes -- the process has exited, and the open was refused
+    # (arm F4 of the probe reads a live protected process the same way) -- so
+    # this declines rather than returning 'gone', and its reason names only the
+    # failure it observed and not which of the two produced it. The try/catch is
+    # kept because .NET's getter genuinely can throw and only PowerShell's
+    # adapter hides it; if this value is ever acquired by another route, it will
+    # throw again.
+    $pinned = try { $p.Handle } catch { $null }
+    if ($null -eq $pinned) { return 'declined:the process handle could not be opened, so the pid cannot be pinned' }
+    # This read is deliberately UNGUARDED, and that is measured rather than
+    # assumed -- spikes/isolation/probes/probe-processname-after-exit.ps1, arms
+    # A1/A2/A3. Two things were found there, and only together do they settle it:
+    #
+    #   * The .NET getter does throw once the process is gone (arm A2 forces it
+    #     through reflection and gets System.InvalidOperationException), but
+    #     PowerShell's property adapter converts that into $null before any
+    #     caller sees it. `$Error` grows by ZERO, under $ErrorActionPreference
+    #     = 'Stop' as set at the top of this file -- so the swallow is invisible
+    #     to the one setting that would be expected to expose it. A try/catch
+    #     here could not fire, and a decline state behind one would be dead.
+    #   * The object is not in that state anyway: `Get-Process -Id` materializes
+    #     the name from a system-wide enumeration, and that copy survives the
+    #     process. Only `Refresh()` discards it, and nothing here calls it.
+    #     It is the ACQUISITION ROUTE, not the pin, that keeps this readable.
+    #
+    # And if it were ever $null, `$null -ne 'WINWORD'` is true, so this returns
+    # 'gone' -- the safe branch, and the correct one (arm A3).
     if ($p.ProcessName -ne 'WINWORD') { return 'gone' }
     if ($null -eq $expectedStart) { return 'declined:no start time was ever recorded for this pid' }
     $actual = try { $p.StartTime } catch { $null }
     if ($null -eq $actual) { return 'declined:the start time could not be read, so ownership is unproven' }
     if ($actual -ne $expectedStart) { return "declined:start time $actual does not match the recorded $expectedStart" }
-    try { $p.Kill() } catch { return "declined:the terminate failed ($($_.Exception.Message.Split([char]10)[0]))" }
+    $failure = $null
+    try { $p.Kill() } catch {
+        # Unwrap to the root before discriminating. PowerShell wraps a
+        # method-call failure, so the OUTER type is MethodInvocationException
+        # whatever actually went wrong -- measured, arms C2/C3 of the probe
+        # above, where outer -is [InvalidOperationException] is False while the
+        # root IS one. (A typed `catch [InvalidOperationException]` would in
+        # fact fire, because PowerShell tests inner exceptions too -- arm C5 --
+        # but that is a subtlety two readers have already predicted wrongly, so
+        # the unwrap is written out where it happens.) Never the message: it
+        # comes back German on this machine (arm C6).
+        $failure = $_.Exception
+        while ($null -ne $failure.InnerException) { $failure = $failure.InnerException }
+    }
+    # The process exited between the checks above and this terminate. Every
+    # guard passes on a corpse -- measured, arms B1/B2/B3: the name is the
+    # cached copy and still matches, and StartTime still reads through the
+    # pinned handle and still equals what was recorded -- so control genuinely
+    # reaches here with nothing left to kill. That is 'gone', not a decline.
+    #
+    # It matters which: as a decline, callers printed "it is either a leaked
+    # Word or an unrelated process that inherited the pid" and "our Word exited
+    # and the pid was reused" -- four assertions about a cause, all false, when
+    # the only thing knowable is that it exited. A pid cannot be recycled while
+    # this handle is open, so an inherited pid is excluded by construction.
+    if ($failure -is [InvalidOperationException]) { return 'gone' }
+    if ($null -ne $failure) { return "declined:the terminate failed ($($failure.Message.Split([char]10)[0]))" }
+    # There is deliberately NO re-check that the process has gone, and this note
+    # exists so nobody adds one on symmetry with the spikes helpers. Their
+    # rationale does not transfer: they kill with `-ErrorAction
+    # SilentlyContinue`, which SWALLOWS the failure, so a re-check is the only
+    # thing that can see it -- here the failure throws and is caught two lines
+    # up. What does transfer is that a terminate is asynchronous, and that is
+    # exactly why a re-check would be wrong: Word's exit tail is load-dependent
+    # and unbounded (probe-quit-exit-gap.ps1 measures 3039-3702 ms idle, and
+    # test/integration/word-pids.mjs records one surviving a 30 s poll), so any
+    # bounded wait would mint a false 'killed:survived' -- the same false-cause
+    # defect this function was just fixed for, reintroduced while fixing it.
     return 'killed'
 }
 
@@ -971,10 +1051,28 @@ function Stop-Word {
             if ($outcome -notin @('killed', 'gone')) {
                 # Refusing to kill is the safe half. Saying nothing is not:
                 # this is either a Word we leaked or a pid collision, and both
-                # are worth knowing. #33 replaced every bare `catch {}` in this
-                # function for the same reason, and a silent `else` would
-                # reintroduce it in a different shape.
-                Write-HostDiagnostic "[word-host] declining to kill pid $($script:OwnedPid): $($outcome -replace '^declined:', '') (recorded start $($script:OwnedStart)). Either our Word exited and the pid was reused, or its identity could not be proved. Not killed."
+                # are worth knowing. A silent `else` would be #33's bare
+                # `catch {}` in a different shape -- the failure mode where
+                # every black-box signal stays green because nothing was ever
+                # given anything to observe.
+                #
+                # (This used to claim #33 "replaced every bare `catch {}` in
+                # this function". It did not, and the same file says so 120
+                # lines above: #33 instrumented 11 swallowing catches and
+                # replaced the ONE that was throwing. Two bare catches remain
+                # in this function -- the ReleaseComObject above and the one
+                # closing this very try. The claim was checkable and false.)
+                #
+                # This line used to end "Either our Word exited and the pid was
+                # reused, or its identity could not be proved." Neither holds
+                # for 'declined:the terminate failed': that state is reached
+                # only AFTER the start time matched through a pinned handle, so
+                # identity was proved and the pid provably was not reused. The
+                # sentence is gone rather than extended, because the reason
+                # already interpolated above is the whole of what was
+                # determined, and adding a third disjunct would be inventing a
+                # cause for the sake of the shape.
+                Write-HostDiagnostic "[word-host] declining to kill pid $($script:OwnedPid): $($outcome -replace '^declined:', '') (recorded start $($script:OwnedStart)). Not killed."
             }
         } catch { }
         $script:OwnedPid = $null

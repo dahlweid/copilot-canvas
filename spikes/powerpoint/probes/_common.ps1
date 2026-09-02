@@ -104,18 +104,26 @@ function Close-PowerPointInstance($ctx) {
 # that is gone is 'gone' and fine, whereas a pid we cannot verify is declined
 # and said out loud.
 #
-# The ProcessName read is GUARDED rather than bare. ProcessName on a Process
-# object whose process has exited can throw, and an uncaught throw here does not
-# decline -- it propagates into the caller's finally and skips everything below
-# the call. Both callers are exactly that shape: Stop-IsolatedPowerPoint
-# (spikes/powerpoint/probes/_isolated.ps1) runs from
+# The ProcessName read is wrapped in a try/catch whose catch CANNOT CURRENTLY
+# FIRE, and the justification that used to sit here was false. It claimed
+# ProcessName on an exited process can throw into this caller, and that an
+# uncaught throw would propagate into the caller's finally and skip everything
+# below the call. The second half describes the callers correctly --
+# Stop-IsolatedPowerPoint (spikes/powerpoint/probes/_isolated.ps1) runs from
 # spikes/powerpoint/probes/probe-cross-instance-lock.ps1's finally and closes a
 # desktop after this call, and spikes/powerpoint/probes/probe-second-process.ps1
 # calls this from a finally that then releases the RCW, closes a desktop and
-# prints the leak census. And this helper is reached precisely where the throw
-# is likeliest -- _isolated.ps1 calls it on a process it has just spent 8
-# seconds expecting to exit. The isolation tree has already paid for this once,
-# as a leaked desktop handle.
+# prints the leak census -- but the first half is not true, so the consequence
+# never arises. Measured, spikes/isolation/probes/probe-processname-after-exit.ps1
+# (the behaviour is System.Diagnostics.Process's, not Word's or PowerPoint's):
+# the .NET getter does throw, but PowerShell's property adapter converts it to
+# $null before any caller sees it, with `$Error` growing by zero even under
+# 'Stop' (arms A1/A2); and via `Get-Process -Id`, as on line 133, the name is
+# materialized at acquisition and that copy outlives the process anyway (A1).
+# So 'declined:unreadable-name' is UNREACHABLE here: an unreadable name would
+# arrive below as $null and be refused as 'declined:name'. The try/catch is
+# kept as defence in depth should the acquisition route ever change; nothing
+# should be written that depends on the state existing.
 #
 # 'killed' vs 'killed:survived': both mean every guard passed and the terminate
 # was issued. They differ only in what was then OBSERVED. Only 'gone' and

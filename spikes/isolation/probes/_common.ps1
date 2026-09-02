@@ -31,9 +31,19 @@
 # either arm. Quitting a Word we created is sound. Killing a pid we merely
 # observed appearing is not, and that distinction is the whole of issue #136.
 
-# Mirrors Stop-VerifiedWord in
+# Shares its SHAPE with Stop-VerifiedWord in
 # .github/extensions/office-canvas/src/word/word-host.ps1 and Stop-VerifiedPpt in
-# spikes/powerpoint/probes/_common.ps1.
+# spikes/powerpoint/probes/_common.ps1: all three pin a handle, prove identity
+# against a recorded StartTime, and refuse rather than kill when the proof
+# fails. They are NOT a mirror, and this comment used to say they were.
+# Concretely they differ in the state vocabulary they return (the shipped host
+# returns prose, not these short tokens, and has no 'declined:nopid'), in the
+# kill primitive, and in whether the terminate is followed by a re-check --
+# which is not an inconsistency to be tidied away but a consequence of the
+# primitive: `Stop-Process -ErrorAction SilentlyContinue` below swallows its
+# failure, so only a re-check can see it, whereas `.Kill()` in the shipped host
+# throws and is caught at the call. Symmetry is not evidence, and issue #145
+# settled that a divergence is not on its own a defect.
 #
 # Takes a pid that came back from CreateProcess -- or from the hwnd route, which
 # is sound for a different and stronger reason: it reads the pid off a window we
@@ -49,12 +59,23 @@
 #      open, so from that point the identity read and the terminate are provably
 #      about the same process.
 #   2. ProcessName, so a pid already recycled onto something else is refused
-#      before we look at times at all. The read itself is guarded: `ProcessName`
-#      on a Process object whose process has exited can throw, and an uncaught
-#      throw here is a failure path that does NOT decline -- it propagates into
-#      the caller's `finally` and skips the cleanup below it. That has already
-#      cost this tree a leaked desktop handle once (see
-#      spikes/isolation/probes/probe-desktop.ps1's teardown comment).
+#      before we look at times at all. The read is wrapped in a try/catch, and
+#      that catch CANNOT CURRENTLY FIRE -- measured, and the justification that
+#      used to sit here was false. It claimed `ProcessName` on an exited process
+#      can throw into this caller, and that an uncaught throw would propagate
+#      into the caller's `finally` and skip the cleanup below it. Neither half
+#      survives measurement, for two independent reasons
+#      (spikes/isolation/probes/probe-processname-after-exit.ps1):
+#      the .NET getter does throw, but PowerShell's property adapter converts it
+#      to $null before any caller sees it -- with `$Error` growing by zero, even
+#      under 'Stop' (arms A1/A2); and the object never reaches that state here
+#      anyway, because `Get-Process -Id` materializes the name and that copy
+#      outlives the process (arm A1). So 'declined:unreadable-name' is
+#      UNREACHABLE via this acquisition route: an unreadable name would arrive
+#      below as $null and be refused by step 2's own comparison as
+#      'declined:name'. The try/catch is kept as defence in depth should the
+#      acquisition route ever change -- deleting it is a separate decision --
+#      but nothing should be written that depends on the state existing.
 #   3. `$null -eq $ExpectedStart` BEFORE any comparison against it. This is not
 #      style. Under PowerShell, `$someDateTime -ne $null` evaluates to $true, so
 #      a missing expected time compared directly would pass the mismatch test and
