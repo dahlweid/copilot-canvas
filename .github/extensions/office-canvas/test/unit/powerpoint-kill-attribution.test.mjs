@@ -285,7 +285,16 @@ const CONDITIONS = [
 
 // A `try { STMT } catch { return 'x' }` guard: the read failing IS the
 // condition. All three are reads of a live process that can vanish or be
-// protected, which is why they are expressed as exceptions rather than tests.
+// protected -- but NONE of them surfaces that as an exception here, so all
+// three of these decline states are unreachable and the model walks worlds the
+// helper cannot actually produce. Measured, spikes/isolation/probes/probe-processname-after-exit.ps1
+// (the behaviour is System.Diagnostics.Process's, not PowerPoint's): .Handle
+// answers $null without throwing on an exited process (F2) and on one that
+// refuses the open (E2); ProcessName is materialized by `Get-Process -Id` and
+// outlives the process (A1); StartTime on a protected process is likewise
+// $null, not a throw (E). `$Error` grows by zero in every case, even under
+// 'Stop'. The states are kept because the guards are (issue #155); this comment
+// used to give the throw as their justification, which was never probed.
 const READS = [
     [/^\$null = \$p\.Handle$/, (w) => !w.handleReadable],
     [/^\$name = \$p\.ProcessName$/, (w) => !w.nameReadable],

@@ -95,27 +95,51 @@ function Close-PowerPointInstance($ctx) {
 # used to claim. That one terminates with $p.Kill() inside a try/catch -- which
 # THROWS where Stop-Process -ErrorAction SilentlyContinue swallows -- and
 # returns 'gone' for a pid that is not Word where both spikes helpers decline.
-# Whether the shipped host should converge is a question about shipped
-# behaviour with its own callers, and is filed separately.
+# Whether the shipped host should converge was that question, and issue #150
+# answered it: it does not converge. The shipped host now returns 'gone' for a
+# process that exited before its terminate landed, and keeps 'gone' for a pid
+# that is not Word, on the ground that a pid cannot be recycled while a HANDLE to
+# the process is open -- and its name check runs only after it has verified the
+# pin by value, so "nothing of ours is at this pid" is true there rather than
+# approximate. A living Process object is not enough for that: it is exactly the
+# unverified state described below, in which reuse IS possible. These two helpers
+# still decline both. The divergence is settled, not outstanding.
 #
-# Order matters. The handle is pinned FIRST, because everything after it is a
-# read of a process that could otherwise exit and have its pid reused
-# underneath the checks. Absence is distinguished from non-verification: a pid
-# that is gone is 'gone' and fine, whereas a pid we cannot verify is declined
-# and said out loud.
+# Order matters. The handle is pinned FIRST -- or rather, pinning is ATTEMPTED
+# first, which is not the same thing and this comment used to conflate them.
+# Everything after it is a read of a process that could otherwise exit and have
+# its pid reused underneath the checks, and this helper terminates by PID
+# (`Stop-Process -Id` below) rather than through the pinned object, so the pin is
+# what stands between a recycled pid and Stop-Process. But the `.Handle` catch
+# below cannot fire: .Handle answers $null WITHOUT throwing on a process that has
+# exited or refuses the open (spikes/isolation/probes/probe-processname-after-exit.ps1,
+# arms E2/F1/F2/F3), so 'declined:handle' is unreachable and control continues
+# on an object that may never have been pinned. Filed rather than fixed in
+# passing -- see issue #155. Absence is distinguished from non-verification: a
+# pid that is gone is 'gone' and fine, whereas a pid we cannot verify is
+# declined and said out loud.
 #
-# The ProcessName read is GUARDED rather than bare. ProcessName on a Process
-# object whose process has exited can throw, and an uncaught throw here does not
-# decline -- it propagates into the caller's finally and skips everything below
-# the call. Both callers are exactly that shape: Stop-IsolatedPowerPoint
-# (spikes/powerpoint/probes/_isolated.ps1) runs from
+# The ProcessName read is wrapped in a try/catch whose catch CANNOT CURRENTLY
+# FIRE, and the justification that used to sit here was false. It claimed
+# ProcessName on an exited process can throw into this caller, and that an
+# uncaught throw would propagate into the caller's finally and skip everything
+# below the call. The second half describes the callers correctly --
+# Stop-IsolatedPowerPoint (spikes/powerpoint/probes/_isolated.ps1) runs from
 # spikes/powerpoint/probes/probe-cross-instance-lock.ps1's finally and closes a
 # desktop after this call, and spikes/powerpoint/probes/probe-second-process.ps1
 # calls this from a finally that then releases the RCW, closes a desktop and
-# prints the leak census. And this helper is reached precisely where the throw
-# is likeliest -- _isolated.ps1 calls it on a process it has just spent 8
-# seconds expecting to exit. The isolation tree has already paid for this once,
-# as a leaked desktop handle.
+# prints the leak census -- but the first half is not true, so the consequence
+# never arises. Measured, spikes/isolation/probes/probe-processname-after-exit.ps1
+# (the behaviour is System.Diagnostics.Process's, not Word's or PowerPoint's):
+# the .NET getter does throw, but PowerShell's property adapter converts it to
+# $null before any caller sees it, with `$Error` growing by zero even under
+# 'Stop' (arms A1/A2); and via `Get-Process -Id`, as this helper acquires it
+# below, the name is
+# materialized at acquisition and that copy outlives the process anyway (A1).
+# So 'declined:unreadable-name' is UNREACHABLE here: an unreadable name would
+# arrive below as $null and be refused as 'declined:name'. The try/catch is
+# kept as defence in depth should the acquisition route ever change; nothing
+# should be written that depends on the state existing.
 #
 # 'killed' vs 'killed:survived': both mean every guard passed and the terminate
 # was issued. They differ only in what was then OBSERVED. Only 'gone' and
