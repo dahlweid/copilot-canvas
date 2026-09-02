@@ -97,6 +97,9 @@ test("gitAvailable throws when git cannot be run, and the throw does not latch",
     }
 
     assert.ok(thrown, "gitAvailable() answered instead of throwing while git was unreachable; a broken git would skip all 16 guarded tests");
+    // On our own message, which is a constant in this repo -- not on a platform
+    // message, which would be localized. It is here to distinguish the
+    // deliberate throw from some unrelated error escaping the same call.
     assert.match(thrown.message, /no exit status/);
     assert.equal(thrown.cause?.code, "ENOENT");
 
