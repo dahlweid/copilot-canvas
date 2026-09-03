@@ -202,21 +202,30 @@ try {
                 # ActiveWindow is evidence for "returns $null when deckless" ONLY if this
                 # cycle actually reached Presentations.Count = 0. The Close above sits in
                 # a swallowing catch, so it can silently leave a deck; $deckless is true
-                # only for a real, readable count of 0. $null.Count is 0 in this shell
-                # (no Set-StrictMode under spikes/powerpoint/), so a read that threw or a
-                # null Presentations object must NOT pass as 0 -- hence the explicit
-                # split, with a dedicated boolean for the threw case rather than a COM-vs
-                # -string sentinel comparison.
+                # only for a real, readable count of 0.
+                #
+                # TWO nulls must be excluded, not one. The $null -ne $presObj guard rejects
+                # a null Presentations object -- but the Count read is the deeper trap:
+                # [int]$null is 0 in PowerShell, silently, WITHOUT throwing, so casting
+                # before the null-check would manufacture a 0 from a nulled Count and pass
+                # it as a verified deckless. Arm A measures reads on this OBJID_NATIVEOM
+                # bind returning $null rather than throwing, so a nulled Count is a real
+                # condition on this route, not a theoretical one. So: capture the raw
+                # value, discriminate threw vs null vs real, and only THEN cast. $null.Count
+                # is also 0 in this shell (no Set-StrictMode under spikes/powerpoint/),
+                # which is why a null Presentations object is excluded before the read.
                 $presObj = $null; $presReadThrew = $false
                 try { $presObj = $cyApp.Presentations } catch { $presReadThrew = $true }
-                $presCountVal = $null
+                $rawCount = $null; $countReadThrew = $false
                 if (-not $presReadThrew -and $null -ne $presObj) {
-                    try { $presCountVal = [int]$presObj.Count } catch { $presCountVal = $null }
+                    try { $rawCount = $presObj.Count } catch { $countReadThrew = $true }
                 }
+                $presCountVal = $(if (-not $presReadThrew -and -not $countReadThrew -and $null -ne $rawCount) { [int]$rawCount } else { $null })
                 $deckless = ($null -ne $presCountVal -and $presCountVal -eq 0)
-                $presCount = $(if ($presReadThrew) { 'unreadable (read threw)' }
+                $presCount = $(if ($presReadThrew) { 'unreadable (Presentations read threw)' }
                     elseif ($null -eq $presObj) { 'Presentations object is null' }
-                    elseif ($null -eq $presCountVal) { 'unreadable (Count threw)' }
+                    elseif ($countReadThrew) { 'unreadable (Count read threw)' }
+                    elseif ($null -eq $rawCount) { 'unreadable (Count returned null)' }
                     else { "$presCountVal" })
                 # Bracketed ActiveWindow read (the headline).
                 $ab = [bool](Get-Process -Id $cyIso.Pid -ErrorAction SilentlyContinue)
