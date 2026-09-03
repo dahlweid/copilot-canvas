@@ -17,8 +17,12 @@
 # CreateProcess instance from _isolated.ps1 -- a pid the kernel handed us, not a
 # census guess -- and every write is captured first and put back in a finally
 # that runs on the failure path too, because "never restored" was half of the
-# original defect. H2 and H4 make no application-level write, so they stay on the
-# New-Object route they were always measured on.
+# original defect. H2 and H4 do not perform the Visible / WindowState writes #139
+# removed; the New-PowerPointInstance factory they share does set DisplayAlerts,
+# an application-level write recorded as a side effect in _common.ps1 and
+# README.md, so "no application-level write" would overstate it. They stay on the
+# New-Object route they were always measured on because they carry none of the
+# visibility writes that move an attached instance.
 #
 #   H4  SURVIVAL, with an A/B control. A windowless instance has no window whose
 #       closing keeps it alive, and PowerPoint is known to shut itself down when
@@ -93,13 +97,20 @@ Rep "POWERPNT pids before" ($(if (Get-PptPids) { (Get-PptPids) -join ',' } else 
 # code did not have to guess, so it is the only one it is safe to write to. A
 # write is attempted ONLY after its prior value was captured successfully, so a
 # restore is always possible; a failed capture skips the write rather than
-# landing one that cannot be undone -- landing it would be the #141 defect. Each
-# write is then restored twice: inline for a clean measurement of the next arm,
-# and again in the finally so the restore survives a throw between the write and
-# its inline restore -- a restore that only runs when nothing threw is the #141
-# defect wearing a finally. "A restore is outstanding" is a dedicated boolean,
-# NOT a $null sentinel: $null would conflate "never captured" with "already
-# restored", and the first of those must still block the write.
+# landing one that cannot be undone -- landing it would be the #141 defect.
+# "Captured successfully" means a NON-NULL value came back, not merely that the
+# read did not throw: a property read on this bind can return $null without
+# throwing (probe-app-hwnd.ps1), and a $null capture would later "restore" $null.
+# Each write is then restored twice: inline for a clean measurement of the next
+# arm, and again in the finally so the restore survives a throw between the write
+# and its inline restore -- a restore that only runs when nothing threw is the
+# #141 defect wearing a finally. The inline restore clears the outstanding-restore
+# flag ONLY once a read-back confirms the value is actually back; a swallowed
+# restore throw or a silent null leaves the flag set so the finally retries,
+# because clearing on "we reached this line" would re-introduce the defect. "A
+# restore is outstanding" is a dedicated boolean, NOT a $null sentinel: $null
+# would conflate "never captured" with "already restored", and the first of those
+# must still block the write.
 $h13 = $null
 $visOrig = $null      # captured Application.Visible value (meaningful only when $visCaptured)
 $visCaptured = $false # a capture succeeded and its restore is still outstanding
@@ -116,7 +127,12 @@ try {
         Rep "H1/H3 isolated pid (CreateProcess)" $h13.Pid
 
         Say "== H1: Application.Visible = msoFalse (isolated instance) =="
-        try { $visOrig = $app.Visible; $visCaptured = $true } catch { }
+        # Capture gate: a read that DID NOT THROW is not enough. A property read on
+        # this bind can return $null without throwing (probe-app-hwnd.ps1), and a
+        # $null capture would set the flag, land the write, then "restore" $null.
+        # Require a non-null value -- the discriminator this file already applies to
+        # Windows.Count and probe-app-hwnd applies to the Presentations object.
+        try { $visRead = $app.Visible; if ($null -ne $visRead) { $visOrig = $visRead; $visCaptured = $true } } catch { }
         Rep "  Visible (before write)" ($(if ($visCaptured) { $visOrig } else { 'unreadable' }))
         if (-not $visCaptured) {
             # No captured prior value means no guaranteed restore, so the write is
@@ -135,16 +151,26 @@ try {
             Rep "  Visible (after write)" $visAfter
             # Inline restore so H3 is measured at the instance's original visibility.
             try { $app.Visible = $visOrig } catch { }
-            $vr = 'unreadable'; try { $vr = $app.Visible } catch { }
-            Rep "  Visible (after restore)" $vr
-            $visCaptured = $false   # restored; the finally has nothing outstanding
+            # Read-back initialised to $null, never a string sentinel, so the compare
+            # below is only ever null-vs-int or int-vs-int -- no string coercion in the
+            # one place the safety net cannot afford a surprise.
+            $vr = $null; try { $vr = $app.Visible } catch { }
+            Rep "  Visible (after restore)" ($(if ($null -eq $vr) { 'unreadable' } else { $vr }))
+            # Clear the outstanding-restore flag ONLY once the read-back confirms the
+            # value is actually back. The restore write sits in a swallowing catch and
+            # the read-back can silently null, so clearing on "we reached this line"
+            # would disarm the finally after a failed restore -- the #141 defect. A
+            # $null (read threw or silently nulled) does not equal the captured int, so
+            # it leaves the flag set and the finally retries -- the behaviour we want.
+            if ($vr -eq $visOrig) { $visCaptured = $false }
+            else { Rep "  Visible (inline restore unconfirmed)" 'restore flag left set -- finally will retry' }
         }
 
         Say "== H3: Application.WindowState = ppWindowMinimized (isolated instance) =="
         $wc = 'unreadable'; try { $wc = $app.Windows.Count } catch { }
         Rep "  Application.Windows.Count" $wc
         if (($wc -is [int]) -and $wc -gt 0) {
-            try { $wsOrig = $app.WindowState; $wsCaptured = $true } catch { }
+            try { $wsRead = $app.WindowState; if ($null -ne $wsRead) { $wsOrig = $wsRead; $wsCaptured = $true } } catch { }
             Rep "  WindowState (before write)" ($(if ($wsCaptured) { $wsOrig } else { 'unreadable' }))
             if (-not $wsCaptured) {
                 Rep "  H3 WindowState = ppWindowMinimized" 'NOT ATTEMPTED -- capture failed, restore could not be guaranteed'
@@ -164,13 +190,25 @@ try {
                 # window back is the finally. Off unless -InjectFailure is passed.
                 if ($InjectFailure) { throw 'injected failure (test): thrown between the H3 write and its inline restore' }
                 try { $app.WindowState = $wsOrig } catch { }
-                $wr = 'unreadable'; try { $wr = $app.WindowState } catch { }
-                Rep "  WindowState (after restore)" $wr
-                $wsCaptured = $false
+                # Read-back initialised to $null, never a string sentinel (see H1).
+                $wr = $null; try { $wr = $app.WindowState } catch { }
+                Rep "  WindowState (after restore)" ($(if ($null -eq $wr) { 'unreadable' } else { $wr }))
+                # Same read-back confirmation as H1: clear the flag only once the value
+                # is provably back, else leave it for the finally. H3's write was
+                # measured as ACCEPTED (3 -> 2), so a silently-failed restore here would
+                # leave the window minimised with the finally disarmed -- the #141 defect.
+                if ($wr -eq $wsOrig) { $wsCaptured = $false }
+                else { Rep "  WindowState (inline restore unconfirmed)" 'restore flag left set -- finally will retry' }
             }
         }
+        elseif ($wc -is [int]) {
+            # A genuine, readable count that is not > 0: there truly is no window.
+            Rep "  H3 WindowState = ppWindowMinimized" ("no window to minimise (Windows.Count = $wc)")
+        }
         else {
-            Rep "  H3 WindowState = ppWindowMinimized" 'no window to minimise (Windows.Count = 0)'
+            # The count itself was unreadable, so "= 0" would name a cause the code did
+            # not establish. Report the unreadability instead of inventing a count.
+            Rep "  H3 WindowState = ppWindowMinimized" 'NOT ATTEMPTED -- Windows.Count unreadable'
         }
     }
 }
@@ -202,9 +240,11 @@ finally {
 }
 
 # --- H2: Presentations.Open(WithWindow := msoFalse) ---------------------------
-# The documented windowless-open alternative. It makes no application-level
-# write -- it opens a deck from our own temp copy and closes it in the finally --
-# so it stays on the New-Object route it was always measured on.
+# The documented windowless-open alternative. It performs none of the Visible /
+# WindowState writes #139 removed -- it opens a deck from our own temp copy and
+# closes it in the finally -- though the shared New-PowerPointInstance factory does
+# set DisplayAlerts (a recorded side effect, _common.ps1 / README.md). It stays on
+# the New-Object route it was always measured on.
 $ctx = $null
 $pres = $null
 try {

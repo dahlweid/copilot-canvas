@@ -211,8 +211,12 @@ measures them on the isolated instance.
   and so does the `Hwnd` of a live `ActiveWindow`. (Whether a non-terminating
   error accompanies that null is deliberately not asserted: the probe runs under
   `$ErrorActionPreference = 'Continue'`, so such an error would never reach a
-  `catch`, and `$Error` growth is not a reliable detector — the adapter can
-  convert a throw to `$null` without `$Error` growing.)
+  `catch`, and `$Error` growth is not a reliable detector. That last point is
+  measured only for the **managed** .NET property adapter, in
+  `probe-processname-after-exit.ps1`, which converts a throw to `$null` without
+  `$Error` growing; whether the **COM/IDispatch** adapter does the same is
+  unmeasured in this tree. So the null is reported as an observation, with no
+  claim about what, if anything, accompanies it.)
   The real `PPTFrameClass` window handle *does* exist and *does* attribute our
   `CreateProcess` pid through `GetWindowThreadProcessId` — so attribution comes
   from the external window enumeration the isolated route already performs, not
@@ -222,12 +226,21 @@ measures them on the isolated instance.
   the product.
 - **PowerPoint's `ActiveWindow` returns `$null` — not a window, and with no
   caught exception — when no presentation is open.** With `Presentations.Count =
-  0` and the process alive, `$app.ActiveWindow` read `$null` on every attempt,
-  reproduced three times, once the probe carried an explicit `$null` check that
-  tells a returned `$null` apart from a returned window. An earlier reading that
-  reported a live window was an artifact of a branch that never drew that
-  distinction: `$null.Hwnd` does not throw in this shell (no `Set-StrictMode`
-  under `spikes/powerpoint/`), so a `$null` printed identically to a window. The
+  0` and the process alive, `$app.ActiveWindow` read `$null` in **5 of 5 fresh
+  isolated instances** (`null/window/threw/inconclusive = 5/0/0/0` — the tally the
+  probe now commits to its own output). The arm loops over **cycles, not reads**:
+  each cycle is a fresh `Start-IsolatedPowerPoint` → close the deck → read → sweep,
+  so the result is reproduced *across processes* rather than sampled once from one
+  — a stack of reads of a single instance would only show that instance is stable,
+  which is not the claim. Process liveness is sampled on **both** sides of each
+  read, so a `$null` from an RCW whose process exited mid-call is scored
+  INCONCLUSIVE and never counted as a windowless read. This cross-instance tally
+  agrees with, and supersedes, an earlier three-run reading. The reading rests on
+  an explicit `$null` check that tells a returned `$null` apart from a returned
+  window; an earlier reading that reported a live window was an artifact of a
+  branch that never drew that distinction: `$null.Hwnd` does not throw in this
+  shell (no `Set-StrictMode` under `spikes/powerpoint/`), so a `$null` printed
+  identically to a window. The
   Word claim — that `ActiveWindow` *throws* without a document — is true and
   measured for *Word* (`spikes/isolation`), where it is a design constraint.
   PowerPoint does the third thing: it neither throws nor hands back a usable
