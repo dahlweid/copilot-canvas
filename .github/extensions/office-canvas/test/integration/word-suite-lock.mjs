@@ -250,14 +250,7 @@ function takeLocked(lockPath, payload, { maxHoldMs, alive }) {
         // can be caught with the file empty microseconds after a legitimate
         // acquisition. Only age settles it.
         try {
-            const mtimeMs = statSync(lockPath).mtimeMs;
-            const now = Date.now();
-            if (process.env.OFFICE_CANVAS_LOCK_DEBUG_159 === "1") {
-                process.stderr.write(
-                    `[DEBUG-159-LOCK-AGE] now=${now} mtimeMs=${mtimeMs} ageMs=${now - mtimeMs} maxHoldMs=${maxHoldMs}\n`,
-                );
-            }
-            if (now - mtimeMs <= maxHoldMs) return false;
+            if (Date.now() - statSync(lockPath).mtimeMs <= maxHoldMs) return false;
         } catch {
             return false;
         }

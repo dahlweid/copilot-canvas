@@ -22,7 +22,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -200,15 +200,13 @@ test("a lock file that has stayed unreadable past the cap is reclaimed", async (
     // lock must not wedge the gate forever.
     const { lockPath, cleanup } = await scratch();
     try {
-        process.env.OFFICE_CANVAS_LOCK_DEBUG_159 = "1";
-        for (let attempt = 1; attempt <= 100; attempt++) {
-            await writeFile(lockPath, "not json");
-            const handle = await acquireWordSuiteLock("survivor", { ...fast, lockPath, maxHoldMs: 0 });
-            assert.equal(handle.held, true, `attempt ${attempt} did not reclaim`);
-            handle.release();
-        }
+        await writeFile(lockPath, "not json");
+        const stale = new Date(Date.now() - 60_000);
+        await utimes(lockPath, stale, stale);
+        const handle = await acquireWordSuiteLock("survivor", { ...fast, lockPath, maxHoldMs: 1_000 });
+        assert.equal(handle.held, true, "the stale unreadable lock was not reclaimed");
+        assert.equal(JSON.parse(await readFile(lockPath, "utf8")).label, "survivor");
     } finally {
-        delete process.env.OFFICE_CANVAS_LOCK_DEBUG_159;
         await cleanup();
     }
 });
