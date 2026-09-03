@@ -21,8 +21,11 @@ This is not hypothetical. Issue #141's note to whoever took it cited
 range was wrong **when it was written** — `:167-170` held WINWORD-census text,
 not the claim — and underneath it the claim itself was a **Word** measurement
 wearing a PowerPoint label. That premise survived filing, implementation, and
-three review rounds. Round 2 spotted the citation, classified it as a rotted
-reference, and stopped there.
+three review rounds — not because anyone examined the coordinate and judged it
+sound, but because a bare `:167-170` invites no examination: no round resolved it
+at all. When it was finally resolved, both defects surfaced together — the range
+did not point at the claim, and the claim underneath was Word's, imported to
+PowerPoint by analogy (the correction is now recorded on #141).
 
 A quote would have broken this where the coordinate could not. Writing
 `"ActiveWindow throws without a document"` puts the word *document* in front of a
