@@ -182,20 +182,6 @@ const describePathArg = (value) => (typeof value === "string" ? "an empty string
  * code for an unusable path, and it is what `normalizeDocPath` answers an
  * empty string with today, so every spelling of "no usable path" now gives one
  * answer.
- *
- * A *relative* path with no workspace to resolve it against is the third
- * refusal, and it is a different fact from the two above, so it carries its own
- * code (#158). The prior shape fell through to `normalizeDocPath(input)` here,
- * whose `path.resolve` is **cwd-relative** -- so a relative path arriving with
- * `session.workspacePath` unset was not declined, it was silently resolved
- * against the extension process's working directory, a root the caller never
- * named. Every schema description promises "workspace-relative"; resolving
- * against cwd is neither that nor absolute. The refusal is discriminated on the
- * branch that reached it -- `input` relative *and* no workspacePath -- never on
- * a message, and it names only the cause that branch established: there is no
- * workspace root available, so an absolute path is required. It cannot resolve
- * against cwd because the only path left to `normalizeDocPath` from here is an
- * absolute one, where the process cwd is not consulted at all.
  */
 function resolveInputPath(input) {
     if (input === undefined || input === null) {
@@ -211,14 +197,7 @@ function resolveInputPath(input) {
                 `workspace. Received ${describePathArg(input)}.`,
         );
     }
-    if (path.isAbsolute(input)) return normalizeDocPath(input);
-    if (!session?.workspacePath) {
-        throw new DocumentError(
-            "workspace_unavailable",
-            `Cannot resolve the relative path ${JSON.stringify(input.trim())}: no workspace directory is ` +
-                `available in this session, so there is no root to resolve it against. Give an absolute path instead.`,
-        );
-    }
+    if (path.isAbsolute(input) || !session?.workspacePath) return normalizeDocPath(input);
     return normalizeDocPath(path.join(session.workspacePath, input));
 }
 
