@@ -53,6 +53,8 @@ export class RenderCache {
         this.disposed = false;
         /** Method names called on this cache, in order. */
         this.used = [];
+        /** Document paths passed to path-taking methods, in order (#158). */
+        this.docPaths = [];
         built.push(this);
     }
 
@@ -72,6 +74,7 @@ export class RenderCache {
 
     async open(docPath) {
         this.#live("open");
+        this.docPaths.push(docPath);
         return {
             path: docPath,
             name: path.basename(docPath),
@@ -96,8 +99,9 @@ export class RenderCache {
         this.#live("close");
     }
 
-    async readStructure() {
+    async readStructure(docPath) {
         this.#live("readStructure");
+        this.docPaths.push(docPath);
         return { paragraphs: [], paragraphCount: 0, truncated: false };
     }
 
