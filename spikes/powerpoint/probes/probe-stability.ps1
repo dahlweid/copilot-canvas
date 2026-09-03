@@ -11,38 +11,40 @@
 # Intermittent means it needs a rate, not an anecdote, and a rate is only useful
 # next to a control. Two arms:
 #
-#   FRESH  N cycles, a new PowerPoint context per cycle: open, export, close.
+#   FRESH  N cycles, a genuinely new PowerPoint PROCESS per cycle (through the
+#          CreateProcess route in _isolated.ps1): open, export, close, Quit(),
+#          and measure whether Quit() reaps the process.
 #   WARM   one POWERPNT, one open presentation, N exports in a row.
 #
 # WARM is the architecture ADR 0003/0005 assume -- a long-lived hidden instance
 # that re-exports on demand. FRESH is the control that says whether the cost sits
 # in "export" or in "reuse".
 #
-# WHAT THIS PROBE NO LONGER ESTABLISHES
+# WHAT THE FRESH ARM MEASURES
 #
-# The FRESH arm used to read "a brand new POWERPNT per cycle: open, export,
-# close, quit", and it reported how often Quit() left the process running --
-# the source of the 15/15 figure in FINDINGS.md. It got that by calling Quit()
-# on the instance and then force-killing the census difference between cycles.
+# The FRESH arm launches each cycle through Start-IsolatedPowerPoint: a
+# CreateProcess into a private desktop, so the pid is the kernel's answer and the
+# instance is provably not the user's. New-Object attaches to a running
+# PowerPoint (probe-single-instance.ps1) and cannot be written to or quit safely,
+# which is why #139 removed the old Quit()-and-kill and why this arm was rebuilt
+# onto the isolated route rather than patched in place.
 #
-# Both of those are gone (see issue #139 and _common.ps1's header): New-Object
-# attaches to a running PowerPoint, so the instance may be the user's, and a
-# census difference cannot establish otherwise. Neither Quit() nor a kill is
-# defensible on an object obtained that way.
+# Per cycle it opens the deck, exports, closes the deck, calls Quit(), and polls
+# whether the process reaps within the same window the teardown itself waits. The
+# count of cycles where Quit() left the process running is the measurement behind
+# the 15/15 figure in FINDINGS.md, now taken on an instance whose ownership is not
+# in doubt. A cycle where Quit() itself THROWS, or where closing the last deck
+# exits the process BEFORE Quit() is called, is counted in its own bucket and kept
+# OUT of the reaping denominator, so the rate reflects only calls that ran to
+# completion -- the same reason $selfExited exists. The between-cycle sweep is
+# Stop-IsolatedPowerPoint, which routes any survivor through Stop-VerifiedPpt -- a
+# kill gated on the recorded pid AND StartTime that declines rather than guessing
+# -- so a survivor is reaped without the census-difference inference #139 removed.
 #
-# The consequence is honest and worth stating rather than absorbing: with no
-# kill between cycles, nothing makes each cycle's instance a new process, so
-# the arm no longer establishes a fresh process per cycle and may attach to a
-# previous one. It still measures the export path per cycle, which is what the
-# FRESH/WARM comparison of export cost needs. It cannot reproduce the 15/15
-# Quit()-reaping figure, and that figure is NOT re-derivable from this file as
-# it now stands -- it was measured on a clean machine, where the census really
-# was empty and the sweep really did make each cycle fresh, and it stands as
-# that historical measurement.
-#
-# Re-establishing a genuinely per-cycle process needs the route _isolated.ps1
-# already proves: CreateProcess, so the pid is the kernel's answer rather than
-# an inference. That is a redesign of this arm, not a change to it.
+# The original 15/15 stands as a historical measurement taken on a clean machine
+# with an empty census per cycle; FINDINGS.md records it as such. Any number this
+# arm produces now is recorded ALONGSIDE it, with its own conditions, never over
+# it.
 #
 # It also reports whether the OS logged a fault, which distinguishes "PowerPoint
 # crashed" from "PowerPoint decided to exit".
@@ -54,6 +56,7 @@ param([string]$Fixture, [int]$Cycles = 12, [ValidateSet('fresh', 'warm', 'both')
 
 $ErrorActionPreference = 'Continue'
 . (Join-Path $PSScriptRoot '_common.ps1')
+. (Join-Path $PSScriptRoot '_isolated.ps1')
 
 if (-not $Fixture) { $Fixture = Join-Path (Split-Path $PSScriptRoot -Parent) '.fixtures\deck.pptx' }
 if (-not (Test-Path $Fixture)) { throw "fixture missing: $Fixture (run make-fixture.ps1 first)" }
@@ -83,41 +86,83 @@ function Sweep($ctx) {
 }
 
 function Invoke-FreshArm {
-        Say "== FRESH: a new PowerPoint context per export (control) =="
-        Say "   NOTE: no longer guaranteed to be a NEW PROCESS per cycle -- see the header."
+    Say "== FRESH: a genuinely new PowerPoint process per cycle (control) =="
+    Say "   Each cycle: CreateProcess (Start-IsolatedPowerPoint) -> export -> close -> Quit()."
+    Say "   Reports whether Quit() reaps the process; any survivor is swept by verified"
+    Say "   pid+StartTime (Stop-IsolatedPowerPoint -> Stop-VerifiedPpt), never by census."
     $results = @()
-    $survivors = 0
+    $quitReaped = 0        # Quit() returned normally and left no process
+    $quitSurvived = 0      # Quit() returned normally but the process outlived it
+    $quitThrew = 0         # Quit() itself threw -- not a reap/no-reap observation
+    $selfExited = 0        # closing the last deck exited the process before Quit()
     for ($c = 1; $c -le $Cycles; $c++) {
         $src = Join-Path $root "fresh$c.pptx"
         Copy-Item $Fixture $src
-        $stage = 'create'; $ctx = $null; $pres = $null; $ms = 0
+        $stage = 'launch'; $iso = $null; $ms = 0
         try {
-            $ctx = New-PowerPointInstance
-            $stage = 'open'
-            $pres = $ctx.App.Presentations.Open($src, $NO, $NO, $NO)
+            $iso = Start-IsolatedPowerPoint -File $src
+            if (-not $iso.App) {
+                $results += [pscustomobject]@{ N = $c; Failed = 'launch'; Ms = 0 }
+                Rep "  cycle $c" "NOT BOUND -- $($iso.Diag)"
+                continue
+            }
             $stage = 'export'
-            $ms = Export-Deck $pres (Join-Path $root "fresh$c.pdf")
+            $ms = Export-Deck $iso.Pres (Join-Path $root "fresh$c.pdf")
             $stage = 'post-export-property'
-            $null = $pres.Slides.Count
+            $null = $iso.Pres.Slides.Count
             $stage = 'close'
-            $pres.Saved = -1; $pres.Close(); $pres = $null
+            try { $iso.Pres.Saved = -1; $iso.Pres.Close() } catch { }
+            Start-Sleep -Milliseconds 500
+            if (-not (Get-Process -Id $iso.Pid -ErrorAction SilentlyContinue)) {
+                # Closing the last deck can itself exit the process (FINDINGS Q4);
+                # report it apart from a Quit() reap so the reaping rate is not
+                # confounded by an exit that happened before Quit() was called.
+                $selfExited++
+                $results += [pscustomobject]@{ N = $c; Failed = $null; Ms = $ms }
+                Rep "  cycle $c" ("export {0:F0} ms; process self-exited on closing its last deck (before Quit)" -f $ms)
+                continue
+            }
+            $stage = 'quit'
+            # A Quit() that THROWS is not an observation of "reaped or not" -- the
+            # call never ran to completion. Give it its own bucket, kept OUT of the
+            # reaping denominator, exactly as $selfExited is. The finally still
+            # sweeps any survivor. Discriminate by exception TYPE (unwrapped to the
+            # root), never message -- this Office is German.
+            $quitEx = $null
+            try { $iso.App.Quit() } catch { $quitEx = $_.Exception }
+            if ($quitEx) {
+                $quitThrew++
+                $r = $quitEx; while ($r.InnerException) { $r = $r.InnerException }
+                $results += [pscustomobject]@{ N = $c; Failed = $null; Ms = $ms }
+                Rep "  cycle $c" ("export {0:F0} ms; Quit() THREW ({1}) -> verified sweep" -f $ms, $r.GetType().Name)
+                continue
+            }
+            $reaped = $false
+            for ($i = 0; $i -lt 16; $i++) {
+                if (-not (Get-Process -Id $iso.Pid -ErrorAction SilentlyContinue)) { $reaped = $true; break }
+                Start-Sleep -Milliseconds 500
+            }
+            if ($reaped) { $quitReaped++ } else { $quitSurvived++ }
             $results += [pscustomobject]@{ N = $c; Failed = $null; Ms = $ms }
+            $verdict = $(if ($reaped) { 'reaped the process' } else { 'left it running -> verified sweep' })
+            Rep "  cycle $c" ("export {0:F0} ms; Quit() {1}" -f $ms, $verdict)
         }
         catch {
-            $alive = $false
-            foreach ($p in $ctx.NewPids) { if (Get-Process -Id $p -ErrorAction SilentlyContinue) { $alive = $true } }
+            $alive = [bool]($iso -and $iso.Pid -and (Get-Process -Id $iso.Pid -ErrorAction SilentlyContinue))
             $results += [pscustomobject]@{ N = $c; Failed = $stage; Ms = $ms }
             Rep "  cycle $c" ("DIED at '$stage' (process alive: $alive) -> " + $_.Exception.Message.Split([char]10)[0])
         }
         finally {
-            # Ours: opened from our own temp copy. Closing it here stops a
-            # failure above leaving our deck open in an attached instance.
-            try { if ($pres) { $pres.Saved = -1; $pres.Close() } } catch { }
-            $pres = $null
-            $survivors += (Sweep $ctx)
+            # The sound between-cycle sweep. Stop-IsolatedPowerPoint quits again
+            # (idempotent), routes any survivor through Stop-VerifiedPpt -- which
+            # re-checks name and the recorded StartTime and declines rather than
+            # trusting the pid -- and closes the private desktop. The pid it acts
+            # on came from CreateProcess, not a census difference.
+            Stop-IsolatedPowerPoint $iso
         }
     }
-    Rep "  POWERPNT still up after release" ("$survivors / $Cycles cycles (not killed -- see header)")
+    Rep "  Quit() reaped / survived / threw / self-exited" "$quitReaped / $quitSurvived / $quitThrew / $selfExited  (of $Cycles cycles)"
+    Rep "  Quit() failed to reap" "$quitSurvived / $($quitReaped + $quitSurvived) cycles where Quit() returned normally"
     , $results
 }
 
