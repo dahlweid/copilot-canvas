@@ -153,11 +153,16 @@ msoTrue` (`-1`), where the COM-created instance above reads `msoFalse` — so on
 isolated route the assignment is neither unnecessary nor possible, and H1 offers
 no way to hide. The documented fallback H3 does work: `Application.WindowState =
 ppWindowMinimized` (`2`) is **accepted** on the isolated instance (read back `3` →
-`2`). The probe captures the original `WindowState` before writing and restores
-it on the happy path *and*, demonstrated with an injected fault (`-InjectFailure`),
-in a `finally` that runs on the failure path — because "written and never
-restored" onto an instance was the defect #141 corrects, and a restore that only
-runs when nothing threw is that defect wearing a `finally`.
+`2`). The probe captures the original `WindowState` before writing — and writes
+only if that capture succeeded, so a restore is always possible; a failed capture
+skips the write rather than landing one it cannot undo — then restores it on the
+happy path *and*, demonstrated with an injected fault (`-InjectFailure`), in a
+`finally` that runs on the failure path. The "restore outstanding" state is a
+dedicated flag, not a `$null` sentinel, because `$null` would conflate "never
+captured" with "already restored" and let an uncaptured write proceed. "Written
+and never restored" onto an instance was the defect #141 corrects, and a restore
+that only runs when nothing threw — or one landed with nothing to put back — is
+that defect wearing a `finally`.
 
 The problem is upstream of visibility. **There is only ever one PowerPoint.**
 
@@ -202,7 +207,12 @@ measures them on the isolated instance.
   the IDispatch name is real — consistent with the aside in the Word probe
   `spikes/isolation/probes/probe-word-ownership-hwnd.ps1` that PowerPoint has an
   `Application.Hwnd` and Word does not. But read through the bound object,
-  `$app.HWND` returns **null without throwing**, as does `$app.ActiveWindow.Hwnd`.
+  `$app.HWND` reads **null through the bind** — no usable handle is marshalled —
+  and so does the `Hwnd` of a live `ActiveWindow`. (Whether a non-terminating
+  error accompanies that null is deliberately not asserted: the probe runs under
+  `$ErrorActionPreference = 'Continue'`, so such an error would never reach a
+  `catch`, and `$Error` growth is not a reliable detector — the adapter can
+  convert a throw to `$null` without `$Error` growing.)
   The real `PPTFrameClass` window handle *does* exist and *does* attribute our
   `CreateProcess` pid through `GetWindowThreadProcessId` — so attribution comes
   from the external window enumeration the isolated route already performs, not
@@ -210,12 +220,19 @@ measures them on the isolated instance.
   Word probe's aside is **not** falsified and is left unchanged; the nuance is
   that the property reads null through this binding, not that it is absent from
   the product.
-- **PowerPoint's `ActiveWindow` does not throw with no presentation open.** It
-  returned a live window object at `Presentations.Count = 0`, process alive,
-  reproduced twice. The claim that it throws is true and measured for *Word*
-  (`spikes/isolation`), where it is a design constraint — but it is **false for
-  PowerPoint** through this route. Importing the Word result to PowerPoint would
-  be wrong.
+- **PowerPoint's `ActiveWindow` returns `$null` — not a window, and with no
+  caught exception — when no presentation is open.** With `Presentations.Count =
+  0` and the process alive, `$app.ActiveWindow` read `$null` on every attempt,
+  reproduced three times, once the probe carried an explicit `$null` check that
+  tells a returned `$null` apart from a returned window. An earlier reading that
+  reported a live window was an artifact of a branch that never drew that
+  distinction: `$null.Hwnd` does not throw in this shell (no `Set-StrictMode`
+  under `spikes/powerpoint/`), so a `$null` printed identically to a window. The
+  Word claim — that `ActiveWindow` *throws* without a document — is true and
+  measured for *Word* (`spikes/isolation`), where it is a design constraint.
+  PowerPoint does the third thing: it neither throws nor hands back a usable
+  window, it yields `$null`. Importing the Word result to PowerPoint would be
+  wrong.
 
 Neither result changes the isolation design, because attribution (which pid is
 this COM object) is not exclusivity (is it safe to write to it). The isolated
@@ -409,7 +426,7 @@ and neither figure is discarded:
 | Measurement | Conditions | `Quit()` failed to reap |
 | --- | --- | --- |
 | original | `New-Object` per cycle, clean machine, empty census, kill between cycles | **15/15** |
-| #142 re-measure | `CreateProcess` isolated instance per cycle, verified between-cycle sweep | **15/15** (0 reaped, 0 self-exited; exports 15/15 clean, mean ~2.7 s; no OS fault logged; POWERPNT census empty before and after) |
+| #142 re-measure | `CreateProcess` isolated instance per cycle, verified between-cycle sweep | **15/15** (0 reaped, 0 threw, 0 self-exited — all 15 reached `Quit()`, it returned normally each time, the process survived each time; exports 15/15 clean, mean ~2.7 s; no OS fault logged; POWERPNT census empty before and after) |
 
 The two agree: the original was sound as taken, and the redesigned arm confirms
 it on an instance whose ownership is not in doubt, with a sweep that left nothing

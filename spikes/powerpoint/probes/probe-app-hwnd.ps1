@@ -100,7 +100,12 @@ try {
             Rep "  Application.HWND value" ("throws -- " + (Root-Type $hwndEx))
         }
         elseif ($null -eq $hwndVal) {
-            Rep "  Application.HWND value" 'null (no handle), no exception'
+            # Report only what was observed: a null value came back through the
+            # bind. Do NOT claim "no exception" -- $ErrorActionPreference is
+            # 'Continue' here, so a non-terminating error would never reach the
+            # catch above, and $Error growth is not a reliable detector either
+            # (the adapter can convert a throw to $null without $Error growing).
+            Rep "  Application.HWND value" 'null through the OBJID_NATIVEOM bind (no usable handle marshalled)'
         }
         else {
             Rep "  Application.HWND value" "$hwndVal"
@@ -134,12 +139,19 @@ try {
 
         Say ""
         Say "== B1: Application.ActiveWindow with a deck open =="
-        try {
-            $aw = $app.ActiveWindow
-            $awHwnd = 'unreadable'; try { $awHwnd = $aw.Hwnd } catch { }
-            Rep "  B1 ActiveWindow (deck open)" "returns a window; Hwnd = $awHwnd"
+        # Same three-way split as B2 below: a $null must not be reported as a
+        # window just because $null.Hwnd does not throw.
+        $aw = $null; $awEx = $null
+        try { $aw = $app.ActiveWindow } catch { $awEx = $_.Exception }
+        if ($awEx) { Rep "  B1 ActiveWindow (deck open)" ("throws -- " + (Root-Type $awEx)) }
+        elseif ($null -eq $aw) { Rep "  B1 ActiveWindow (deck open)" 'returned $null -- no window object, no exception caught' }
+        else {
+            $awHwnd = '<unset>'; $awHwndEx = $null
+            try { $awHwnd = $aw.Hwnd } catch { $awHwndEx = $_.Exception }
+            $awHwndRep = $(if ($awHwndEx) { 'read threw -- ' + (Root-Type $awHwndEx) }
+                elseif ($null -eq $awHwnd) { 'null' } else { "$awHwnd" })
+            Rep "  B1 ActiveWindow (deck open)" "returns a live window object; Hwnd = $awHwndRep"
         }
-        catch { Rep "  B1 ActiveWindow (deck open)" ("throws -- " + (Root-Type $_.Exception)) }
 
         Say ""
         Say "== B2: Application.ActiveWindow (and Hwnd) with NO deck open =="
@@ -151,7 +163,14 @@ try {
         # exited" -- distinguished by whether the pid is still alive.
         try { foreach ($p in @($app.Presentations)) { try { $p.Saved = -1 } catch { }; $p.Close() } } catch { }
         Start-Sleep -Milliseconds 900
-        $presCount = 'unreadable'; try { $presCount = $app.Presentations.Count } catch { }
+        # Distinguish "the Presentations collection is null" from "the collection
+        # holds 0 decks": $null.Count is 0 in this shell (no Set-StrictMode under
+        # spikes/powerpoint/), so a bare .Count of 0 cannot tell them apart and is
+        # not on its own evidence that the instance is deckless.
+        $presObj = '<unset>'; try { $presObj = $app.Presentations } catch { }
+        $presCount = $(if ($presObj -eq '<unset>') { 'unreadable (read threw)' }
+            elseif ($null -eq $presObj) { 'Presentations object is null' }
+            else { $c = 'unreadable'; try { $c = $presObj.Count } catch { }; "$c" })
         $alive = [bool](Get-Process -Id $iso.Pid -ErrorAction SilentlyContinue)
         Rep "  after closing the deck: process alive" $alive
         Rep "  Presentations.Count" $presCount
@@ -159,18 +178,33 @@ try {
             $hwnd2 = $null; $hwnd2Ex = $null
             try { $hwnd2 = $app.Hwnd } catch { $hwnd2Ex = $_.Exception }
             if ($hwnd2Ex) { Rep "  B2 Application.Hwnd (no deck)" ("throws -- " + (Root-Type $hwnd2Ex)) }
-            elseif ($null -eq $hwnd2) { Rep "  B2 Application.Hwnd (no deck)" 'null/empty' }
+            elseif ($null -eq $hwnd2) { Rep "  B2 Application.Hwnd (no deck)" 'null through the bind' }
             else { Rep "  B2 Application.Hwnd (no deck)" "$hwnd2 (Application.Hwnd is presentation-independent)" }
 
-            try {
-                $aw2 = $app.ActiveWindow
-                $aw2Hwnd = 'unreadable'; try { $aw2Hwnd = $aw2.Hwnd } catch { }
-                Rep "  B2 ActiveWindow (no deck)" "returns a window; Hwnd = $aw2Hwnd"
-                Rep "  VERDICT (B)" 'ActiveWindow does NOT throw without a presentation on PowerPoint'
-            }
-            catch {
-                Rep "  B2 ActiveWindow (no deck)" ("throws -- " + (Root-Type $_.Exception))
+            # Three outcomes, kept apart -- the whole point of arm B. A bare
+            # try/catch would fold "returned $null" into the success branch,
+            # because $null.Hwnd does not throw in this shell, so the verdict would
+            # print "returns a window" for a $null just as readily as for a real
+            # one. Separate: threw (caught below), returned $null, returned a
+            # window object. "no exception caught" is stated rather than "no
+            # exception", for the same EAP='Continue' reason as arm A.
+            $aw2 = $null; $aw2Ex = $null
+            try { $aw2 = $app.ActiveWindow } catch { $aw2Ex = $_.Exception }
+            if ($aw2Ex) {
+                Rep "  B2 ActiveWindow (no deck)" ("throws -- " + (Root-Type $aw2Ex))
                 Rep "  VERDICT (B)" 'ActiveWindow THROWS without a presentation on PowerPoint (matches the Word behaviour)'
+            }
+            elseif ($null -eq $aw2) {
+                Rep "  B2 ActiveWindow (no deck)" 'returned $null -- no window object, and no exception caught'
+                Rep "  VERDICT (B)" 'ActiveWindow returns $null (no window, no throw caught) without a presentation on PowerPoint'
+            }
+            else {
+                $aw2Hwnd = '<unset>'; $aw2HwndEx = $null
+                try { $aw2Hwnd = $aw2.Hwnd } catch { $aw2HwndEx = $_.Exception }
+                $hwndRep = $(if ($aw2HwndEx) { 'read threw -- ' + (Root-Type $aw2HwndEx) }
+                    elseif ($null -eq $aw2Hwnd) { 'null' } else { "$aw2Hwnd" })
+                Rep "  B2 ActiveWindow (no deck)" "returns a live window object; Hwnd = $hwndRep"
+                Rep "  VERDICT (B)" 'ActiveWindow returns a live window (does not throw) without a presentation on PowerPoint'
             }
         }
         else {

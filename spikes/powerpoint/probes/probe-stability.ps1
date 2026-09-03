@@ -33,10 +33,13 @@
 # whether the process reaps within the same window the teardown itself waits. The
 # count of cycles where Quit() left the process running is the measurement behind
 # the 15/15 figure in FINDINGS.md, now taken on an instance whose ownership is not
-# in doubt. The between-cycle sweep is Stop-IsolatedPowerPoint, which routes any
-# survivor through Stop-VerifiedPpt -- a kill gated on the recorded pid AND
-# StartTime that declines rather than guessing -- so a survivor is reaped without
-# the census-difference inference #139 removed.
+# in doubt. A cycle where Quit() itself THROWS, or where closing the last deck
+# exits the process BEFORE Quit() is called, is counted in its own bucket and kept
+# OUT of the reaping denominator, so the rate reflects only calls that ran to
+# completion -- the same reason $selfExited exists. The between-cycle sweep is
+# Stop-IsolatedPowerPoint, which routes any survivor through Stop-VerifiedPpt -- a
+# kill gated on the recorded pid AND StartTime that declines rather than guessing
+# -- so a survivor is reaped without the census-difference inference #139 removed.
 #
 # The original 15/15 stands as a historical measurement taken on a clean machine
 # with an empty census per cycle; FINDINGS.md records it as such. Any number this
@@ -88,8 +91,9 @@ function Invoke-FreshArm {
     Say "   Reports whether Quit() reaps the process; any survivor is swept by verified"
     Say "   pid+StartTime (Stop-IsolatedPowerPoint -> Stop-VerifiedPpt), never by census."
     $results = @()
-    $quitReaped = 0        # Quit() alone left no process
-    $quitSurvived = 0      # process outlived Quit() and needed the verified sweep
+    $quitReaped = 0        # Quit() returned normally and left no process
+    $quitSurvived = 0      # Quit() returned normally but the process outlived it
+    $quitThrew = 0         # Quit() itself threw -- not a reap/no-reap observation
     $selfExited = 0        # closing the last deck exited the process before Quit()
     for ($c = 1; $c -le $Cycles; $c++) {
         $src = Join-Path $root "fresh$c.pptx"
@@ -119,7 +123,20 @@ function Invoke-FreshArm {
                 continue
             }
             $stage = 'quit'
-            try { $iso.App.Quit() } catch { }
+            # A Quit() that THROWS is not an observation of "reaped or not" -- the
+            # call never ran to completion. Give it its own bucket, kept OUT of the
+            # reaping denominator, exactly as $selfExited is. The finally still
+            # sweeps any survivor. Discriminate by exception TYPE (unwrapped to the
+            # root), never message -- this Office is German.
+            $quitEx = $null
+            try { $iso.App.Quit() } catch { $quitEx = $_.Exception }
+            if ($quitEx) {
+                $quitThrew++
+                $r = $quitEx; while ($r.InnerException) { $r = $r.InnerException }
+                $results += [pscustomobject]@{ N = $c; Failed = $null; Ms = $ms }
+                Rep "  cycle $c" ("export {0:F0} ms; Quit() THREW ({1}) -> verified sweep" -f $ms, $r.GetType().Name)
+                continue
+            }
             $reaped = $false
             for ($i = 0; $i -lt 16; $i++) {
                 if (-not (Get-Process -Id $iso.Pid -ErrorAction SilentlyContinue)) { $reaped = $true; break }
@@ -144,8 +161,8 @@ function Invoke-FreshArm {
             Stop-IsolatedPowerPoint $iso
         }
     }
-    Rep "  Quit() reaped / survived / self-exited" "$quitReaped / $quitSurvived / $selfExited  (of $Cycles cycles)"
-    Rep "  Quit() failed to reap" "$quitSurvived / $($quitReaped + $quitSurvived) cycles where Quit() was reached"
+    Rep "  Quit() reaped / survived / threw / self-exited" "$quitReaped / $quitSurvived / $quitThrew / $selfExited  (of $Cycles cycles)"
+    Rep "  Quit() failed to reap" "$quitSurvived / $($quitReaped + $quitSurvived) cycles where Quit() returned normally"
     , $results
 }
 

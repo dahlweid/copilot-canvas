@@ -34,7 +34,7 @@ beyond generating the fixture first.
 | `probe-bulk-read.ps1` | Q3 — COM walk vs reading the OOXML zip |
 | `probe-localization.ps1` | Q6 — layout, placeholder and shape names on German Office |
 | `probe-hide.ps1` | Q4 — visibility (H1/H3 restored on the isolated route), windowless open, idle survival |
-| `probe-app-hwnd.ps1` | attribution — does `Application.HWND` exist and does `ActiveWindow` throw with no deck, on PowerPoint? |
+| `probe-app-hwnd.ps1` | attribution — does `Application.HWND` yield a handle, and what does `ActiveWindow` return with no deck, on PowerPoint? |
 | `probe-saved-flag.ps1` | the `Saved` MsoTriState trap |
 | `probe-stability.ps1` | crash investigation — fresh vs warm instances; FRESH arm re-measures `Quit()` reaping on the isolated route |
 | `probe-notes-control.ps1` | crash investigation — notes-page export, exonerated |

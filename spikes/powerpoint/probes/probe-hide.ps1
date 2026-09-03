@@ -90,14 +90,21 @@ Rep "POWERPNT pids before" ($(if (Get-PptPids) { (Get-PptPids) -join ',' } else 
 
 # --- H1 & H3: application-level writes, on an instance we PROVE we started -----
 # The CreateProcess instance from _isolated.ps1 is the only one whose pid the
-# code did not have to guess, so it is the only one it is safe to write to. Each
-# write is captured before it is made and restored twice: inline for a clean
-# measurement of the next arm, and again in the finally so the restore survives a
-# throw between the write and its inline restore -- a restore that only runs when
-# nothing threw is the #141 defect wearing a finally.
+# code did not have to guess, so it is the only one it is safe to write to. A
+# write is attempted ONLY after its prior value was captured successfully, so a
+# restore is always possible; a failed capture skips the write rather than
+# landing one that cannot be undone -- landing it would be the #141 defect. Each
+# write is then restored twice: inline for a clean measurement of the next arm,
+# and again in the finally so the restore survives a throw between the write and
+# its inline restore -- a restore that only runs when nothing threw is the #141
+# defect wearing a finally. "A restore is outstanding" is a dedicated boolean,
+# NOT a $null sentinel: $null would conflate "never captured" with "already
+# restored", and the first of those must still block the write.
 $h13 = $null
-$visOrig = $null      # captured Application.Visible; $null once restored or never captured
-$wsOrig = $null       # captured Application.WindowState; same convention
+$visOrig = $null      # captured Application.Visible value (meaningful only when $visCaptured)
+$visCaptured = $false # a capture succeeded and its restore is still outstanding
+$wsOrig = $null       # captured Application.WindowState value (meaningful only when $wsCaptured)
+$wsCaptured = $false  # a capture succeeded and its restore is still outstanding
 try {
     $src13 = Join-Path $root 'h13.pptx'; Copy-Item $Fixture $src13
     $h13 = Start-IsolatedPowerPoint -File $src13
@@ -109,49 +116,57 @@ try {
         Rep "H1/H3 isolated pid (CreateProcess)" $h13.Pid
 
         Say "== H1: Application.Visible = msoFalse (isolated instance) =="
-        try { $visOrig = $app.Visible } catch { }
-        Rep "  Visible (before write)" ($(if ($null -ne $visOrig) { $visOrig } else { 'unreadable' }))
-        $h1 = ''
-        try { $app.Visible = 0; $h1 = 'accepted' }
-        catch {
-            $r = $_.Exception; while ($r.InnerException) { $r = $r.InnerException }
-            $h1 = 'refused (' + $r.GetType().Name + ')'   # TYPE, not message -- Office is German
+        try { $visOrig = $app.Visible; $visCaptured = $true } catch { }
+        Rep "  Visible (before write)" ($(if ($visCaptured) { $visOrig } else { 'unreadable' }))
+        if (-not $visCaptured) {
+            # No captured prior value means no guaranteed restore, so the write is
+            # NOT attempted. Reported as its own outcome, not silently skipped.
+            Rep "  H1 Application.Visible = 0" 'NOT ATTEMPTED -- capture failed, restore could not be guaranteed'
         }
-        $visAfter = 'unreadable'; try { $visAfter = $app.Visible } catch { }
-        Rep "  H1 Application.Visible = 0" $h1
-        Rep "  Visible (after write)" $visAfter
-        # Inline restore so H3 is measured at the instance's original visibility.
-        if ($null -ne $visOrig) {
+        else {
+            $h1 = ''
+            try { $app.Visible = 0; $h1 = 'accepted' }
+            catch {
+                $r = $_.Exception; while ($r.InnerException) { $r = $r.InnerException }
+                $h1 = 'refused (' + $r.GetType().Name + ')'   # TYPE, not message -- Office is German
+            }
+            $visAfter = 'unreadable'; try { $visAfter = $app.Visible } catch { }
+            Rep "  H1 Application.Visible = 0" $h1
+            Rep "  Visible (after write)" $visAfter
+            # Inline restore so H3 is measured at the instance's original visibility.
             try { $app.Visible = $visOrig } catch { }
             $vr = 'unreadable'; try { $vr = $app.Visible } catch { }
             Rep "  Visible (after restore)" $vr
-            $visOrig = $null
+            $visCaptured = $false   # restored; the finally has nothing outstanding
         }
 
         Say "== H3: Application.WindowState = ppWindowMinimized (isolated instance) =="
         $wc = 'unreadable'; try { $wc = $app.Windows.Count } catch { }
         Rep "  Application.Windows.Count" $wc
         if (($wc -is [int]) -and $wc -gt 0) {
-            try { $wsOrig = $app.WindowState } catch { }
-            Rep "  WindowState (before write)" ($(if ($null -ne $wsOrig) { $wsOrig } else { 'unreadable' }))
-            $h3 = ''
-            try { $app.WindowState = 2; $h3 = 'accepted' }
-            catch {
-                $r = $_.Exception; while ($r.InnerException) { $r = $r.InnerException }
-                $h3 = 'refused (' + $r.GetType().Name + ')'
+            try { $wsOrig = $app.WindowState; $wsCaptured = $true } catch { }
+            Rep "  WindowState (before write)" ($(if ($wsCaptured) { $wsOrig } else { 'unreadable' }))
+            if (-not $wsCaptured) {
+                Rep "  H3 WindowState = ppWindowMinimized" 'NOT ATTEMPTED -- capture failed, restore could not be guaranteed'
             }
-            $wsAfter = 'unreadable'; try { $wsAfter = $app.WindowState } catch { }
-            Rep "  H3 WindowState = ppWindowMinimized" $h3
-            Rep "  WindowState (after write)" $wsAfter
-            # Failure-path demonstration: throw AFTER the write has landed but
-            # BEFORE the inline restore below, so the only thing that can put the
-            # window back is the finally. Off unless -InjectFailure is passed.
-            if ($InjectFailure) { throw 'injected failure (test): thrown between the H3 write and its inline restore' }
-            if ($null -ne $wsOrig) {
+            else {
+                $h3 = ''
+                try { $app.WindowState = 2; $h3 = 'accepted' }
+                catch {
+                    $r = $_.Exception; while ($r.InnerException) { $r = $r.InnerException }
+                    $h3 = 'refused (' + $r.GetType().Name + ')'
+                }
+                $wsAfter = 'unreadable'; try { $wsAfter = $app.WindowState } catch { }
+                Rep "  H3 WindowState = ppWindowMinimized" $h3
+                Rep "  WindowState (after write)" $wsAfter
+                # Failure-path demonstration: throw AFTER the write has landed but
+                # BEFORE the inline restore below, so the only thing that can put the
+                # window back is the finally. Off unless -InjectFailure is passed.
+                if ($InjectFailure) { throw 'injected failure (test): thrown between the H3 write and its inline restore' }
                 try { $app.WindowState = $wsOrig } catch { }
                 $wr = 'unreadable'; try { $wr = $app.WindowState } catch { }
                 Rep "  WindowState (after restore)" $wr
-                $wsOrig = $null
+                $wsCaptured = $false
             }
         }
         else {
@@ -162,25 +177,26 @@ try {
 catch { Rep "ERROR (H1/H3 isolated)" $_.Exception.Message.Split([char]10)[0] }
 finally {
     # The restore that cannot be skipped. If the try threw after a write but
-    # before its inline restore, $visOrig / $wsOrig are still set and are put back
-    # here; if the inline restore already ran they are $null and this is a no-op.
-    # The read-back is taken while the instance is still alive, before teardown,
-    # so a failure-path restore leaves visible proof and is not merely asserted.
+    # before its inline restore, $visCaptured / $wsCaptured are still true and the
+    # captured value is put back here; if the inline restore already ran, or the
+    # write was never attempted, the flag is false and this is a no-op. The
+    # read-back is taken while the instance is still alive, before teardown, so a
+    # failure-path restore leaves visible proof and is not merely asserted.
     if ($h13 -and $h13.App) {
         $restored = $false
-        if ($null -ne $visOrig) {
+        if ($visCaptured) {
             try { $h13.App.Visible = $visOrig } catch { }
             $vb = 'unreadable'; try { $vb = $h13.App.Visible } catch { }
             Rep "  [finally] Visible restored to" ("{0} (read-back {1})" -f $visOrig, $vb)
             $restored = $true
         }
-        if ($null -ne $wsOrig) {
+        if ($wsCaptured) {
             try { $h13.App.WindowState = $wsOrig } catch { }
             $wb = 'unreadable'; try { $wb = $h13.App.WindowState } catch { }
             Rep "  [finally] WindowState restored to" ("{0} (read-back {1})" -f $wsOrig, $wb)
             $restored = $true
         }
-        if (-not $restored) { Say "  [finally] nothing outstanding -- the inline restores already ran" }
+        if (-not $restored) { Say "  [finally] nothing outstanding -- inline restores ran, or no write was attempted" }
     }
     Stop-IsolatedPowerPoint $h13
 }
