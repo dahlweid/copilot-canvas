@@ -95,6 +95,15 @@ welcome and has repeatedly found genuine defects.
   `test/integration/` (`*-smoke.mjs`, need real Office).
 - Shared test helpers such as `test/integration/word-pids.mjs` must be
   **imported**, not copied.
+- **In issue and pull-request text, quote the claim you rely on — do not point
+  at a bare `file.ext:NN` coordinate.** A coordinate hides the content of the
+  claim, so when it rots a reader lands on unrelated code and files the miss as a
+  cosmetic nit, closing the question over whatever error sat underneath (this is
+  #141; ADR 0009). Quote the line, or the claim the line stands for; a coordinate
+  may sit *beside* the quote but never replace it. This targets tracker text
+  only — positional citations in committed comments and docs are fine and are
+  gated by `check-citations.mjs` / `check-citation-lines.mjs`. It is a
+  convention, not a gate: nothing mechanically checks issue or PR bodies.
 
 ## If you are coordinating work rather than doing it
 
