@@ -37,14 +37,16 @@ export const logged = [];
  * The session object the extension captured from `joinSession`, so a test can
  * drive it after the extension has imported.
  *
- * The extension reads two distinct things off this object, live, on every
- * `resolveInputPath` call, and a test controls each independently:
+ * The extension reads two distinct things off this object, and a test controls
+ * each independently:
  *
- *   * `session.workspacePath` -- still read by the canvas `open` action to seed
- *     the document picker's scan root (out of #158's scope). `setWorkspacePath`
- *     drives it; the default is `null`.
- *   * `session.rpc.metadata.snapshot()` -- the async host call whose
- *     `workingDirectory` a relative path now resolves against (#158).
+ *   * `session.workspacePath` -- read by the canvas `open` action, which passes
+ *     it into the viewer and on into the panel state (`extension.mjs`,
+ *     `server.mjs`). It is out of #158's scope, and `resolveInputPath` never
+ *     consults it. `setWorkspacePath` drives it; the default is `null`.
+ *   * `session.rpc.metadata.snapshot()` -- the async host call, read live on
+ *     every `resolveInputPath` call, whose `workingDirectory` a relative path
+ *     now resolves against (#158).
  *     `setWorkingDirectory` sets what it returns; `failMetadataSnapshot` makes it
  *     reject, which is how the no-fallback refusal path is exercised. The default
  *     `workingDirectory` is `null`, i.e. the field-guard case (a snapshot that
