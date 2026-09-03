@@ -105,18 +105,19 @@ export class RenderCache {
         return { paragraphs: [], paragraphCount: 0, truncated: false };
     }
 
-    // create/edit/revert exist so the #158 negative control is a genuine
-    // refusal->success flip rather than a missing-method error. With the
-    // resolver fix in place these are never reached -- `resolveInputPath`
-    // refuses a workspace-less relative path before any cache is built -- but
-    // when the guard is reverted to prove the control can go red, each of these
-    // tools must be able to *succeed* against a relative path resolved (wrongly)
-    // against cwd. Without them the reverted-guard run would fail with an
-    // unrelated "is not a function", which is red for the wrong reason: exactly
-    // the defect the control exists to exclude. Each records its docPath the
-    // same way `open`/`readStructure` do, and returns the `document.path` shape
-    // the edit/revert handlers post-process (`changeRecordFrom` reads no
-    // `applied` here, so it yields null and nothing is drawn).
+    // create/edit/revert exist so the #158 negative controls are genuine
+    // refusal->success flips rather than missing-method errors. With the
+    // resolver fix in place a *refused* relative path never reaches these --
+    // `resolveInputPath` declines before any cache is built -- but when the
+    // resolver is broken to prove a control can go red (reverting to cwd
+    // resolution, or dropping the field guard), each of these tools must be able
+    // to *succeed* against a relative path resolved (wrongly) against cwd.
+    // Without them the broken-resolver run would fail with an unrelated "is not
+    // a function", which is red for the wrong reason: exactly the defect the
+    // control exists to exclude. Each records its docPath the same way
+    // `open`/`readStructure` do, and returns the `document.path` shape the
+    // edit/revert handlers post-process (`changeRecordFrom` reads no `applied`
+    // here, so it yields null and nothing is drawn).
     async createDocument(docPath, _spec) {
         this.#live("createDocument");
         this.docPaths.push(docPath);

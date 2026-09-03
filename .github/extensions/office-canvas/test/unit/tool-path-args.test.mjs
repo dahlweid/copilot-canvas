@@ -120,11 +120,12 @@ function assertTypedRefusal(result, expected) {
     assert.doesNotMatch(text, /ERR_INVALID_ARG_TYPE/);
 }
 
-const REQUIRED = "`path` is required: give an absolute path to the document, or one relative to the workspace.";
+const REQUIRED =
+    "`path` is required: give an absolute path to the document, or one relative to the session's working directory.";
 
 const notAString = (received) =>
-    "`path` must be a non-empty string — an absolute path to the document, or one relative to the workspace. " +
-    `Received ${received}.`;
+    "`path` must be a non-empty string — an absolute path to the document, or one relative to the session's " +
+    `working directory. Received ${received}.`;
 
 // Otherwise-valid arguments for each tool, with `path` left out. Everything else
 // is present so the refusal cannot be about a different field.
