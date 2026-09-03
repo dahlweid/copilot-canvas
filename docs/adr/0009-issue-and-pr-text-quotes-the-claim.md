@@ -22,18 +22,17 @@ coordinate was how they lasted — but not in the way the first correction on #1
 supposed, and the true sequence is the sharper argument.
 
 The coordinate **resolved correctly when it was written.** On `main`'s tree at
-the moment #141 was filed (`fed5270`), `:167-170` is exactly the passage cited:
-`is the hwnd route, and it is deliberately not retrofitted here: ActiveWindow
-throws without a document, so taking it would mean adding one, and S3 measures
-what bare New-Object does`. What broke it was an **unrelated edit to the same
-file**: about seventeen minutes after filing, a merge (#139, `ff31de9`) inserted
-a census/`Quit`-gate comment above that passage, pushing the claim down to
-`:176-177` and leaving `:167-170` on the inserted census text. A later change
-(#144, `a8a9b7c`) deleted the line outright, so at `main` today the range points
-at unrelated text and `ActiveWindow` is gone from the file entirely. The
-coordinate resolved correctly at `fed5270` and pointed at unrelated text
-seventeen minutes later, moved not by anyone revising the claim but by an edit to
-a part of the file that had nothing to do with it.
+the moment #141 was filed (`fed5270`), `:167-170` covers the cited claim:
+`ActiveWindow throws without a document, so taking it would mean adding one, and
+S3 measures what bare New-Object does`. What broke it was an **unrelated edit to
+the same file**: about seventeen minutes after filing, a merge (#139, `ff31de9`)
+inserted a census/`Quit`-gate comment above that passage. The claim itself was
+not touched — the four lines are byte-identical before and after — but the
+insertion pushed them from `:167-170` down to `:176-179`, leaving `:167-170` on
+the inserted census text. A later change (#144, `a8a9b7c`) deleted the line
+outright, so at `main` today the range points at unrelated text and `ActiveWindow`
+is gone from the file entirely. The claim was relocated by an insertion above it,
+without a change to its own text.
 
 That is the point, and this repo already made it once, on the record. ADR 0006
 rejected raw paragraph indices for a document address, and the reason it gives is
@@ -47,19 +46,23 @@ the failure 0006 designed the whole read-then-address scheme to avoid. So
 verifying `:167-170` at the instant you cite it is not worthless: it buys
 correctness *at that instant*. What it does not buy is any durability past it,
 because the next commit to that file can relocate the claim without touching your
-issue. That is what makes verification-at-writing an insufficient defence and a
-quote a sufficient one: a quote cannot be relocated by an edit elsewhere; it
-either still matches the file or visibly does not.
+issue. That is what makes verification-at-writing an insufficient defence against
+relocation and a quote an effective one: a quote cannot be relocated by an edit
+elsewhere; it either still matches the file or visibly does not.
 
 The disanalogy with ADR 0006 is the part that must not be skipped, because it is
 where the tracker is *worse*. In-tree, 0006's addresses move too — but **not
 silently**: an edit "move[s] the revision token, and the next read is forced", so
 staleness there is machinery-caught and refusable. Tracker text has no revision
 token, and this ADR's own limits below record that no check can read it. So the
-in-tree fragility was solved by a mechanism the tracker cannot have. The quote is
-the tracker's substitute for that mechanism: with no token to force a re-read,
-the claim is carried inline, where a mismatch against the file is self-evident to
-anyone who looks rather than hidden behind a number.
+in-tree fragility was solved by a mechanism the tracker cannot have. A quote is
+not a substitute for that mechanism — it is a weaker, manual mitigation, and the
+difference in guarantee is the point. The token acts without a reader: it
+*detects* the drift and *refuses* the edit. A quote does neither; it only makes
+the drift **apparent** to a reader who looks. What the quote buys, with no token
+available, is that the relied-on claim is carried inline, so a mismatch against
+the file is self-evident to anyone who checks rather than hidden behind a number
+that still resolves.
 
 And underneath the coordinate sat the second defect, the one that actually
 mattered: the claim was a **Word** measurement wearing a PowerPoint label. PR
