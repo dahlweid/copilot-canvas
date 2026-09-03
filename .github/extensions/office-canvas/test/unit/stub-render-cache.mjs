@@ -105,6 +105,40 @@ export class RenderCache {
         return { paragraphs: [], paragraphCount: 0, truncated: false };
     }
 
+    // create/edit/revert exist so the #158 negative control is a genuine
+    // refusal->success flip rather than a missing-method error. With the
+    // resolver fix in place these are never reached -- `resolveInputPath`
+    // refuses a workspace-less relative path before any cache is built -- but
+    // when the guard is reverted to prove the control can go red, each of these
+    // tools must be able to *succeed* against a relative path resolved (wrongly)
+    // against cwd. Without them the reverted-guard run would fail with an
+    // unrelated "is not a function", which is red for the wrong reason: exactly
+    // the defect the control exists to exclude. Each records its docPath the
+    // same way `open`/`readStructure` do, and returns the `document.path` shape
+    // the edit/revert handlers post-process (`changeRecordFrom` reads no
+    // `applied` here, so it yields null and nothing is drawn).
+    async createDocument(docPath, _spec) {
+        this.#live("createDocument");
+        this.docPaths.push(docPath);
+        return {
+            document: { path: docPath, name: path.basename(docPath), key: `key-${this.id}`, pageCount: 1 },
+            structure: { paragraphs: [], paragraphCount: 0, truncated: false },
+            revisionToken: `rev-${this.id}`,
+        };
+    }
+
+    async editDocument(docPath, _intent, _options) {
+        this.#live("editDocument");
+        this.docPaths.push(docPath);
+        return { document: { path: docPath, name: path.basename(docPath), key: `key-${this.id}`, pageCount: 1 } };
+    }
+
+    async revertDocument(docPath, _options) {
+        this.#live("revertDocument");
+        this.docPaths.push(docPath);
+        return { document: { path: docPath, name: path.basename(docPath), key: `key-${this.id}`, pageCount: 1 } };
+    }
+
     async dispose() {
         this.disposed = true;
         if (gate) await gate;

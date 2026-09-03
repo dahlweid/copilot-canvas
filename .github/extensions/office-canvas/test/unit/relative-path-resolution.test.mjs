@@ -34,14 +34,25 @@
 // action's thrown message survives but its `code` field does not, so its refusal
 // is thrown with the code folded into the message.
 //
-// ## Negative control (must be able to go red)
+// ## Negative control (must be able to go red, for the right reason)
 //
 // Reverting the fix -- restoring `|| !session?.workspacePath` to the first line
-// so a workspace-less relative path resolves against cwd again -- flips the
-// falsy-branch tests here from a returned/thrown `workspace_unavailable` refusal
-// to a *success* (the stub cache resolves and answers). failure -> success and
-// throw -> resolve are both hard flips, so these tests cannot pass against the
-// #158 defect. Confirmed by running exactly that reversion; recorded in the PR.
+// so a workspace-less relative path resolves against cwd again -- makes every
+// falsy-branch test here flip from a returned/thrown `workspace_unavailable`
+// refusal to a *success*: the resolver stops declining, the (wrongly) cwd-
+// resolved path reaches the stub cache, and the tool answers. `assertTypedRefusal`
+// then fails on its first assertion -- a success is not a `failure` result --
+// and the canvas test's `assert.rejects` fails because nothing throws. failure
+// -> success and throw -> resolve are hard flips for all five.
+//
+// This depends on the stub cache implementing create/edit/revert as well as
+// open/read (stub-render-cache.mjs). Without those three methods the mutating
+// tools would go red under the reverted guard for an *unrelated* reason -- a
+// missing-method "is not a function", not a successful wrong-root resolution --
+// which is red for the wrong reason, the exact thing a control must exclude
+// (round 1 caught precisely this gap). Confirmed by running the reversion: all
+// five go red via the success flip, restored to green by the fix. Recorded in
+// the PR.
 
 import test, { after, before, beforeEach } from "node:test";
 import assert from "node:assert/strict";
