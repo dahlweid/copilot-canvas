@@ -200,10 +200,15 @@ test("a lock file that has stayed unreadable past the cap is reclaimed", async (
     // lock must not wedge the gate forever.
     const { lockPath, cleanup } = await scratch();
     try {
-        await writeFile(lockPath, "not json");
-        const handle = await acquireWordSuiteLock("survivor", { ...fast, lockPath, maxHoldMs: 0 });
-        assert.equal(handle.held, true);
+        process.env.OFFICE_CANVAS_LOCK_DEBUG_159 = "1";
+        for (let attempt = 1; attempt <= 100; attempt++) {
+            await writeFile(lockPath, "not json");
+            const handle = await acquireWordSuiteLock("survivor", { ...fast, lockPath, maxHoldMs: 0 });
+            assert.equal(handle.held, true, `attempt ${attempt} did not reclaim`);
+            handle.release();
+        }
     } finally {
+        delete process.env.OFFICE_CANVAS_LOCK_DEBUG_159;
         await cleanup();
     }
 });
