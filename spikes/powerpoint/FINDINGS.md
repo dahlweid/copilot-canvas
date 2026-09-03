@@ -232,9 +232,15 @@ measures them on the isolated instance.
   each cycle is a fresh `Start-IsolatedPowerPoint` → close the deck → read → sweep,
   so the result is reproduced *across processes* rather than sampled once from one
   — a stack of reads of a single instance would only show that instance is stable,
-  which is not the claim. Process liveness is sampled on **both** sides of each
-  read, so a `$null` from an RCW whose process exited mid-call is scored
-  INCONCLUSIVE and never counted as a windowless read. This cross-instance tally
+  which is not the claim. A `$null` is counted as a windowless read only when the
+  cycle clears **both** prerequisites: the process is alive on **both** sides of the
+  read (so a `$null` from an RCW whose process exited mid-call is not miscounted),
+  **and** the cycle reached a verified `Presentations.Count = 0`. The deck-closing
+  `Close()` sits in a swallowing `catch`, so it can silently leave a deck; a `$null`
+  read whose deckless state was not established would assert a cause the code never
+  proved, so it is scored INCONCLUSIVE rather than counted. All 5 cycles cleared both
+  gates (each printed `pres=0`), so every counted `$null` is earned, not merely
+  observed. This cross-instance tally
   agrees with, and supersedes, an earlier three-run reading. The reading rests on
   an explicit `$null` check that tells a returned `$null` apart from a returned
   window; an earlier reading that reported a live window was an artifact of a
@@ -243,9 +249,11 @@ measures them on the isolated instance.
   identically to a window. The
   Word claim — that `ActiveWindow` *throws* without a document — is true and
   measured for *Word* (`spikes/isolation`), where it is a design constraint.
-  PowerPoint does the third thing: it neither throws nor hands back a usable
-  window, it yields `$null`. Importing the Word result to PowerPoint would be
-  wrong.
+  PowerPoint does the third thing: it does not hand back a usable window and no
+  exception is caught, it yields `$null`. (As above, "no exception caught" is the
+  measured claim, not "no exception" — the probe runs under `Continue`, so a
+  non-terminating error would never reach a `catch`.) Importing the Word result to
+  PowerPoint would be wrong.
 
 Neither result changes the isolation design, because attribution (which pid is
 this COM object) is not exclusivity (is it safe to write to it). The isolated

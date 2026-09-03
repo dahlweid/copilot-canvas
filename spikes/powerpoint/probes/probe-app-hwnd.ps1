@@ -198,13 +198,26 @@ try {
                 # Close the only presentation so this fresh instance is deckless.
                 try { foreach ($p in @($cyApp.Presentations)) { try { $p.Saved = -1 } catch { }; $p.Close() } } catch { }
                 Start-Sleep -Milliseconds 900
-                # presCount: tell a null Presentations collection apart from a genuine
-                # 0 -- $null.Count is 0 in this shell (no Set-StrictMode under
-                # spikes/powerpoint/), so a bare 0 is not on its own evidence of deckless.
-                $presObj = '<unset>'; try { $presObj = $cyApp.Presentations } catch { }
-                $presCount = $(if ($presObj -eq '<unset>') { 'unreadable (read threw)' }
+                # Establish deckless as a GATE, not merely a printed value. A $null
+                # ActiveWindow is evidence for "returns $null when deckless" ONLY if this
+                # cycle actually reached Presentations.Count = 0. The Close above sits in
+                # a swallowing catch, so it can silently leave a deck; $deckless is true
+                # only for a real, readable count of 0. $null.Count is 0 in this shell
+                # (no Set-StrictMode under spikes/powerpoint/), so a read that threw or a
+                # null Presentations object must NOT pass as 0 -- hence the explicit
+                # split, with a dedicated boolean for the threw case rather than a COM-vs
+                # -string sentinel comparison.
+                $presObj = $null; $presReadThrew = $false
+                try { $presObj = $cyApp.Presentations } catch { $presReadThrew = $true }
+                $presCountVal = $null
+                if (-not $presReadThrew -and $null -ne $presObj) {
+                    try { $presCountVal = [int]$presObj.Count } catch { $presCountVal = $null }
+                }
+                $deckless = ($null -ne $presCountVal -and $presCountVal -eq 0)
+                $presCount = $(if ($presReadThrew) { 'unreadable (read threw)' }
                     elseif ($null -eq $presObj) { 'Presentations object is null' }
-                    else { $pc = 'unreadable'; try { $pc = $presObj.Count } catch { }; "$pc" })
+                    elseif ($null -eq $presCountVal) { 'unreadable (Count threw)' }
+                    else { "$presCountVal" })
                 # Bracketed ActiveWindow read (the headline).
                 $ab = [bool](Get-Process -Id $cyIso.Pid -ErrorAction SilentlyContinue)
                 $aw2 = $null; $aw2Ex = $null
@@ -220,11 +233,23 @@ try {
                     elseif ($hwnd2Ex) { 'throws -- ' + (Root-Type $hwnd2Ex) }
                     elseif ($null -eq $hwnd2) { 'null through the bind' }
                     else { "$hwnd2" })
-                # Classify the ActiveWindow read. A $null that is not alive-bracketed
-                # is a dead-RCW artifact, not a windowless read -- INCONCLUSIVE.
+                # Classify the ActiveWindow read. TWO prerequisites gate every
+                # substantive verdict, because a $null that fails either is not evidence
+                # for the deckless-$null claim: (1) the process must be alive across the
+                # read -- a dead-RCW read can itself surface as $null; (2) this cycle must
+                # have reached a verified Presentations.Count = 0 -- the Close is swallowed
+                # and can silently leave a deck, and a $null tallied without that would
+                # assert a cause (deckless) the code never established. A cycle failing
+                # either prerequisite is INCONCLUSIVE and is reported in the tally, never
+                # discarded: an unverified cycle carries information, and dropping it would
+                # rebuild the very defect this gate removes.
                 if (-not ($ab -and $aa)) {
                     $b2Incon++
                     Rep "  B2 [$cy/$B2Cycles] pres=$presCount Hwnd=$hwndRep ActiveWindow" 'INCONCLUSIVE -- process not alive across the read'
+                }
+                elseif (-not $deckless) {
+                    $b2Incon++
+                    Rep "  B2 [$cy/$B2Cycles] pres=$presCount Hwnd=$hwndRep ActiveWindow" 'INCONCLUSIVE -- deckless not established (Presentations.Count is not a verified 0; the swallowed Close may have left a deck)'
                 }
                 elseif ($aw2Ex) {
                     $b2Threw++
@@ -232,7 +257,7 @@ try {
                 }
                 elseif ($null -eq $aw2) {
                     $b2Null++
-                    Rep "  B2 [$cy/$B2Cycles] pres=$presCount Hwnd=$hwndRep ActiveWindow" 'returned $null -- no window object, no exception caught, process alive across the read'
+                    Rep "  B2 [$cy/$B2Cycles] pres=$presCount Hwnd=$hwndRep ActiveWindow" 'returned $null -- no window object, no exception caught, process alive across the read, Presentations.Count = 0'
                 }
                 else {
                     $b2Window++
@@ -256,18 +281,22 @@ try {
                 Stop-IsolatedPowerPoint $cyIso
             }
         }
+        $b2Counted = $b2Null + $b2Window + $b2Threw
         Rep "  B2 ActiveWindow tally across instances (null/window/threw/inconclusive)" ("{0}/{1}/{2}/{3} of {4}" -f $b2Null, $b2Window, $b2Threw, $b2Incon, $B2Cycles)
-        if ($b2Threw -gt 0 -and $b2Null -eq 0 -and $b2Window -eq 0) {
-            Rep "  VERDICT (B)" "ActiveWindow THROWS without a presentation on PowerPoint (matches the Word behaviour); $b2Threw/$B2Cycles fresh instances"
+        if ($b2Counted -eq 0) {
+            Rep "  VERDICT (B)" "INCONCLUSIVE -- no cycle established a live, deckless read ($b2Incon/$B2Cycles inconclusive). The deckless state could not be reliably reached on this route; reporting that rather than a filtered number."
+        }
+        elseif ($b2Threw -gt 0 -and $b2Null -eq 0 -and $b2Window -eq 0) {
+            Rep "  VERDICT (B)" "ActiveWindow THROWS without a presentation on PowerPoint (matches the Word behaviour); $b2Threw/$B2Cycles fresh instances, $b2Incon inconclusive"
         }
         elseif ($b2Null -gt 0 -and $b2Window -eq 0 -and $b2Threw -eq 0) {
-            Rep "  VERDICT (B)" ('ActiveWindow returns $null (no window, no throw caught) without a presentation on PowerPoint; reproduced ' + "$b2Null/$B2Cycles fresh instances")
+            Rep "  VERDICT (B)" ('ActiveWindow returns $null (no window, no throw caught) without a presentation on PowerPoint; reproduced ' + "$b2Null/$B2Cycles fresh instances, $b2Incon inconclusive")
         }
         elseif ($b2Window -gt 0 -and $b2Null -eq 0 -and $b2Threw -eq 0) {
-            Rep "  VERDICT (B)" "ActiveWindow returns a live window (does not throw) without a presentation on PowerPoint; $b2Window/$B2Cycles fresh instances"
+            Rep "  VERDICT (B)" "ActiveWindow returns a live window (does not throw) without a presentation on PowerPoint; $b2Window/$B2Cycles fresh instances, $b2Incon inconclusive"
         }
         else {
-            Rep "  VERDICT (B)" "MIXED / INCONCLUSIVE -- null=$b2Null window=$b2Window threw=$b2Threw inconclusive=$b2Incon of $B2Cycles"
+            Rep "  VERDICT (B)" "MIXED -- null=$b2Null window=$b2Window threw=$b2Threw inconclusive=$b2Incon of $B2Cycles"
         }
     }
 }
