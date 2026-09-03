@@ -155,8 +155,24 @@ function requireDocument(instance) {
 
 const describePathArg = (value) => (typeof value === "string" ? "an empty string" : `a ${typeof value}`);
 
+// Single source for how a `path` argument is described and refused, everywhere.
+//
+// The load-bearing fact is what a *relative* path resolves against, and it lives
+// once here, in RELATIVE_ROOT. The six tool/canvas schema descriptions and the
+// two `invalid_path` refusals below all derive their wording from it, and
+// `resolveInputPath` is what makes that wording true. This mirrors SUPPORTED in
+// render-cache.mjs and exists for the same reason: #158 shipped this promise
+// restated as the literal "workspace-relative" in eight places while the code
+// resolved somewhere else entirely, and prose restated is prose that drifts out
+// of step with the code. Change the contract here and every statement of it
+// moves together.
+const RELATIVE_ROOT = "the session's working directory";
+
+/** The two path kinds a `path` argument accepts, as a schema-description sentence. */
+const PATH_RESOLUTION_NOTE = `Absolute, or relative to ${RELATIVE_ROOT}.`;
+
 /**
- * Resolves a user- or agent-supplied path against the workspace.
+ * Resolves a user- or agent-supplied path into the absolute path Word is handed.
  *
  * The guard is the whole point of this function's shape (#38). Every tool
  * declares `required: ["path"]`, and measured in #28 this host enforces no
@@ -170,56 +186,71 @@ const describePathArg = (value) => (typeof value === "string" ? "an empty string
  * send instead.
  *
  * Empty and whitespace-only strings are refused here too, rather than left to
- * `normalizeDocPath`. They never reached it: with a workspace set,
- * `path.join(workspacePath, "")` is the workspace directory -- measured, and
- * the same for `"   "` once `normalizeDocPath` trims -- so a blank `path`
- * resolved to a *directory* and was only ever caught downstream, by a code
- * naming something else. The canvas is unaffected: `open` tests
- * `ctx.input?.path` for truthiness before calling this, so an omitted path
- * still opens the canvas on its empty state.
+ * `normalizeDocPath`. A blank `path` joined onto a root is the *root directory*,
+ * only ever caught downstream by a code naming something else. `invalid_path`
+ * rather than a new code: it is already the extension-surface code for an
+ * unusable path, so every spelling of "no usable path" gives one answer. The
+ * canvas is unaffected: `open` tests `ctx.input?.path` for truthiness before
+ * calling this, so an omitted path still opens the canvas on its empty state.
  *
- * `invalid_path` rather than a new code: it is already the extension-surface
- * code for an unusable path, and it is what `normalizeDocPath` answers an
- * empty string with today, so every spelling of "no usable path" now gives one
- * answer.
+ * A *relative* path resolves against the session's working directory, read from
+ * the host on each call via `session.rpc.metadata.snapshot()` (#158). That RPC
+ * is async, which is why this function is; every call site already awaited Word
+ * work, so awaiting here costs nothing. `workingDirectory` is the field measured
+ * to be the worktree/project root a caller means by a relative path -- distinct
+ * from `session.workspacePath`, which in a CLI session is the session-state
+ * directory, the wrong root the prior shape silently resolved against by falling
+ * through to `normalizeDocPath(input)`, whose `path.resolve` is **cwd-relative**.
  *
- * A *relative* path with no workspace to resolve it against is the third
- * refusal, and it is a different fact from the two above, so it carries its own
- * code (#158). The prior shape fell through to `normalizeDocPath(input)` here,
- * whose `path.resolve` is **cwd-relative** -- so a relative path arriving with
- * `session.workspacePath` unset was not declined, it was silently resolved
- * against the extension process's working directory, a root the caller never
- * named. Every schema description promises "workspace-relative"; resolving
- * against cwd is neither that nor absolute. The refusal is discriminated on the
- * branch that reached it -- `input` relative *and* no workspacePath -- never on
- * a message, and it names only the cause that branch established: there is no
- * workspace root available, so an absolute path is required. It cannot resolve
- * against cwd because the only path left to `normalizeDocPath` from here is an
- * absolute one, where the process cwd is not consulted at all.
+ * There is no fallback (#158). If the snapshot cannot be read, or reports no
+ * usable absolute working directory, the relative path is *refused* with a typed
+ * `working_directory_unavailable` -- never resolved against `process.cwd()`,
+ * never against `workspacePath`, never resolved anyway. That is deliberate: a
+ * fallback is exactly the silent wrong-root class #158 was, and a non-absolute
+ * `workingDirectory` reaching `path.join` and then `normalizeDocPath` would
+ * `path.resolve` cwd-relative -- the original bug reintroduced. The two throws
+ * are discriminated structurally (the snapshot rejected, versus its field was
+ * unusable), never on a message, and each names only what the code observed --
+ * that the working directory was unavailable -- not a cause it cannot know. An
+ * absolute path skips all of this: it consults no root, never calls the
+ * snapshot, and so can never be refused for a missing one.
  */
-function resolveInputPath(input) {
+async function resolveInputPath(input) {
     if (input === undefined || input === null) {
         throw new DocumentError(
             "invalid_path",
-            "`path` is required: give an absolute path to the document, or one relative to the workspace.",
+            `\`path\` is required: give an absolute path to the document, or one relative to ${RELATIVE_ROOT}.`,
         );
     }
     if (typeof input !== "string" || input.trim() === "") {
         throw new DocumentError(
             "invalid_path",
-            `\`path\` must be a non-empty string — an absolute path to the document, or one relative to the ` +
-                `workspace. Received ${describePathArg(input)}.`,
+            `\`path\` must be a non-empty string — an absolute path to the document, or one relative to ` +
+                `${RELATIVE_ROOT}. Received ${describePathArg(input)}.`,
         );
     }
     if (path.isAbsolute(input)) return normalizeDocPath(input);
-    if (!session?.workspacePath) {
+
+    let workingDirectory;
+    try {
+        ({ workingDirectory } = await session.rpc.metadata.snapshot());
+    } catch (cause) {
+        const err = new DocumentError(
+            "working_directory_unavailable",
+            `Cannot resolve the relative path ${JSON.stringify(input.trim())}: the session's working ` +
+                `directory could not be read. Give an absolute path instead.`,
+        );
+        err.cause = cause;
+        throw err;
+    }
+    if (typeof workingDirectory !== "string" || !path.isAbsolute(workingDirectory)) {
         throw new DocumentError(
-            "workspace_unavailable",
-            `Cannot resolve the relative path ${JSON.stringify(input.trim())}: no workspace directory is ` +
-                `available in this session, so there is no root to resolve it against. Give an absolute path instead.`,
+            "working_directory_unavailable",
+            `Cannot resolve the relative path ${JSON.stringify(input.trim())}: the session reported no usable ` +
+                `working directory. Give an absolute path instead.`,
         );
     }
-    return normalizeDocPath(path.join(session.workspacePath, input));
+    return normalizeDocPath(path.join(workingDirectory, input));
 }
 
 async function run(fn) {
@@ -275,7 +306,7 @@ const wordCanvas = createCanvas({
             path: {
                 type: "string",
                 description:
-                    `Absolute or workspace-relative path to a Word document (${supportedList()}). ` +
+                    `A path to a Word document (${supportedList()}). ${PATH_RESOLUTION_NOTE} ` +
                     `Omit to open the canvas empty; it then tells the user to ask for a document, ` +
                     `and this canvas's open_document action puts one in it.`,
             },
@@ -303,7 +334,7 @@ const wordCanvas = createCanvas({
             // Re-opening the same panel (rehydrate, reload, focus) must not
             // disturb what is already shown, so only act on a *different* path.
             if (ctx.input?.path) {
-                const wanted = resolveInputPath(ctx.input.path);
+                const wanted = await resolveInputPath(ctx.input.path);
                 if (instance.doc?.path !== wanted) await instance.openDocument(wanted);
             }
 
@@ -349,7 +380,7 @@ const wordCanvas = createCanvas({
                 properties: {
                     path: {
                         type: "string",
-                        description: "Absolute or workspace-relative path to the document.",
+                        description: `Path to the document. ${PATH_RESOLUTION_NOTE}`,
                     },
                 },
                 required: ["path"],
@@ -358,7 +389,7 @@ const wordCanvas = createCanvas({
             handler: async (ctx) =>
                 run(async () => {
                     const instance = requireInstance(ctx.instanceId);
-                    const doc = await instance.openDocument(resolveInputPath(ctx.input.path));
+                    const doc = await instance.openDocument(await resolveInputPath(ctx.input.path));
                     return { opened: true, ...doc };
                 }),
         },
@@ -512,7 +543,7 @@ const readDocumentTool = {
         properties: {
             path: {
                 type: "string",
-                description: `Absolute or workspace-relative path to a Word document (${supportedList()}).`,
+                description: `A path to a Word document (${supportedList()}). ${PATH_RESOLUTION_NOTE}`,
             },
             limit: {
                 type: "integer",
@@ -546,7 +577,7 @@ const readDocumentTool = {
         // Word work raises become the same legible failure result; a catch here
         // as well would only wrap the code into the message twice.
         const paging = normalizeReadArgs(args);
-        const docPath = resolveInputPath(args?.path);
+        const docPath = await resolveInputPath(args?.path);
 
         return withWordWork(() => getCache().readStructure(docPath, paging));
     },
@@ -645,7 +676,7 @@ const createDocumentTool = {
         properties: {
             path: {
                 type: "string",
-                description: `Absolute or workspace-relative path to create (${creatableList()}). The folder must already exist, and the file must not.`,
+                description: `Path to create (${creatableList()}). ${PATH_RESOLUTION_NOTE} The folder must already exist, and the file must not.`,
             },
             blocks: {
                 type: "array",
@@ -662,7 +693,7 @@ const createDocumentTool = {
         // Path resolution runs before any Word work is entered, matching
         // read_document: a malformed path should cost a string operation, not a
         // cold Word start. Uncaught here; see `reportingFailures`.
-        const docPath = resolveInputPath(args?.path);
+        const docPath = await resolveInputPath(args?.path);
 
         // Everything except `path` is forwarded, rather than `{ blocks }` being
         // picked out.
@@ -710,7 +741,7 @@ const editDocumentTool = {
         properties: {
             path: {
                 type: "string",
-                description: `Absolute or workspace-relative path to a Word document (${supportedList()}).`,
+                description: `A path to a Word document (${supportedList()}). ${PATH_RESOLUTION_NOTE}`,
             },
             revisionToken: {
                 type: "string",
@@ -746,7 +777,7 @@ const editDocumentTool = {
             if (args?.text !== undefined) intent.text = args.text;
             if (args?.headingLevel !== undefined) intent.headingLevel = args.headingLevel;
 
-            const result = await getCache().editDocument(resolveInputPath(args?.path), intent, {
+            const result = await getCache().editDocument(await resolveInputPath(args?.path), intent, {
                 revisionToken: args?.revisionToken,
             });
             await refreshCanvasesFor(result.document.path, changeRecordFrom(result));
@@ -774,7 +805,7 @@ const revertDocumentTool = {
         properties: {
             path: {
                 type: "string",
-                description: "Absolute or workspace-relative path to the Word document to revert.",
+                description: `Path to the Word document to revert. ${PATH_RESOLUTION_NOTE}`,
             },
             revisionToken: {
                 type: "string",
@@ -790,7 +821,7 @@ const revertDocumentTool = {
     },
     handler: async (args) =>
         withWordWork(async () => {
-            const result = await getCache().revertDocument(resolveInputPath(args?.path), {
+            const result = await getCache().revertDocument(await resolveInputPath(args?.path), {
                 revisionToken: args?.revisionToken,
             });
             // A revert undoes the edit the overlay was describing, so the

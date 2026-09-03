@@ -35,16 +35,49 @@ export const logged = [];
 
 /**
  * The session object the extension captured from `joinSession`, so a test can
- * drive `session.workspacePath` after the extension has imported. The extension
- * reads `session?.workspacePath` live on every `resolveInputPath` call, so
- * mutating this object's property is what a workspace-relative resolution test
- * needs -- the default stays `null`, which is the no-workspace case (#158).
+ * drive it after the extension has imported.
+ *
+ * The extension reads two distinct things off this object, and a test controls
+ * each independently:
+ *
+ *   * `session.workspacePath` -- read by the canvas `open` action, which passes
+ *     it into the viewer and on into the panel state (`extension.mjs`,
+ *     `server.mjs`). It is out of #158's scope, and `resolveInputPath` never
+ *     consults it. `setWorkspacePath` drives it; the default is `null`.
+ *   * `session.rpc.metadata.snapshot()` -- the async host call, read live on
+ *     every `resolveInputPath` call, whose `workingDirectory` a relative path
+ *     now resolves against (#158).
+ *     `setWorkingDirectory` sets what it returns; `failMetadataSnapshot` makes it
+ *     reject, which is how the no-fallback refusal path is exercised. The default
+ *     `workingDirectory` is `null`, i.e. the field-guard case (a snapshot that
+ *     answers without a usable absolute working directory).
  */
 let currentSession = null;
+
+// Snapshot behaviour, module-level so setters reach it before joinSession has
+// run and so it survives across the single import-time joinSession call.
+const metadata = { workingDirectory: null, snapshotError: null };
 
 /** Sets `session.workspacePath` on the object the extension holds. */
 export function setWorkspacePath(workspacePath) {
     if (currentSession) currentSession.workspacePath = workspacePath;
+}
+
+/** What `session.rpc.metadata.snapshot()` reports as the working directory. */
+export function setWorkingDirectory(workingDirectory) {
+    metadata.workingDirectory = workingDirectory;
+    metadata.snapshotError = null;
+}
+
+/** Makes `session.rpc.metadata.snapshot()` reject, to drive the no-fallback path. */
+export function failMetadataSnapshot(error = new Error("metadata snapshot unavailable")) {
+    metadata.snapshotError = error;
+}
+
+/** Restores the default snapshot state (no working directory, no error). */
+export function resetMetadata() {
+    metadata.workingDirectory = null;
+    metadata.snapshotError = null;
 }
 
 export async function joinSession(options = {}) {
@@ -53,6 +86,17 @@ export async function joinSession(options = {}) {
     joined.hooks = options.hooks ?? {};
     currentSession = {
         workspacePath: null,
+        rpc: {
+            metadata: {
+                async snapshot() {
+                    if (metadata.snapshotError) throw metadata.snapshotError;
+                    return {
+                        workspacePath: currentSession.workspacePath,
+                        workingDirectory: metadata.workingDirectory,
+                    };
+                },
+            },
+        },
         async log(message) {
             logged.push(message);
         },
