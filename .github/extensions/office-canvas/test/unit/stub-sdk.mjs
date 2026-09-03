@@ -33,14 +33,29 @@ export const createCanvas = (definition) => definition;
 
 export const logged = [];
 
+/**
+ * The session object the extension captured from `joinSession`, so a test can
+ * drive `session.workspacePath` after the extension has imported. The extension
+ * reads `session?.workspacePath` live on every `resolveInputPath` call, so
+ * mutating this object's property is what a workspace-relative resolution test
+ * needs -- the default stays `null`, which is the no-workspace case (#158).
+ */
+let currentSession = null;
+
+/** Sets `session.workspacePath` on the object the extension holds. */
+export function setWorkspacePath(workspacePath) {
+    if (currentSession) currentSession.workspacePath = workspacePath;
+}
+
 export async function joinSession(options = {}) {
     joined.canvases = options.canvases ?? [];
     joined.tools = options.tools ?? [];
     joined.hooks = options.hooks ?? {};
-    return {
+    currentSession = {
         workspacePath: null,
         async log(message) {
             logged.push(message);
         },
     };
+    return currentSession;
 }
