@@ -16,25 +16,41 @@ because nobody who classified it as cosmetic looked underneath.
 ## The evidence: #141
 
 This is not hypothetical. Issue #141's note to whoever took it cited
-`probe-single-instance.ps1:167-170` for a claim about PowerPoint's
-`ActiveWindow`. Two things were wrong at once, and the coordinate hid both. The
-range was wrong **when it was written** — at the tree state when #141 was filed,
-`:167-170` held WINWORD-census text, while the claim it was cited for was at
-`:176-177`. So this is not a coordinate that rotted; it *never* pointed at its
-claim, from filing onward. And underneath, the claim itself was a **Word**
-measurement wearing a PowerPoint label. Both defects sat in the issue body until
-someone finally resolved the coordinate by hand, at which point they surfaced
-together; the correction is now recorded on #141.
+`probe-single-instance.ps1:167-170` for a claim it described as PowerPoint's
+`ActiveWindow` throwing without a presentation. Two things were wrong, and the
+coordinate was how they lasted — but not in the way the first correction on #141
+supposed, and the true sequence is the sharper argument.
 
-The coordinate is why they lasted. A bare `:167-170` gives a reader nothing to
-check the claim *against* — following it lands on census text, which reads as an
-unrelated stale reference, not as a contradiction of the sentence citing it. This
-is a property of the notation, not a charge against any particular reader: a
-coordinate that no longer points at its claim invites no examination of the
-claim, and a wrong one that never did invites none from the start. (The range
-has since rotted a second way — `a8a9b7c` (#144) deleted the line — so at `main`
-it points at unrelated text too. A quote would have failed loudly at either
-moment.)
+The coordinate **resolved correctly when it was written.** On `main`'s tree at
+the moment #141 was filed (`fed5270`), `:167-170` is exactly the passage cited:
+`ActiveWindow throws without a document, so taking it would mean adding one, and
+S3 measures what bare New-Object does`. What broke it was an **unrelated edit to
+the same file**: about seventeen minutes after filing, a merge (#139, `ff31de9`)
+inserted a census/`Quit`-gate comment above that passage, pushing the claim down
+to `:176-177` and leaving `:167-170` pointing at the inserted census text. A
+later change (#144, `a8a9b7c`) deleted the line outright, so at `main` today the
+range points at unrelated text and `ActiveWindow` is gone from the file
+entirely. The coordinate was checked, was right, and was broken before any reader
+of the issue reached it — by someone editing a part of the file that had nothing
+to do with the claim.
+
+That is the point, and it is the same one ADR 0006 makes about addresses: a
+coordinate is a position, and positions move under edits you do not control.
+Verifying `:167-170` at the instant you cite it buys nothing, because the next
+commit to that file can relocate the claim without touching your issue. A quote
+cannot be relocated by an edit elsewhere; it either still matches the file or
+visibly does not.
+
+And underneath the coordinate sat the second defect, the one that actually
+mattered: the claim was a **Word** measurement wearing a PowerPoint label —
+verified in PR #157, which measured PowerPoint's `ActiveWindow` returning `$null`
+rather than throwing. The correction now recorded on #141 (including a correction
+to that correction's own account of *when* the range broke) sets this out. A bare
+`:167-170` gave a reader nothing to weigh that mislabel against: following it,
+once broken, lands on census text that reads as an unrelated stale reference, not
+as a contradiction of the sentence citing it. This is a property of the notation,
+not a charge against any reader — and the ADR does not claim to know which tree
+the note's author was looking at, only what the trees show.
 
 A quote would have broken this where the coordinate could not. Writing
 `"ActiveWindow throws without a document"` puts the word *document* in front of a
