@@ -23,34 +23,57 @@ supposed, and the true sequence is the sharper argument.
 
 The coordinate **resolved correctly when it was written.** On `main`'s tree at
 the moment #141 was filed (`fed5270`), `:167-170` is exactly the passage cited:
-`ActiveWindow throws without a document, so taking it would mean adding one, and
-S3 measures what bare New-Object does`. What broke it was an **unrelated edit to
-the same file**: about seventeen minutes after filing, a merge (#139, `ff31de9`)
-inserted a census/`Quit`-gate comment above that passage, pushing the claim down
-to `:176-177` and leaving `:167-170` pointing at the inserted census text. A
-later change (#144, `a8a9b7c`) deleted the line outright, so at `main` today the
-range points at unrelated text and `ActiveWindow` is gone from the file
-entirely. The coordinate was checked, was right, and was broken before any reader
-of the issue reached it — by someone editing a part of the file that had nothing
-to do with the claim.
+`is the hwnd route, and it is deliberately not retrofitted here: ActiveWindow
+throws without a document, so taking it would mean adding one, and S3 measures
+what bare New-Object does`. What broke it was an **unrelated edit to the same
+file**: about seventeen minutes after filing, a merge (#139, `ff31de9`) inserted
+a census/`Quit`-gate comment above that passage, pushing the claim down to
+`:176-177` and leaving `:167-170` on the inserted census text. A later change
+(#144, `a8a9b7c`) deleted the line outright, so at `main` today the range points
+at unrelated text and `ActiveWindow` is gone from the file entirely. The
+coordinate resolved correctly at `fed5270` and pointed at unrelated text
+seventeen minutes later, moved not by anyone revising the claim but by an edit to
+a part of the file that had nothing to do with it.
 
-That is the point, and it is the same one ADR 0006 makes about addresses: a
-coordinate is a position, and positions move under edits you do not control.
-Verifying `:167-170` at the instant you cite it buys nothing, because the next
-commit to that file can relocate the claim without touching your issue. A quote
-cannot be relocated by an edit elsewhere; it either still matches the file or
-visibly does not.
+That is the point, and this repo already made it once, on the record. ADR 0006
+rejected raw paragraph indices for a document address, and the reason it gives is
+this one exactly:
+
+> Raw paragraph indices were rejected because any insertion shifts every
+> subsequent address.
+
+`:167-170` is a raw index, and an insertion above it shifted the claim it named —
+the failure 0006 designed the whole read-then-address scheme to avoid. So
+verifying `:167-170` at the instant you cite it is not worthless: it buys
+correctness *at that instant*. What it does not buy is any durability past it,
+because the next commit to that file can relocate the claim without touching your
+issue. That is what makes verification-at-writing an insufficient defence and a
+quote a sufficient one: a quote cannot be relocated by an edit elsewhere; it
+either still matches the file or visibly does not.
+
+The disanalogy with ADR 0006 is the part that must not be skipped, because it is
+where the tracker is *worse*. In-tree, 0006's addresses move too — but **not
+silently**: an edit "move[s] the revision token, and the next read is forced", so
+staleness there is machinery-caught and refusable. Tracker text has no revision
+token, and this ADR's own limits below record that no check can read it. So the
+in-tree fragility was solved by a mechanism the tracker cannot have. The quote is
+the tracker's substitute for that mechanism: with no token to force a re-read,
+the claim is carried inline, where a mismatch against the file is self-evident to
+anyone who looks rather than hidden behind a number.
 
 And underneath the coordinate sat the second defect, the one that actually
-mattered: the claim was a **Word** measurement wearing a PowerPoint label —
-verified in PR #157, which measured PowerPoint's `ActiveWindow` returning `$null`
-rather than throwing. The correction now recorded on #141 (including a correction
-to that correction's own account of *when* the range broke) sets this out. A bare
-`:167-170` gave a reader nothing to weigh that mislabel against: following it,
-once broken, lands on census text that reads as an unrelated stale reference, not
-as a contradiction of the sentence citing it. This is a property of the notation,
-not a charge against any reader — and the ADR does not claim to know which tree
-the note's author was looking at, only what the trees show.
+mattered: the claim was a **Word** measurement wearing a PowerPoint label. PR
+#157 measured the PowerPoint behaviour directly — its `ActiveWindow` returns
+`$null` with **no exception caught** (the probe runs under
+`$ErrorActionPreference = 'Continue'`, so a non-terminating COM error is not
+ruled out; the measured claim is the narrower "none caught"), where the imported
+Word result had it throwing. The correction now recorded on #141 — including a
+correction to that correction's own account of *when* the range broke — sets this
+out. A bare `:167-170` gave a reader nothing to weigh that mislabel against: once
+broken, following it lands on census text that reads as an unrelated stale
+reference, not as a contradiction of the sentence citing it. This is a property
+of the notation, not a charge against any reader, and the ADR does not claim to
+know which tree the note's author was looking at — only what the trees show.
 
 A quote would have broken this where the coordinate could not. Writing
 `"ActiveWindow throws without a document"` puts the word *document* in front of a
