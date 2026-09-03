@@ -113,7 +113,7 @@ test("CATCHES: a proximity tie-break resolves a colliding basename cited from a 
 
 test("CATCHES: a line past the end of the cited file is out of range", () => {
   const files = {
-    "src/a.mjs": "one\ntwo\nthree\n", // split on \n -> 4 entries (trailing "")
+    "src/a.mjs": "one\ntwo\nthree\n", // 3 lines; trailing newline is not a 4th
     "doc.md": "at `src/a.mjs:99`.\n",
   };
   const { outOfRange, missing, ambiguous } = analyze(files);
@@ -129,6 +129,43 @@ test("CATCHES: a line past the end of the cited file is out of range", () => {
     "doc.md": "at `src/a.mjs:3-99`.\n",
   });
   assert.equal(straddle.outOfRange.length, 1, "a range straddling EOF was not reported");
+});
+
+test("EOF boundary: a citation at lineCount+1 on a newline-terminated file is out of range, one at lineCount is not", () => {
+  // The off-by-one round 1 found: `"one\ntwo\n".split(/\r?\n/)` is
+  // ["one","two",""] with length 3, so a naive count believes a 2-line file has
+  // 3 lines and a citation to :3 (EOF+1) passes. Newline-terminated is the NORMAL
+  // case in this tree, so the bug fails the gate OPEN on ordinary files. This is
+  // the regression guard. Against the pre-fix `.split(/\r?\n/).length` counting,
+  // the first assertion goes red (outOfRange would be 0).
+  const file = "one\ntwo\n"; // two lines, newline-terminated
+
+  const past = analyze({
+    "src/a.mjs": file,
+    "doc.md": "at `src/a.mjs:3`.\n", // EOF+1: line 3 does not exist
+  });
+  assert.equal(past.outOfRange.length, 1, "a citation one line past a newline-terminated file was not flagged");
+  assert.equal(past.outOfRange[0].written, "src/a.mjs:3");
+
+  const last = analyze({
+    "src/a.mjs": file,
+    "doc.md": "at `src/a.mjs:2`.\n", // the real last line
+  });
+  assert.equal(last.outOfRange.length, 0, "the real last line of the file was wrongly flagged out of range");
+  assert.equal(last.missing.length + last.ambiguous.length, 0);
+});
+
+test("EOF boundary: an empty file has zero lines, so any positional citation into it is out of range", () => {
+  // Deliberate, pinned semantic: `"".split(/\r?\n/)` is [""], and countLines maps
+  // that to 0 — an empty file has no line 1. A citation to :1 of an empty file is
+  // therefore a broken coordinate and must be reported, not silently accepted.
+  const { outOfRange } = analyze({
+    "src/empty.mjs": "",
+    "doc.md": "see `src/empty.mjs:1`.\n",
+  });
+  assert.equal(outOfRange.length, 1, "a citation into an empty file was not flagged out of range");
+  assert.equal(outOfRange[0].written, "src/empty.mjs:1");
+  assert.equal(outOfRange[0].lineCount, 0, "an empty file should count as 0 lines");
 });
 
 test("NEGATIVE CONTROL: a citation onto real but unrelated code passes — the class the checker cannot see", () => {

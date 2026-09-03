@@ -117,6 +117,19 @@ function resolveOne(candidates, fromDir) {
   return winners.length === 1 ? winners[0] : null;
 }
 
+// Number of lines in a file's text. A trailing newline does NOT add a line:
+// `"a\nb\n".split(/\r?\n/)` is `["a","b",""]`, whose length (3) over-counts the
+// two-line file by one — and that one is exactly the EOF+1 offset an out-of-range
+// check exists to catch, so the naive length fails the check open at its own
+// boundary. Dropping a single trailing empty segment corrects it. An empty file
+// is deliberately 0 lines: `"".split(/\r?\n/)` is `[""]`, and a citation to line 1
+// of an empty file has no line 1, so it must read as out of range, not in range.
+function countLines(text) {
+  const parts = text.split(/\r?\n/);
+  if (parts.length > 0 && parts[parts.length - 1] === "") return parts.length - 1;
+  return parts.length;
+}
+
 // Split a citation "path:NN" or "path:NN-NN" into { file, lo, hi }. The regex
 // guarantees a trailing :digits(-digits)?, so the match is total.
 function parseCitation(written) {
@@ -196,7 +209,7 @@ export function analyzeCitations(tracked, readFile) {
           unreadable.push({ path: resolved, why: err.code ?? String(err) });
           continue;
         }
-        const lineCount = target.split(/\r?\n/).length;
+        const lineCount = countLines(target);
         if (hi > lineCount) {
           outOfRange.push({ ...where, resolved, lineCount });
         }
