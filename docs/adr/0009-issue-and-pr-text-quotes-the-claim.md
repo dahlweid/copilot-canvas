@@ -18,14 +18,23 @@ because nobody who classified it as cosmetic looked underneath.
 This is not hypothetical. Issue #141's note to whoever took it cited
 `probe-single-instance.ps1:167-170` for a claim about PowerPoint's
 `ActiveWindow`. Two things were wrong at once, and the coordinate hid both. The
-range was wrong **when it was written** — `:167-170` held WINWORD-census text,
-not the claim — and underneath it the claim itself was a **Word** measurement
-wearing a PowerPoint label. That premise survived filing, implementation, and
-three review rounds — not because anyone examined the coordinate and judged it
-sound, but because a bare `:167-170` invites no examination: no round resolved it
-at all. When it was finally resolved, both defects surfaced together — the range
-did not point at the claim, and the claim underneath was Word's, imported to
-PowerPoint by analogy (the correction is now recorded on #141).
+range was wrong **when it was written** — at the tree state when #141 was filed,
+`:167-170` held WINWORD-census text, while the claim it was cited for was at
+`:176-177`. So this is not a coordinate that rotted; it *never* pointed at its
+claim, from filing onward. And underneath, the claim itself was a **Word**
+measurement wearing a PowerPoint label. Both defects sat in the issue body until
+someone finally resolved the coordinate by hand, at which point they surfaced
+together; the correction is now recorded on #141.
+
+The coordinate is why they lasted. A bare `:167-170` gives a reader nothing to
+check the claim *against* — following it lands on census text, which reads as an
+unrelated stale reference, not as a contradiction of the sentence citing it. This
+is a property of the notation, not a charge against any particular reader: a
+coordinate that no longer points at its claim invites no examination of the
+claim, and a wrong one that never did invites none from the start. (The range
+has since rotted a second way — `a8a9b7c` (#144) deleted the line — so at `main`
+it points at unrelated text too. A quote would have failed loudly at either
+moment.)
 
 A quote would have broken this where the coordinate could not. Writing
 `"ActiveWindow throws without a document"` puts the word *document* in front of a
