@@ -1035,7 +1035,8 @@ naming a line that is entirely correct. Same class as the rest of this section:
 the failure names a cause the code never distinguished.
 
 This has now been hit independently twice, and it was **already** guarded the
-first time — `make-fixture.ps1:92` carries a comment refusing `$table` for
+first time — `.github/extensions/office-canvas/test/integration/make-fixture.ps1:124`
+carries a comment refusing `$table` for
 exactly this reason. A guard that exists as a comment at one call site is
 findable only by someone already reading that site, which is no one who needs
 it. Rediscovery is the signal worth acting on, not the fix.
@@ -1322,7 +1323,7 @@ and attributes by the pid the host itself started, so other sessions' churn
 cannot enter it"* — is wrong in both clauses, and was corrected by the session
 that was asked to run it. `pidsBefore` is captured before the first test and
 asserted after the last, so the window is ~1.5–2.5 minutes, the **same order as
-the census**. And `newWordPids` (`word-pids.mjs:59-61`) is a pure set difference
+the census**. And `newWordPids` (`word-pids.mjs:73-74`) is a pure set difference
 with no ownership predicate; the `ledger` only splits the failure *message* into
 owned versus unattributed, as its own docstring says: *"Both still fail."* The
 text even names "another session's" as a possible cause of a red.
@@ -1337,7 +1338,7 @@ leaks attribution *cannot* see, such as the second WINWORD that
 it. So the mechanism below is unchanged, and the corrected sentence stays
 corrected.
 
-What actually does the work is `timeoutMs = 90000` at `word-pids.mjs:110-119`:
+What actually does the work is `timeoutMs = 90000` at `word-pids.mjs:146`:
 it polls and fails only if a pid is **still alive at the deadline**, so a
 foreign Word that exits during the poll cannot fail it, whereas a single-sample
 census counts it. That is the mechanism, and it is worth stating what it is
@@ -1671,7 +1672,9 @@ that returned a plausible wrong number rather than failing**:
 
 The second is the more dangerous, because a duplicated block is exactly what a
 genuinely duplicated code site looks like -- it was read as "the comment appears
-at two sites" when it appears once, at `structure-map.mjs:266`. **The display
+at two sites" when it appears once, at `structure-map.mjs:266` as of `4abf952`
+(the comment there was replaced in `4da84c2`, so a live coordinate no longer
+finds it). **The display
 de-duplicates and the object model does not.** Running the same command
 interactively shows one clean merged block and hides the defect completely; only
 a script that projects `.Context` itself ever sees double. Measured on a
@@ -1701,7 +1704,7 @@ Four instances in one afternoon, across four sessions:
 | --- | --- | --- |
 | "the mojibake is CP437 arithmetic" | run `chcp` | 850 |
 | "suppression is verified" | read the function | five assignments, no read-back |
-| "the leak assertion attributes by owner" | `word-pids.mjs:59-61` | pure set difference |
+| "the leak assertion attributes by owner" | `word-pids.mjs:73-74` | pure set difference |
 | "the settings are per-process" | quit the writer, then read | they persist |
 
 **In every one the conclusion was already right, which is exactly why nothing
