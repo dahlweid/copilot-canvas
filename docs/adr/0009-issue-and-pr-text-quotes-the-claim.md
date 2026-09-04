@@ -1,4 +1,4 @@
-# A reference names what it relies on, never a line number
+# A reference names what it relies on, not a line number
 
 A **positional coordinate** — `file.ext:NN`, `file.ext:NN-NN`, or a bare `:NN`
 naming a line of the file it is written in — is not a reference. It hides the
@@ -137,20 +137,39 @@ $writable` — real, plausible, unrelated lines of the same file. This is #168,
 and the exact offsets are deliberately not repeated here: they would rot the way
 the ones above them did. Re-derive them by searching for the names.
 
-`check-citation-lines.mjs` passes every one of them, and must: each names a line
-that exists, in a file that exists, in range. Its own header says why —
+`check-citation-lines.mjs` reports these as green, and it is worth being exact
+about why, because the obvious explanation is not the true one and the true one
+is worse.
+
+The gate does not evaluate them and find them acceptable. **It never sees them
+at all.** Its matcher requires a filename with a recognised extension before the
+colon —
+
+> `/(?:[A-Za-z0-9._-]+[/\\])*[A-Za-z0-9._-]+\.(?:mjs|ps1|js|ts|md):\d+(?:-\d+)?/g`
+
+— and these four are **bare** self-references, `(:1531)`, with no filename in
+front. Run that matcher over the comment and it returns no matches. Green here
+is silence, not a verdict.
+
+That is the first failure, and it compounds: a bare self-reference is
+simultaneously the **most** fragile form, because it rots on any insertion above
+it in its own file and that is the most frequent edit a file receives, and the
+**least** checkable form, because a matcher needs a filename to recognise a
+citation at all. The weakest notation is the one nothing can watch.
+
+The second failure is that qualifying them would not have helped. Written as
+`word-host.ps1:1531`, all four would be matched — and all four would still pass,
+because the file has 2300 lines and every one of 1531, 1532, 1250 and 1323 names
+a line that exists, in a file that exists, in range. The gate's own header says
+why it cannot do better:
 
 > A coordinate that still resolves to real code while no longer meaning anything
 > is invisible to any gate.
 
-So the gate that was supposed to make in-tree coordinates safe is structurally
+So the exemption rested on a gate that misses this twice over: it cannot see the
+form actually used, and it would pass the qualified form too. It is structurally
 unable to catch the failure that matters, and here it is failing to catch it
 underneath a safety claim. That is #141's shape, in the tree, on shipped code.
-
-Note what these four are: **bare** self-references with no filename. They rot on
-any insertion above them in their own file — the most frequent edit there is —
-and no matcher can see them at all, because a matcher needs a filename to
-recognise a citation. The weakest form was the least checked.
 
 ## Two limits, stated so this is not oversold
 
