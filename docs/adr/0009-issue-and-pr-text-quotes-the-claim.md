@@ -142,9 +142,11 @@ being exact about what that does and does not mean, because the obvious reading
 is not the true one and the true one is worse.
 
 The gate did not examine these four and judge them acceptable. **It never saw
-them at all**, and it reports no verdict on any individual citation — only that
-the run as a whole found nothing to report. Its matcher requires a filename with
-a recognised extension before the colon —
+them at all.** The tool does name individual citations when it has a finding —
+on failure it prints each offending one with its category and the file it was
+written in — so the silence here is not a lenient verdict, it is the absence of
+any verdict. Its matcher requires a filename with a recognised extension before
+the colon —
 
 > `/(?:[A-Za-z0-9._-]+[/\\])*[A-Za-z0-9._-]+\.(?:mjs|ps1|js|ts|md):\d+(?:-\d+)?/g`
 
