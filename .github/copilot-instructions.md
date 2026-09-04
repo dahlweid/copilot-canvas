@@ -95,16 +95,19 @@ welcome and has repeatedly found genuine defects.
   `test/integration/` (`*-smoke.mjs`, need real Office).
 - Shared test helpers such as `test/integration/word-pids.mjs` must be
   **imported**, not copied.
-- **In issue and pull-request text, quote the claim you rely on — do not point
-  at a bare `file.ext:NN` coordinate.** A coordinate hides the content of the
-  claim, so when it rots a reader lands on unrelated code and files the miss as a
-  cosmetic nit, closing the question over whatever error sat underneath (this is
-  #141; ADR 0009). Quote the line, or the claim the line stands for; a coordinate
-  may sit *beside* the quote but never replace it. This targets tracker text
-  only — positional citations in committed comments and docs are fine and are
-  partly gated by `check-citations.mjs` / `check-citation-lines.mjs` (the
-  latter only for the file types its matcher recognises). It is a
-  convention, not a gate: nothing mechanically checks issue or PR bodies.
+- **Quote the claim you rely on; never point at a bare `file.ext:NN`
+  coordinate.** A coordinate hides the claim, so when it rots a reader lands on
+  unrelated code and files the miss as a cosmetic nit, closing the question over
+  whatever error sat underneath (#141, #168; ADR 0009). This has two forms. **In
+  issue and pull-request text**, quote the line or the claim it stands for; a
+  coordinate may sit *beside* the quote but never replace it. **In a committed
+  file**, do not write a coordinate at all — reference code by name and file,
+  `Set-ParagraphText (word-host.ps1)`, and note this covers a bare `:NN` into the
+  file's own body. Two exceptions: a coordinate pinned to a commit (`… as of
+  4abf952`), which cannot rot, and one quoted as the subject under discussion.
+  Neither half is gated: nothing reads tracker text, and
+  `check-citation-lines.mjs` validates coordinates rather than forbidding them,
+  so a green run is not evidence of compliance.
 
 ## If you are coordinating work rather than doing it
 

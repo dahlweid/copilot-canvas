@@ -63,7 +63,10 @@ jobs:
       #
       # It is also not a claim that every citation is correct. A coordinate
       # landing on real but unrelated code passes here and cannot be caught
-      # mechanically.
+      # mechanically — which is why ADR 0009 now bans the syntax outright in
+      # committed files rather than relying on this gate. This step therefore
+      # validates coordinates; it does not enforce that ADR, and a green run is
+      # not evidence of compliance with it.
       - name: Check every positional citation resolves
         run: node tools/check-citation-lines.mjs
 
