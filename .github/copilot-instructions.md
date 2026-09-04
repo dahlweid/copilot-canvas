@@ -110,7 +110,9 @@ welcome and has repeatedly found genuine defects.
   reads tracker text, so that half stays convention, while
   `check-citation-lines.mjs` now **rejects** a coordinate in any tracked line it
   reads rather than validating it. Read its green message as it states itself —
-  it counts out the fenced, exempt and vendored lines it never read.
+  it counts out the fenced, exempt and vendored lines it never read, and says
+  how many of those were coordinate-shaped. A pin is resolved against git, so a
+  SHA-shaped string naming no commit is rejected rather than waved past.
 
 ## If you are coordinating work rather than doing it
 

@@ -35,7 +35,7 @@ import { fileURLToPath } from "node:url";
 
 const UNIT = path.dirname(fileURLToPath(import.meta.url));
 const CHECKER = path.resolve(UNIT, "..", "..", "..", "..", "..", "tools", "check-citation-lines.mjs");
-const { findCoordinates, report } = await import(`file://${CHECKER.split(path.sep).join("/")}`);
+const { findCoordinates, report, verifyPins } = await import(`file://${CHECKER.split(path.sep).join("/")}`);
 
 /**
  * Build a reader over an in-memory { path: text } map. A path not in the map
@@ -61,6 +61,26 @@ function analyze(files) {
 /** The written forms rejected, sorted, for comparing against an expected set. */
 function written(result) {
   return result.coordinates.map((c) => c.written).sort();
+}
+
+/**
+ * Runs `fn` with console.log/error captured, so a test can assert on what the
+ * gate actually prints. The message is part of the contract here: this tool
+ * shipped a *correct* verdict under a message that claimed more coverage than
+ * it had, and the message is what a reader acts on.
+ */
+function capture(fn) {
+  const out = [];
+  const realLog = console.log;
+  const realError = console.error;
+  console.log = (s) => out.push(String(s));
+  console.error = (s) => out.push(String(s));
+  try {
+    return { code: fn(), text: out.join("\n") };
+  } finally {
+    console.log = realLog;
+    console.error = realError;
+  }
 }
 
 test("REGRESSION GUARD: a coordinate onto a real, in-range line is rejected — the input the old tool passed", () => {
@@ -242,6 +262,70 @@ test("a coordinate inside a fenced code block is skipped — and is COUNTED, not
   assert.equal(reopened.skipped.fencedLines, 2, "both fenced lines should be counted as unread");
 });
 
+test("the skipped lines are MATCHED, not merely counted — the census that would have caught round 1", () => {
+  // Counting skipped lines says how much went unread; it does not say whether
+  // any of it was a coordinate. The gap between those two is exactly where
+  // round 1's High lived: two coordinates sat inside a fenced transcript in
+  // spikes/word-icon/FINDINGS.md, and a reviewer had to find them by hand
+  // because the gate reported a silence rather than a number.
+  //
+  // So the matcher runs over the skipped lines too, and the result is reported
+  // without failing on it. This test asserts the number is real by making the
+  // fenced content differ from the unfenced content.
+  const result = analyze({
+    "spikes/FINDINGS.md":
+      "prose with no coordinate\n" +
+      "```\n" +
+      '"icon" appears in [generated/rpc.d.ts:18]\n' +
+      "a plain output line with no coordinate at all\n" +
+      "and generated/session-events.d.ts:13 here\n" +
+      "```\n",
+    "spikes/OTHER.md": "```\nno coordinates in this fence at all\n```\n",
+  });
+
+  assert.equal(result.coordinates.length, 0, "fenced coordinates must not fail the gate");
+  assert.equal(result.skipped.fencedLines, 4, "the unread volume is wrong");
+  assert.equal(
+    result.skipped.fencedCoordinateLines,
+    2,
+    "the census is not matching the skipped lines — it is only counting them, which is the state that let round 1's High hide",
+  );
+  assert.deepEqual(
+    result.skipped.fencedCoordinateFiles,
+    ["spikes/FINDINGS.md"],
+    "the census must name the file holding unread coordinates, and must not name a file whose fence is clean",
+  );
+
+  // The number must be able to be zero, or "2" above proves nothing: a census
+  // hard-wired to the fenced-line count would pass the assertion above too.
+  const clean = analyze({ "spikes/OTHER.md": "```\njust output\nmore output\n```\n" });
+  assert.equal(clean.skipped.fencedLines, 2, "control fixture is not fenced as expected");
+  assert.equal(clean.skipped.fencedCoordinateLines, 0, "the census counts fenced lines, not coordinate-shaped ones");
+  assert.deepEqual(clean.skipped.fencedCoordinateFiles, []);
+
+  // Exempt files are sized the same way, for the same reason: an exemption
+  // nobody can measure is an exemption nobody rechecks.
+  const exempt = analyze({ "tools/check-citation-lines.mjs": "// `a.mjs:1`\n// prose\n// `b.mjs:2-3`\n" });
+  assert.equal(exempt.coordinates.length, 0, "an exempt file must still be exempt");
+  assert.equal(exempt.skipped.exemptCoordinateLines, 2, "exempt files are skipped without being sized");
+});
+
+test("the success message reports the unread coordinates as a size, never as work to do", () => {
+  // The label matters as much as the number. Called "unmigrated coordinates" it
+  // reads as a defect count, and the next person drives it to zero by editing a
+  // recorded probe run — the precise harm the transcript exception exists to
+  // prevent. It must read as the gate's blind spot.
+  const result = analyze({
+    "spikes/FINDINGS.md": "prose\n```\ncaptured generated/rpc.d.ts:18 here\n```\n",
+  });
+  const out = capture(() => report(result));
+
+  assert.match(out.text, /1 of those lines is coordinate-shaped, in spikes\/FINDINGS\.md/, "the count and its location are not reported");
+  assert.match(out.text, /NOT a count of work\s*\n?\s*left undone/, "the number is not labelled as a size rather than a to-do list");
+  assert.match(out.text, /editing\s*\n?\s*transcripts/, "the message does not say why driving the number to zero is the harm");
+  assert.equal(out.code, 0, "reporting unread coordinates must not fail the gate");
+});
+
 test("the success message states what it read, and never claims a clean tree", () => {
   // The regression guard for the overstatement above. A gate that reports more
   // coverage than it has is worse than a narrower honest one, because the
@@ -319,20 +403,87 @@ test("a qualified coordinate is counted once, not also as a bare self-reference"
   assert.equal(r.coordinates[0].written, "a.mjs:12");
 });
 
-test("the extension whitelist covers the file types this tree references", () => {
-  // Deliberate list, not an oversight: matching any extension starts matching
-  // things that are not filenames. `.yml` is included because a workflow file is
-  // referenced like any other source here.
+test("the extension whitelist is wide, because a coordinate into data.json rots like one into data.mjs", () => {
+  // It was once mjs|ps1|js|ts|md|yml|yaml — the set this tree *mostly* uses.
+  // Measured against the tracked list, that left `json`, `css` and `html`
+  // invisible although all three are tracked here, and review could find no
+  // principle separating them from the rest. Widened.
   const covered = analyze({
-    "doc.md": "`a.mjs:1` `b.ps1:2` `c.js:3` `d.ts:4` `e.md:5` `validate.yml:6` `f.yaml:7`\n",
+    "doc.md":
+      "`a.mjs:1` `b.ps1:2` `c.js:3` `d.ts:4` `e.md:5` `validate.yml:6` `f.yaml:7`\n" +
+      "`g.json:8` `h.css:9` `i.html:10` `j.txt:11` `k.xml:12` `l.cjs:13` `m.mts:14`\n",
   });
-  assert.equal(covered.coordinates.length, 7, "an extension in the documented whitelist is not matched");
+  assert.equal(covered.coordinates.length, 14, "an extension in the documented whitelist is not matched");
 
-  // Outside the list: not matched as qualified. `report.txt:9` is a filename with
-  // a number after it, and the gate says so plainly rather than pretending to a
-  // coverage it does not have.
-  const uncovered = analyze({ "doc.md": "see report.txt:9 and data.json:4\n" });
-  assert.equal(uncovered.coordinates.length, 0, "the whitelist has quietly widened");
+  // Still not "any extension": that would match version strings and prose, and a
+  // line number into a PNG is not a citation.
+  const uncovered = analyze({ "doc.md": "release 1.0.80:2 and image.png:4 and thing.wibble:9\n" });
+  assert.equal(uncovered.coordinates.length, 0, "the whitelist has widened to things that are not text files");
+});
+
+test("a pin is resolved against git, so a SHA-shaped string that names no commit is rejected", () => {
+  // The pin is the one exception an author may apply to themselves, and its
+  // whole force is that the SHA fixes the tree the number indexes. Matching the
+  // *shape* of a SHA verifies nothing: `deadbee` is seven hex digits and names
+  // nothing in this repo. Without resolution, "as of `deadbee`" is a way of
+  // writing "trust me" that passes a gate.
+  const found = analyze({
+    "doc.md": "`a.mjs:1` as of `4abf952`\n`b.mjs:2` as of `deadbee`\n",
+  });
+  assert.equal(found.coordinates.length, 0, "both are pin-shaped, so neither should fail matching");
+  assert.equal(found.pinned.length, 2);
+  assert.deepEqual(found.pinned.map((p) => p.pin), ["4abf952", "deadbee"], "the SHA is not captured, so it cannot be resolved");
+
+  const real = new Set(["4abf952"]);
+  const pins = verifyPins(found.pinned, (sha) => real.has(sha));
+  assert.equal(pins.resolved, 1);
+  assert.equal(pins.fabricated.length, 1, "a pin naming no commit was accepted");
+  assert.equal(pins.fabricated[0].written, "b.mjs:2");
+  assert.equal(pins.unverifiable, 0);
+
+  // And it must actually fail the build, not merely be tallied.
+  const out = capture(() => report({ ...found, pins }));
+  assert.equal(out.code, 1, "a fabricated pin did not fail the gate");
+  assert.match(out.text, /names no commit/);
+});
+
+test("a checkout that cannot answer is REPORTED, never counted as a pass", () => {
+  // The shallow-clone case, and the reason validate.yml sets fetch-depth: 0.
+  // A depth-1 clone holds only the head commit, so every historical pin is
+  // unresolvable. Treating "could not look" as "looked and it was fine" is a
+  // check that passes because it did nothing — the exact failure this gate
+  // exists to argue against.
+  const found = analyze({ "doc.md": "`a.mjs:1` as of `4abf952`\n" });
+  const pins = verifyPins(found.pinned, () => null);
+
+  assert.equal(pins.resolved, 0, "an unanswerable lookup was scored as a resolution");
+  assert.equal(pins.fabricated.length, 0, "an unanswerable lookup was scored as a forgery");
+  assert.equal(pins.unverifiable, 1);
+
+  const out = capture(() => report({ ...found, pins }));
+  assert.equal(out.code, 0, "an unverifiable pin must not fail the build; it must be disclosed");
+  assert.match(out.text, /could NOT be resolved against git/, "the gate stayed silent about what it could not check");
+
+  // Control: when the pin does resolve, the message must say so rather than
+  // printing the same hedge either way.
+  const ok = capture(() => report({ ...found, pins: verifyPins(found.pinned, () => true) }));
+  assert.match(ok.text, /each resolved\s*\n?\s*to a real commit/);
+  assert.doesNotMatch(ok.text, /could NOT be resolved/);
+});
+
+test("the failure message enumerates every way past the gate, and offers only the pin", () => {
+  // Round 1 and round 2 found the same root twice: the tool's stated exception
+  // set was narrower than the set it applied — first the fence, then vendored
+  // files. A message that lists three ways past a gate with four is how the
+  // fourth stays unexamined.
+  const out = capture(() => report(analyze({ "doc.md": "see `a.mjs:12` there\n" })));
+
+  assert.equal(out.code, 1);
+  assert.match(out.text, /COMMIT PIN/, "the author's actual remedy is not named");
+  assert.match(out.text, /VERBATIM TRANSCRIPT/);
+  assert.match(out.text, /SUBJECT UNDER DISCUSSION/);
+  assert.match(out.text, /VENDORED AND BINARY/, "the fourth allowance is applied but not disclosed");
+  assert.match(out.text, /not remedies/, "the message does not distinguish the one exception an author may apply");
 });
 
 test("an unreadable file is reported, never silently skipped", () => {

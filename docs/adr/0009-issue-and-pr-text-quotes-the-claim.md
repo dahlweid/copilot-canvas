@@ -198,6 +198,36 @@ form actually used, and it would pass the qualified form too. It is structurally
 unable to catch the failure that matters, and here it is failing to catch it
 underneath a safety claim. That is #141's shape, in the tree, on shipped code.
 
+### A rotted coordinate also misleads whoever migrates it away
+
+Measured while carrying out that migration (#179), on the sibling of the comment
+above. `probe-autocorrect-necessity.ps1` mirrored the same safety argument and
+cited `Set-ParagraphText` by a coordinate. Re-derived with `git log -S`, that
+coordinate was **wrong when it was written**: at the commit that introduced it,
+the lines it named held an unrelated `Close()` comment. It never pointed at
+`Set-ParagraphText` on any tree.
+
+The migration restated the claim in words, which is the point of this ADR — and
+restated it *wrongly*, asserting that the function's "only write" was an
+assignment the author had found by opening the current file and taking the first
+one that appeared. The function has three writes on three paths, and the one
+named is the degenerate empty-paragraph case. The claim shipped false until
+review caught it.
+
+So the cost of a bad coordinate is not only that a reader lands on unrelated
+code. **Migration is the moment the claim is restated, and a coordinate that
+never pointed anywhere gives that restatement nothing to check itself against.**
+A name would have failed loudly — there is no function to find, or the function
+is there and its writes can be counted. A number that resolves to *something*
+fails silently and then supplies plausible material for the rewrite. Note the
+direction: the host's own copy of this argument had already been corrected to a
+true, weaker form; the probe's copy, anchored to a number instead of a name,
+regressed past it.
+
+The remedy is not more care during migration. It is that a migrated claim must
+be re-derived from the code it now names, never paraphrased from wherever its
+old coordinate happens to land.
+
 ## Two limits, stated so this is not oversold
 
 Both are load-bearing, and a version of this convention that hid either would be
@@ -212,11 +242,30 @@ where a check on whether a coordinate still *means* what it claimed is not, and
 it is now gated: `check-citation-lines.mjs` was inverted from *validate* to
 *reject*. It no longer asks whether a coordinate resolves — the analysis above is
 why that question was worth nothing — it asks whether one is present, and fails
-the build when one is. The three exceptions above are the gate's three
-allowances: a coordinate followed *immediately* by an "as of `<sha>`" pin passes
-and is counted, fenced transcripts are skipped, and a short exempt list covers
-the files that carry rot-shaped fixtures as their subject matter — the checker,
-its unit test, and this document.
+the build when one is.
+
+Four things pass it, and they are not four exceptions. Three are the exceptions
+above; the fourth is a limit of scope, and the difference matters because only
+one of the four is something an author may reach for:
+
+1. **A commit pin**, which is the author's remedy. A coordinate followed
+   *immediately* by "as of `<sha>`" passes and is counted. The SHA is
+   **resolved against git**, not merely matched: ``as of `deadbee` `` has the
+   shape of a pin and names no commit, and a pin that resolves to nothing fixes
+   nothing. A checkout without the history cannot answer, so the gate reports
+   that state rather than accepting it, and `validate.yml` checks out with
+   `fetch-depth: 0` so the question can actually be asked.
+2. **A verbatim transcript**, skipped by ignoring fenced blocks.
+3. **The subject under discussion**, which in the tree is the exempt list: the
+   checker, its unit test, and this document, all of which quote rotted
+   coordinates *as their subject matter*. Naming a string is not pointing at a
+   line.
+4. **Vendored and binary files**, skipped as **out of scope rather than
+   excused**. `src/ui/vendor/` is third-party code not authored here, and a
+   coordinate-shaped string inside minified output is not a reference into this
+   tree. This is listed because the gate does it, and a convention that
+   enumerated three allowances while the tool applied four would be making the
+   same error this section was written to correct.
 
 Read a green run as the gate itself states it, which is narrower than "this tree
 complies". It certifies that no line **it read** carries a coordinate, and it
@@ -227,9 +276,28 @@ saying "no positional coordinate in any tracked file" while two sat unread in
 worse than a narrow claim precisely because it is what stops the next person
 looking.
 
+The skips are also **sized**, not merely disclaimed: the matcher runs over the
+skipped lines and a green run reports how many of them are coordinate-shaped and
+which files hold them, without failing on them. That converts the transcript
+exception from an unmeasured hole into a measured one, and it is what would have
+surfaced the overstatement above as a number on the console rather than as
+something a reviewer had to go and find. Read that number as the gate's blind
+spot and never as a to-do list: on this tree it is the two protected FINDINGS.md
+coordinates, and driving it to zero would mean editing a recorded probe run —
+the harm the exception exists to prevent.
+
 **Dropping the number does not make a reference correct.** A name survives
 insertion, which a coordinate does not, and `check-citations.mjs` still guards
 a `probe-*` filename against dangling. But a renamed function or a moved file
 breaks a name too. The claim is narrow and matches what was measured: the rot in
 this tree is overwhelmingly *relocation by an edit elsewhere*, and a name is
 immune to exactly that — not to everything.
+
+Two further gaps live in the matcher rather than in the tree, and no count can
+size them, so the gate names them in its own output instead. A bare `:NN` with
+no `(`, backtick or "at"/"line" in front is not recognised, because
+unintroduced `:\d+` is a clock, a port or a JSON value far more often than a
+citation, and a gate that flagged those would be turned off rather than obeyed.
+A coordinate into a file whose extension is outside the whitelist is invisible
+for the same reason — the whitelist is wide, and deliberately not "anything",
+since "word.number" is also how version strings and ordinary prose look.

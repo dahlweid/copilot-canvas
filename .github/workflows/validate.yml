@@ -20,6 +20,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history, because check-citation-lines.mjs resolves every "as of
+          # `<sha>`" pin against git and the default depth-1 clone holds only the
+          # head commit — every historical pin would come back unresolvable there.
+          # The tool reports that state rather than passing quietly, so a shallow
+          # clone would not be silently wrong; it would just check nothing.
+          #
+          # Affordable, measured rather than assumed: `git count-objects -vH` puts
+          # this repo at a 3.21 MiB pack over 114 commits.
+          fetch-depth: 0
 
       # No package.json anywhere (constraint C2), so there is nothing to
       # install and no cache key to derive.
@@ -68,19 +78,28 @@ jobs:
       # overstatement is worse than a narrow claim, because it is what stops the
       # next person looking.
       #
-      # The matcher recognises a filename ending `.mjs`, `.ps1`, `.js`, `.ts`,
-      # `.md`, `.yml` or `.yaml` followed by a line number, plus a bare
-      # self-reference introduced by a paren, a backtick, or the words
-      # "at"/"line"/"lines". That whitelist is deliberate: a colon and digits with
-      # no introducer is a clock time, a ratio and a JSON value far more often
-      # than it is a citation, and a matcher that flagged those would be turned
-      # off rather than obeyed.
+      # The matcher recognises a filename with a text-file extension followed by a
+      # line number, plus a bare self-reference introduced by a paren, a backtick,
+      # or the words "at"/"line"/"lines". The extension set is wide — it was once
+      # just the handful this tree mostly uses, which left `json`, `css` and
+      # `html` invisible although all three are tracked here, and a coordinate
+      # into `data.json` rots exactly as one into `data.mjs`. The introducer
+      # requirement is the deliberate narrow part: a colon and digits with no
+      # introducer is a clock time, a ratio or a JSON value far more often than a
+      # citation, and a matcher that flagged those would be turned off rather than
+      # obeyed. The gate names both limits in its own output.
       #
       # Fenced blocks are skipped because a verbatim probe transcript is
       # evidence, and evidence is not edited to satisfy a linter. That is ADR
       # 0009's transcript exception, and the skip is wider than its own
       # justification — it drops every fenced line, not only pinned ones — which
-      # is why the gate counts them out loud instead of implying it read them.
+      # is why the gate runs the matcher over the skipped lines anyway and
+      # reports how many were coordinate-shaped, without failing on them. On this
+      # tree that is 2, both in spikes/word-icon/FINDINGS.md. Vendored and binary
+      # files are skipped too, as out of scope rather than excused.
+      #
+      # Every "as of `<sha>`" pin is resolved against git, because the shape of a
+      # SHA is not evidence that a commit exists; see fetch-depth above.
       #
       # It is still not a claim that every reference is correct: a renamed
       # function or a moved file breaks a name too. It is the narrower claim that
