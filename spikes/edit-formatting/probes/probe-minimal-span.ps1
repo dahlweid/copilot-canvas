@@ -11,8 +11,15 @@
 # The functions below are a faithful copy of the shipping implementation in
 # `.github/extensions/office-canvas/src/word/word-host.ps1` (Get-VisibleSpan,
 # Get-TextRange, Set-ParagraphText). Copied, not imported, because a probe runs
-# standalone under `powershell.exe -File`; if the implementation changes, this
-# copy is meant to be updated alongside it and re-run.
+# standalone under `powershell.exe -File` and the host is not dot-sourceable: it
+# runs a stdio dispatch loop on load, so importing it blocks reading stdin. This
+# probe is therefore an exploratory map of the behaviour, not a gate -- it prints
+# maps rather than asserting, and it measures this copy, which could drift from
+# the shipping code. The authoritative assertion that runs the *shipping*
+# Set-ParagraphText end to end and fails if out-of-span run formatting is lost is
+# the "run formatting outside the changed span survives" arm in the integration
+# suite (test/integration/edit-smoke.mjs), which reads the bold state back out of
+# the saved .docx bytes. That arm, not this copy, is what guards issue #170.
 #
 # What this answers, that the base probe did not:
 #

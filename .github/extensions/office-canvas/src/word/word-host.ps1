@@ -1691,10 +1691,14 @@ function Open-OriginalForEdit([string]$path) {
 # also has the field's hidden code occupying character *positions* that never
 # appear in Range.Text. So "the visible text of this paragraph" cannot be found
 # by subtracting a string length from a position span: measured, that span-minus-
-# length trim over-trims a hyperlink paragraph to nothing (the field code counts
-# 36 positions the text does not) and would under-trim a table cell were the
-# marks not stripped first (the end-of-cell mark is one Character whose .Text is
-# two chars). See spikes/edit-formatting/probes/probe-coordinates.ps1.
+# length trim over-trims a field paragraph -- the hidden field code occupies
+# positions the visible text does not, so the over-trim scales with the field
+# code and can collapse the range entirely (measured 29/36/59 positions dropped
+# for short/medium/long hyperlink URLs, and 36->71 as field count rises;
+# spikes/edit-formatting/probes/probe-hyperlink-overtrim.ps1) -- and would
+# under-trim a table cell were the marks not stripped first (the end-of-cell mark
+# is one Character whose .Text is two chars). See also
+# spikes/edit-formatting/probes/probe-coordinates.ps1.
 #
 # The Characters collection is the character model itself: its members line up
 # one-to-one with Range.Text, skip the field code, and each carries its own
