@@ -157,3 +157,41 @@ test("an edit or revert cannot enqueue after a document starts closing", async (
         await rm(root, { recursive: true, force: true });
     }
 });
+
+test("a repeated close cannot delete a document reopened behind the first close", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "outline-interleave-"));
+    const docPath = path.join(root, "reopening.docx");
+    let closeCalls = 0;
+    const openedDocIds = [];
+    await writeFile(docPath, "fixture");
+
+    const cache = new RenderCache({ cacheRoot: path.join(root, "cache") });
+    cache.host = {
+        async openDocument({ docId, workDir }) {
+            await mkdir(workDir, { recursive: true });
+            openedDocIds.push(docId);
+            return { docId, pageCount: 1, wordCount: 1, sizeBytes: 7, modifiedIso: "2026-01-01T00:00:00.000Z" };
+        },
+        async closeDocument() {
+            closeCalls++;
+        },
+        async info({ docId }) {
+            return { docId };
+        },
+    };
+
+    try {
+        await cache.open(docPath);
+        const firstClose = cache.close(docPath);
+        const reopened = cache.open(docPath);
+        const repeatedClose = cache.close(docPath);
+        await Promise.all([firstClose, reopened, repeatedClose]);
+
+        assert.equal(closeCalls, 1, "a repeated close must reuse the already-queued closer");
+        assert.equal(openedDocIds.length, 2, "the document did not reopen after the first close");
+        assert.equal((await cache.info(docPath)).docId, openedDocIds[1]);
+    } finally {
+        await cache.close(docPath);
+        await rm(root, { recursive: true, force: true });
+    }
+});

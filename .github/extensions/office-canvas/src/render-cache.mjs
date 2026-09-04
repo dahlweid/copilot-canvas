@@ -137,6 +137,9 @@ export class RenderCache {
         // leaves a half-open document behind.
         const state = this.#stateFor(docPath);
         if (state.closing) {
+            // `close()` is the sole queue entry accepted after this flag is set.
+            // Other document operations must refuse it, or they can append after
+            // this await and act on a state that has already been removed.
             await state.documentPending;
             return this.open(docPath);
         }
@@ -425,6 +428,7 @@ export class RenderCache {
         const identity = identityOf(docPath);
         const state = this.#docs.get(identity);
         if (!state) return;
+        if (state.closing) return state.documentPending;
         state.closing = true;
         return this.#enqueueDocumentOperation(state, async () => {
             this.#docs.delete(identity);

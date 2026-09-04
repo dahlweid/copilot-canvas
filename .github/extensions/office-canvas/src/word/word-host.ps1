@@ -435,7 +435,7 @@ function Clear-OrphanedWord {
     if ([string]::IsNullOrWhiteSpace($PidDir)) { return }
     try {
         if (-not (Test-Path -LiteralPath $PidDir)) {
-            New-Item -ItemType Directory -Force -LiteralPath $PidDir | Out-Null
+            [IO.Directory]::CreateDirectory($PidDir) | Out-Null
             return
         }
         foreach ($file in Get-ChildItem -LiteralPath $PidDir -Filter '*.pid' -ErrorAction SilentlyContinue) {
@@ -520,7 +520,7 @@ function Register-OwnedWord([int]$wordPid, $startTime) {
     $file = Get-PidFilePath
     if ($null -eq $file) { return }
     try {
-        if (-not (Test-Path -LiteralPath $PidDir)) { New-Item -ItemType Directory -Force -LiteralPath $PidDir | Out-Null }
+        [IO.Directory]::CreateDirectory($PidDir) | Out-Null
         # pid alone is a coordinate; the start ticks are what make it an identity
         # a later reaper can verify. Written as one line, whitespace separated,
         # so a file from an older host still parses as "pid, identity unknown".
@@ -1166,12 +1166,10 @@ function Open-DocInternal([string]$docId, [string]$path, [string]$workDir, [bool
     if ([string]::IsNullOrWhiteSpace($workDir)) {
         throw (New-HostError 'invalid_request' "No working directory supplied.")
     }
-    if (-not (Test-Path -LiteralPath $workDir)) {
-        try {
-            New-Item -ItemType Directory -Force -LiteralPath $workDir -ErrorAction Stop | Out-Null
-        } catch {
-            throw (New-HostError 'write_failed' "Could not create the working directory. ($($_.Exception.Message))")
-        }
+    try {
+        [IO.Directory]::CreateDirectory($workDir) | Out-Null
+    } catch {
+        throw (New-HostError 'write_failed' "Could not create the working directory. ($($_.Exception.Message))")
     }
 
     Initialize-Word
@@ -1335,8 +1333,8 @@ function Cmd-Structure($a) {
     }
 
     $outDir = Split-Path -Parent $out
-    if (-not [string]::IsNullOrWhiteSpace($outDir) -and -not (Test-Path -LiteralPath $outDir)) {
-        New-Item -ItemType Directory -Force -LiteralPath $outDir | Out-Null
+    if (-not [string]::IsNullOrWhiteSpace($outDir)) {
+        [IO.Directory]::CreateDirectory($outDir) | Out-Null
     }
     # No BOM: the caller parses this as XML, and a BOM ahead of the declaration
     # is a parse error in stricter readers.
@@ -1365,9 +1363,7 @@ function Cmd-Export($a) {
     $doc = Resolve-Doc ([string]$a.docId)
     $out = [string]$a.out
     $outDir = Split-Path -Parent $out
-    if (-not (Test-Path -LiteralPath $outDir)) {
-        New-Item -ItemType Directory -Force -LiteralPath $outDir | Out-Null
-    }
+    [IO.Directory]::CreateDirectory($outDir) | Out-Null
 
     $from = 0
     $to = 0
@@ -1412,8 +1408,8 @@ function Cmd-OutlineMarkup($a) {
     }
 
     $outDir = Split-Path -Parent $out
-    if (-not [string]::IsNullOrWhiteSpace($outDir) -and -not (Test-Path -LiteralPath $outDir)) {
-        New-Item -ItemType Directory -Force -LiteralPath $outDir | Out-Null
+    if (-not [string]::IsNullOrWhiteSpace($outDir)) {
+        [IO.Directory]::CreateDirectory($outDir) | Out-Null
     }
     $xml = [string]$doc.Content.WordOpenXML
     try {
