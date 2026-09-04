@@ -31,7 +31,7 @@ import { fileURLToPath } from "node:url";
 import { RenderCache } from "../../src/render-cache.mjs";
 import { fileRevisionToken, tokensMatch } from "../../src/revision-token.mjs";
 import { toolFailure } from "../../src/tool-error.mjs";
-import { codepoints, documentPlainText, documentXml } from "./docx-zip.mjs";
+import { boldText, codepoints, documentPlainText, documentXml } from "./docx-zip.mjs";
 import { assertNoLeakedWord, ownedWordLedger, wordPids } from "./word-pids.mjs";
 import { acquireWordSuiteLock } from "./word-suite-lock.mjs";
 
@@ -62,7 +62,7 @@ const powershell = (script, vars = {}) =>
         env: { ...process.env, ...vars },
     });
 
-const makeFixture = (out, { chapters = 2, duplicates = true, table = true } = {}) =>
+const makeFixture = (out, { chapters = 2, duplicates = true, table = true, formatted = true } = {}) =>
     execFileAsync("powershell.exe", [
         "-NoProfile",
         "-NonInteractive",
@@ -76,6 +76,7 @@ const makeFixture = (out, { chapters = 2, duplicates = true, table = true } = {}
         String(chapters),
         ...(duplicates ? ["-Duplicates"] : []),
         ...(table ? ["-Table"] : []),
+        ...(formatted ? ["-Formatted"] : []),
     ]);
 
 const exists = (p) =>
@@ -288,6 +289,109 @@ try {
         );
         assert.equal(result.paragraph.text, verbatim);
         read = result.document;
+    });
+
+    await check("a case-only edit is applied, not silently skipped as a no-op", async () => {
+        // PowerShell's -eq is case-INSENSITIVE, so a diff-based Set-ParagraphText
+        // comparing with -eq treats "github" -> "GitHub" as unchanged and writes
+        // nothing -- the edit is lost with no error. The shipped fix compares
+        // ordinally (StringComparison.Ordinal), which is case-sensitive. (-ceq
+        // would also fix *this* case, but is still culture-folding -- the next
+        // arm covers that, and is why the fix is ordinal, not merely -ceq.)
+        // This locks it: without a case-sensitive compare the second edit below is
+        // a no-op and the paragraph still reads all-lowercase. Two edits, because a
+        // case-only replacement needs a known lower-case value to differ from.
+        const seed = await cache.readStructure(fixture);
+        const target = seed.paragraphs.find((p) => p.headingLevel === null);
+        assert.ok(target, "no body paragraph in the fixture");
+
+        const lower = await cache.editDocument(
+            fixture,
+            { op: "replace_text", address: target.address, text: "github and the iphone" },
+            { revisionToken: seed.revisionToken },
+        );
+        assert.equal(lower.paragraph.text, "github and the iphone");
+
+        const cased = await cache.editDocument(
+            fixture,
+            { op: "replace_text", address: lower.paragraph.address, text: "GitHub and the iPhone" },
+            { revisionToken: lower.document.revisionToken },
+        );
+        assert.equal(
+            cased.paragraph.text,
+            "GitHub and the iPhone",
+            "a case-only replace_text was silently skipped -- a case-insensitive compare crept in where the fix requires ordinal",
+        );
+        read = cased.document;
+    });
+
+    await check("a German eszett edit is applied, not folded away as a no-op", async () => {
+        // -ceq fixes the case trap but is still CULTURE-sensitive under de-DE:
+        // "strasse" -ceq "stra\u00DFe" is True (the culture folds the eszett to
+        // "ss"), so a -ceq early-return would treat this real edit as unchanged and
+        // write nothing -- #170 again, narrower. The fix compares ordinally. Two
+        // edits, so the eszett spelling differs from a known "ss" starting value.
+        const seed = await cache.readStructure(fixture);
+        const target = seed.paragraphs.find((p) => p.headingLevel === null);
+        assert.ok(target, "no body paragraph in the fixture");
+
+        const ss = await cache.editDocument(
+            fixture,
+            { op: "replace_text", address: target.address, text: "die strasse ist breit" },
+            { revisionToken: seed.revisionToken },
+        );
+        assert.equal(ss.paragraph.text, "die strasse ist breit");
+
+        const eszett = await cache.editDocument(
+            fixture,
+            { op: "replace_text", address: ss.paragraph.address, text: "die stra\u00DFe ist breit" },
+            { revisionToken: ss.document.revisionToken },
+        );
+        assert.equal(
+            eszett.paragraph.text,
+            "die stra\u00DFe ist breit",
+            "a German eszett replace_text was silently skipped -- a culture-folding compare crept in for ordinal",
+        );
+        read = eszett.document;
+    });
+
+    await check("run formatting outside the changed span survives a replace_text (issue #170)", async () => {
+        // The defect #170 was filed for: the whole-range `Range.Text =` assignment
+        // collapsed a paragraph to a single unformatted run on *every* edit. This
+        // is the assertion that can go red for that reason -- and it runs the
+        // shipped path end to end (Node -> spawned host -> Word -> file), not a
+        // copy of it, which is what the probe could not do (it dot-sources nothing
+        // because the host runs a stdio dispatch loop on load).
+        //
+        // The oracle reads the bold state straight out of the saved .docx bytes
+        // (docx-zip.mjs `boldText`), independent of our own COM reader, so it
+        // cannot pass by losing the run and re-deriving it the same way -- the #40
+        // hazard. The fixture's middle word "keepbold" is bold; the edit changes
+        // only the out-of-span trailing word, so a preserving fix keeps the run and
+        // a whole-range regression drops it.
+        const before = await documentXml(fixture);
+        assert.ok(
+            boldText(before).includes("keepbold"),
+            `fixture lost the bold run the test needs before any edit -- make-fixture regression. boldText=${JSON.stringify(boldText(before))}`,
+        );
+
+        const seed = await cache.readStructure(fixture);
+        const target = seed.paragraphs.find((p) => p.text === "spanmarker keepbold endword");
+        assert.ok(target, "the formatted paragraph is missing from the fixture");
+
+        const edited = await cache.editDocument(
+            fixture,
+            { op: "replace_text", address: target.address, text: "spanmarker keepbold done" },
+            { revisionToken: seed.revisionToken },
+        );
+        assert.equal(edited.paragraph.text, "spanmarker keepbold done", "the out-of-span edit did not apply");
+
+        const after = await documentXml(fixture);
+        assert.ok(
+            boldText(after).includes("keepbold"),
+            `run formatting outside the changed span was destroyed -- #170 regression. boldText=${JSON.stringify(boldText(after))}`,
+        );
+        read = edited.document;
     });
 
     await check("a paragraph can be inserted, and inherits a sensible style", async () => {

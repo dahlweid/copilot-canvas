@@ -22,7 +22,18 @@ param(
     # sees 8 paragraphs and Word reports 10. Without a table in the fixture, an
     # edit that addressed Word by document-order position would pass every test
     # and corrupt every real document containing a table.
-    [switch]$Table
+    [switch]$Table,
+    # Adds one paragraph with a bold run sitting between two non-bold runs, so a
+    # test can edit outside the bold span and read the .docx bytes back to see
+    # whether the bold survived. Off by default so the existing suites see the
+    # document they were written against.
+    #
+    # This exists for issue #170: the whole-range `Range.Text =` assignment
+    # collapsed every paragraph to a single unformatted run on every text edit,
+    # destroying intra-paragraph formatting, and no fixture carried a run for a
+    # test to lose. Only "keepbold" is bold; the token is unique so the oracle
+    # (docx-zip.mjs `boldText`) can address it without ambiguity.
+    [switch]$Formatted
 )
 
 $ErrorActionPreference = 'Stop'
@@ -145,6 +156,23 @@ try {
     $sel.TypeParagraph()
     $sel.TypeText($umlautMarker)
     $sel.TypeParagraph()
+
+    if ($Formatted) {
+        $sel.Style = $WD_STYLE_HEADING1
+        $sel.TypeText("Formatting Marker Heading")
+        $sel.TypeParagraph()
+        $sel.Style = $WD_STYLE_NORMAL
+        # Only the middle run is bold. Toggled explicitly around each run so the
+        # leading and trailing runs cannot inherit it.
+        $sel.Font.Bold = $false
+        $sel.TypeText("spanmarker ")
+        $sel.Font.Bold = $true
+        $sel.TypeText("keepbold")
+        $sel.Font.Bold = $false
+        $sel.TypeText(" endword")
+        $sel.TypeParagraph()
+        $sel.Font.Bold = $false
+    }
 
     # `.Item(...)` on DocumentProperties throws under PowerShell; use late binding.
     function Set-DocProp($document, [string]$name, [string]$value) {

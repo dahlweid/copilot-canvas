@@ -71,7 +71,7 @@ export const OPERATIONS = {
     replace_text: {
         text: "required",
         headingLevel: "rejected",
-        help: "rewrite the paragraph's text, keeping its style",
+        help: "rewrite the paragraph's text, keeping its paragraph style and the run formatting on any part of the text left unchanged",
         describe: ({ address }) => `replace the text of ${address}`,
     },
     insert_paragraph_after: {

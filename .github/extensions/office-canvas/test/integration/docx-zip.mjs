@@ -129,3 +129,29 @@ function decodeEntities(text) {
  */
 export const documentPlainText = (xml) =>
     [...xml.matchAll(/<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>/g)].map((m) => decodeEntities(m[1])).join("");
+
+/**
+ * The text carried by **bold** runs, concatenated.
+ *
+ * This is the independent oracle for issue #170. A run is bold when its `w:rPr`
+ * carries a `<w:b/>` toggle that is not explicitly switched off. The whole-range
+ * `Range.Text =` assignment collapses a paragraph to a single run with no `rPr`,
+ * so a word that was bold survives here **only if** the shipped edit kept its
+ * run — which is the exact property #170 is about, read straight from the bytes
+ * Word wrote rather than back through our own COM reader (a reader-based check
+ * could not tell "preserved" from "lost and re-derived the same way", the #40
+ * hazard this module exists to avoid).
+ *
+ * `w:r\b` matches a run element but not `w:rPr`, and the `w:val` guard excludes a
+ * toggle Word wrote as explicitly off (`w:val="0"|"false"|"off"`); `w:bCs`
+ * (complex-script bold) is not matched, since only `w:b` is asked about.
+ */
+export const boldText = (xml) =>
+    [...xml.matchAll(/<w:r\b[\s\S]*?<\/w:r>/g)]
+        .map((m) => m[0])
+        .filter(
+            (run) =>
+                /<w:b(?:\s[^>]*)?\/?>/.test(run) && !/<w:b\b[^>]*w:val="(?:0|false|off)"/.test(run),
+        )
+        .map((run) => [...run.matchAll(/<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>/g)].map((t) => decodeEntities(t[1])).join(""))
+        .join("");
