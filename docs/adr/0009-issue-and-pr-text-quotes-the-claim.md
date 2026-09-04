@@ -1,9 +1,16 @@
-# Issue and pull-request text quotes the claim it relies on, not a coordinate
+# A reference names what it relies on, not a line number
 
-When issue or pull-request text rests on something a file says, it **quotes that
-thing** — the line, or the claim the line stands for — rather than pointing at a
-bare `file.ext:NN` coordinate. A coordinate may accompany a quote; it may not
-replace one. This is #160(b).
+A **positional coordinate** — `file.ext:NN`, `file.ext:NN-NN`, or a bare `:NN`
+naming a line of the file it is written in — is not a reference. It hides the
+claim it stands for, and an unrelated edit relocates that claim without touching
+it. Two rules follow, one per surface:
+
+- **Issue and pull-request text quotes the claim** it rests on — the line, or
+  the claim the line stands for. A coordinate may accompany a quote; it may not
+  replace one. This is #160(b).
+- **Committed files carry no positional coordinate at all.** Reference code
+  indirectly, by name and file: `Set-ParagraphText (word-host.ps1)`. See
+  *The rule in the tree* below for the exact form and the two exceptions.
 
 The convention exists because a coordinate **hides the content of the claim it
 stands for**. A reader who follows a number lands on whatever is at that offset;
@@ -83,48 +90,106 @@ A quote would have broken this where the coordinate could not. Writing
 reader of a *PowerPoint* issue, where a bare `:167-170` conceals it. The reader
 does not have to resolve a number and cross-check an arm of a probe to notice the
 mismatch; the mismatch is on the page. Quoting the claim is the only one of the
-two #160 remedies that would have caught #141 — see the limits below.
+two #160 remedies that would have caught #141: both #160(a) gates read
+*committed files*, and #141 is tracker text, which neither reaches.
 
-## What this does and does not forbid
+## The rule in the tree
 
-It targets **issue and pull-request text**, the two surfaces where nothing in
-this repo gates a coordinate.
+It once said here that positional citations in committed comments and docs were
+fine, because `tools/check-citations.mjs` and `tools/check-citation-lines.mjs`
+gate them. That exemption was wrong, and the counter-example is in this
+repository's own safety-critical code. The rule is now the same on both
+surfaces.
 
-It does **not** forbid positional citations in committed code comments and docs.
-Those are legitimate, they are this repo's own style, and they are gated by
-#160(a): `tools/check-citations.mjs` guards `probe-*` filenames, and
-`tools/check-citation-lines.mjs` guards positional `:NN` coordinates for the
-failures a machine can decide without knowing what the citation meant — in
-files whose extension its matcher recognises (`.mjs`, `.ps1`, `.js`, `.ts`,
-`.md`), which is narrower than "positional coordinates" and deliberately so. A
-rule that banned coordinates everywhere would contradict the tooling this repo
-just added. Where a coordinate genuinely helps in issue text, the convention is
-that it *accompanies* a quote, never stands in for one.
+**In a committed file, reference code by name, not by position.** Write
+`Set-ParagraphText (word-host.ps1)`, or `the Quit(0) gate
+(probe-single-instance.ps1)`. Where the thing has no name, say what it is: `the
+census helper in _common.ps1`. This covers every tracked file — source,
+comments, docs, probes, tests, workflows — and it covers a bare `:NN` into the
+file's own body exactly as it covers a cross-file coordinate.
+
+Two exceptions, both narrow, both because the objection above does not apply:
+
+- **A coordinate pinned to a commit.** `structure-map.mjs:266` *as of*
+  `4abf952` cannot rot — the SHA fixes the tree the number indexes. This is why
+  the evidence section above can name `probe-single-instance.ps1:167-170` at
+  `fed5270`: without this exception, this ADR could not state its own evidence.
+- **A coordinate that is the subject under discussion,** rather than a
+  reference being followed — this document analysing a rotted citation, and
+  `check-citation-lines.mjs` and its unit test carrying rot-shaped fixtures to
+  assert on. Naming a string is not pointing at a line.
+
+### Why the tree was never the safe half
+
+`word-host.ps1` argues that Word's autocorrect cannot fire because the host
+never types. It is a safety argument, and it rests on four coordinates:
+
+> every character of document text goes in through the single function
+> `Set-ParagraphText (:1531)`, whose only write is `(Get-TextRange $para).Text =
+> $text (:1532)`. […] the only other `.Text =` assignments in this file are
+> `Find.Text (:1250, :1323)`
+
+All four are wrong, measured at `5d81ffc`. `Set-ParagraphText` and its write sit
+some 170 lines further down than claimed, and the two `Find.Text` assignments
+roughly 175 lines down. What the cited lines actually hold there is `$fromPage =
+0`, an `if` on `$a.fromPage`, `name = $item.Name` and `$thrown.data.writable =
+$writable` — real, plausible, unrelated lines of the same file. This is #168,
+and the exact offsets are deliberately not repeated here: they would rot the way
+the ones above them did. Re-derive them by searching for the names.
+
+`check-citation-lines.mjs` exits successfully on this file, and it is worth
+being exact about what that does and does not mean, because the obvious reading
+is not the true one and the true one is worse.
+
+The gate did not examine these four and judge them acceptable. **It never saw
+them at all.** The tool does name individual citations when it has a finding —
+on failure it prints each offending one with its category and the file it was
+written in — so the silence here is not a lenient verdict, it is the absence of
+any verdict. Its matcher requires a filename with a recognised extension before
+the colon —
+
+> `/(?:[A-Za-z0-9._-]+[/\\])*[A-Za-z0-9._-]+\.(?:mjs|ps1|js|ts|md):\d+(?:-\d+)?/g`
+
+— and these four are **bare** self-references, `(:1531)`, with no filename in
+front. Run that matcher over the comment and it returns no matches. Green here
+is silence, not a verdict.
+
+That is the first failure, and it compounds: a bare self-reference is
+simultaneously the **most** fragile form, because it rots on any insertion above
+it in its own file and that is the most frequent edit a file receives, and the
+**least** checkable form, because a matcher needs a filename to recognise a
+citation at all. The weakest notation is the one nothing can watch.
+
+The second failure is that qualifying them would not have helped. Written as
+`word-host.ps1:1531`, all four would be matched — and all four would still pass,
+because the file has 2300 lines and every one of 1531, 1532, 1250 and 1323 names
+a line that exists, in a file that exists, in range. The gate's own header says
+why it cannot do better:
+
+> A coordinate that still resolves to real code while no longer meaning anything
+> is invisible to any gate.
+
+So the exemption rested on a gate that misses this twice over: it cannot see the
+form actually used, and it would pass the qualified form too. It is structurally
+unable to catch the failure that matters, and here it is failing to catch it
+underneath a safety claim. That is #141's shape, in the tree, on shipped code.
 
 ## Two limits, stated so this is not oversold
 
 Both are load-bearing, and a version of this convention that hid either would be
 worse than none.
 
-**Nothing enforces this. It is a convention, not a gate.** No CI check reads
-issue-tracker text — no check in this repo can, because issue and PR bodies live
-on GitHub, not in the tree. Do not read this record, or the rule in
-`.github/copilot-instructions.md`, as something CI verifies. It changes how a
-writer writes; it is not mechanically checked.
+**Nothing enforces either half today.** No CI check reads issue or PR text — no
+check in this repo can, because those bodies live on GitHub, not in the tree.
+The in-tree half is different in kind, because a ban on a *syntax* is decidable
+where a check on whether a coordinate still *means* what it claimed is not; but
+no gate rejects that syntax yet. `check-citation-lines.mjs` validates
+coordinates, it does not forbid them, so a green run is not evidence of
+compliance with this ADR. Until that is built, both halves are convention.
 
-**The #160(a) gates would not have caught #141, and this convention is the only
-part of #160 that would have.** `check-citations.mjs` gates *committed files* and
-is *filename-only*; `check-citation-lines.mjs` gates *committed* positional
-coordinates in the file types its matcher recognises. #141 is issue-tracker
-text, which neither reaches. The two gates
-catch the in-tree class — the rotted `CONTEXT.md` coordinates #160 was filed
-over — and nothing on the tracker. Conversely this convention reaches the
-tracker and is unenforced. Each part covers exactly what the other cannot, and
-neither covers everything.
-
-## Addition by Markus (2026-09-04)
-
-This reference mechanism MUST ONLY be used in Pull Requests and files issues. It
-MUST NOT be used anywhere in the code base to reference other code. In that case 
-always use indirect means like "functionname (filename.ext)".
-
+**Dropping the number does not make a reference correct.** A name survives
+insertion, which a coordinate does not, and `check-citations.mjs` still guards
+a `probe-*` filename against dangling. But a renamed function or a moved file
+breaks a name too. The claim is narrow and matches what was measured: the rot in
+this tree is overwhelmingly *relocation by an edit elsewhere*, and a name is
+immune to exactly that — not to everything.
