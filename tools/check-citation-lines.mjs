@@ -51,20 +51,31 @@
 //
 // Fenced code blocks are skipped, because ```...``` in Markdown routinely holds
 // captured tool output (a grep result printing `file:line`) that is a recording,
-// not an authored reference. Vendored third-party code under `src/ui/vendor/` is
-// skipped for the same reason in a different key: it is not authored here, and
-// nothing in it is a reference into this tree.
+// not an authored reference. Measured on this tree at `9c81f9b`: turning fence
+// tracking off and changing nothing else takes the count from 43 to 45, and both
+// extra hits are the same pair of captured grep results in
+// `spikes/word-icon/FINDINGS.md`. So the effect is small and entirely
+// transcripts — which is the point. It is worth stating the size, because a
+// scanner that lacked fence tracking *and* used a wider matcher read 88 on this
+// tree, and it would be easy to credit the fence with a gap that was almost all
+// matcher width. Vendored third-party code under `src/ui/vendor/` is skipped for
+// a related reason: it is not authored here, and nothing in it is a reference
+// into this tree.
 //
 // Two allowances, both from ADR 0009:
 //
-//   1. **A commit pin.** A coordinate followed on the same line by "as of
-//      `<sha>`" cannot rot — the SHA fixes the tree the number indexes. Pinned
+//   1. **A commit pin.** A coordinate followed *immediately* by "as of `<sha>`"
+//      cannot rot — the SHA fixes the tree the number indexes. Pinned
 //      coordinates are counted and reported on a green run, so the allowance is
-//      visible rather than silent.
+//      visible rather than silent. This is the allowance an author who hits the
+//      gate should reach for, and the failure message says so.
 //   2. **An exempt list**, for the files that carry rot-shaped *fixtures*: this
 //      checker, its unit test, and ADR 0009 itself, which analyses rotted
 //      coordinates and must quote them. Naming a string is not pointing at a
-//      line. This is that short list and nothing else.
+//      line. This is that short list and nothing else. It is deliberately not
+//      offered as a remedy in the failure message: an exemption an author can
+//      grant themselves at an inconvenient moment is how a gate gets worked
+//      around rather than obeyed. Growing it is an ADR-0009 question.
 
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -207,8 +218,16 @@ export function report({ coordinates, pinned, unreadable }) {
         "it stands for, and an insertion above it relocates that claim without\n" +
         "touching it.\n\n" +
         "If the number is genuinely needed as evidence, pin it to a commit:\n" +
-        "`structure-map.mjs:266` as of `4abf952`. A pinned coordinate cannot rot.\n",
-    );
+        "`structure-map.mjs:266` as of `4abf952`. A pinned coordinate cannot rot,\n" +
+        "and this gate accepts it — that is the one exception you can apply here.\n\n" +
+        "There is a second, which is not for you to apply: a short exempt list for\n" +
+        "the files whose subject matter IS a rotted coordinate (this gate, its unit\n" +
+        "test, ADR 0009). If you believe a file belongs on it, argue that in ADR\n" +
+        "0009 rather than editing the list — an exemption granted in passing is how\n" +
+        "this gate stops meaning anything.\n\n" +
+        "Both exceptions, and why the syntax is banned at all, are in\n" +
+        "docs/adr/0009-issue-and-pr-text-quotes-the-claim.md.\n",
+    )
     return 1;
   }
 
