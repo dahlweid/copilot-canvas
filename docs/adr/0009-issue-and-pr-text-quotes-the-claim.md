@@ -121,3 +121,10 @@ catch the in-tree class — the rotted `CONTEXT.md` coordinates #160 was filed
 over — and nothing on the tracker. Conversely this convention reaches the
 tracker and is unenforced. Each part covers exactly what the other cannot, and
 neither covers everything.
+
+## Addition by Markus (2026-09-04)
+
+This reference mechanism MUST ONLY be used in Pull Requests and files issues. It
+MUST NOT be used anywhere in the code base to reference other code. In that case 
+always use indirect means like "functionname (filename.ext)".
+
