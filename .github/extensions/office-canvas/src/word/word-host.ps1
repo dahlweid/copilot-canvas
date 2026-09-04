@@ -721,13 +721,14 @@ function Resolve-Doc($docId) {
 #                               separate and stronger argument, and one about this
 #                               codebase rather than about Word: every character of
 #                               document text goes in through the single function
-#                               Set-ParagraphText (:1531), whose only write is
-#                               (Get-TextRange $para).Text = $text (:1532). Its
-#                               seven callers cover paragraphs, headings, list
-#                               items and table cells; the only other '.Text ='
-#                               assignments in this file are Find.Text (:1250,
-#                               :1323), which is a SEARCH string and is never
-#                               inserted. No keystroke API is called anywhere.
+#                               Set-ParagraphText, and every write it makes is a
+#                               Range.Text assignment -- to the paragraph's visible
+#                               range or, since #170, to a sub-range of it -- never
+#                               a keystroke. Its seven callers cover paragraphs,
+#                               headings, list items and table cells; the only other
+#                               '.Text =' assignments in this file are Find.Text,
+#                               which is a SEARCH string and is never inserted. No
+#                               keystroke API is called anywhere.
 #                               Guarded by the "the host never types" test in
 #                               test/unit/autocorrect-not-suppressed.test.mjs, so
 #                               an edit that reaches for one reddens rather than
@@ -1683,27 +1684,94 @@ function Open-OriginalForEdit([string]$path) {
     return @{ doc = $doc; protectedView = $false }
 }
 
+# The paragraph's visible text, as a span of Characters.
+#
 # A paragraph's Range ends with its paragraph mark, and inside a table cell with
-# an end-of-cell mark as well. Assigning to a Range that includes those marks
-# deletes them, welding the paragraph onto the next one. Trimming them off is
-# what makes "replace the text of this paragraph" mean only that.
-function Get-TextRange($para) {
-    # Word's string and its character *model* disagree inside a table. A cell
-    # paragraph's Range.Text ends "`r" + chr(7) -- two characters in the string --
-    # but End-Start counts the end-of-cell mark as one position. Measured: a
-    # blind MoveEnd(-2) ate a real character, rewriting "cell 11" as
-    # "cell rewritten1". So derive the trim from the position span rather than
-    # from the string length, which is correct in both models.
-    $raw = [string]$para.Range.Text
-    $visible = $raw.TrimEnd("`r", [char]7, "`n")
-    $range = $para.Range
-    $drop = ($range.End - $range.Start) - $visible.Length
-    if ($drop -gt 0) { $range.MoveEnd($WD_CHARACTER, -$drop) | Out-Null }
-    return $range
+# an end-of-cell mark too; a paragraph that carries a field -- a hyperlink, say --
+# also has the field's hidden code occupying character *positions* that never
+# appear in Range.Text. So "the visible text of this paragraph" cannot be found
+# by subtracting a string length from a position span: measured, that span-minus-
+# length trim over-trims a hyperlink paragraph to nothing (the field code counts
+# 36 positions the text does not) and would under-trim a table cell were the
+# marks not stripped first (the end-of-cell mark is one Character whose .Text is
+# two chars). See spikes/edit-formatting/probes/probe-coordinates.ps1.
+#
+# The Characters collection is the character model itself: its members line up
+# one-to-one with Range.Text, skip the field code, and each carries its own
+# document position. So walk back over trailing Characters that are purely a
+# paragraph or end-of-cell mark (tested per Character, since the cell mark is a
+# single two-char Character), and take the first `last` of them as the visible
+# span.
+function Get-VisibleSpan($para) {
+    $chars = $para.Range.Characters
+    $last = $chars.Count
+    while ($last -ge 1 -and ([string]$chars.Item($last).Text).TrimEnd("`r", [char]7, "`n").Length -eq 0) { $last-- }
+    return @{ chars = $chars; last = $last }
 }
 
+# The visible range: from the first character to the end of the last non-mark
+# one. An empty paragraph has no visible characters, so collapse to its start.
+function Get-TextRange($para) {
+    $span = Get-VisibleSpan $para
+    if ($span.last -lt 1) {
+        $range = $para.Range.Duplicate
+        $range.Collapse($WD_COLLAPSE_START)
+        return $range
+    }
+    return $para.Range.Document.Range($span.chars.Item(1).Start, $span.chars.Item($span.last).End)
+}
+
+# Rewrite a paragraph's text, preserving the run formatting on the part that did
+# not change.
+#
+# `replace_text` and every insert route here. A whole-range assignment --
+# `(Get-TextRange $para).Text = $text` -- collapses the paragraph to a single
+# run, silently destroying every intra-paragraph run (bold, italic, and the
+# rest) even when the new text is identical to the old (issue #170;
+# spikes/edit-formatting/probes/probe-run-formatting.ps1 arm A). Instead, diff
+# the old visible text against the new: keep the longest common prefix and
+# suffix, and assign only the differing middle span. Formatting on the unchanged
+# prefix and suffix -- including a hyperlink or footnote reference sitting there,
+# both measured -- is left in place, because those characters are never touched.
+#
+# Two limits are inherent and are documented rather than hidden. Formatting that
+# lay entirely within the changed characters goes with them; and a span that
+# begins inside a run takes that run's formatting, Word applying the boundary's
+# formatting to inserted text. The guarantee is over the unchanged prefix and
+# suffix, not over the replacement. Both are shown in probe-minimal-span.ps1.
 function Set-ParagraphText($para, [string]$text) {
-    (Get-TextRange $para).Text = $text
+    $span = Get-VisibleSpan $para
+    $chars = $span.chars
+    $last = $span.last
+    if ($last -lt 1) { (Get-TextRange $para).Text = $text; return }
+
+    $doc = $para.Range.Document
+    $range = $doc.Range($chars.Item(1).Start, $chars.Item($last).End)
+    $old = [string]$range.Text
+    if ($old -eq $text) { return }
+
+    # The span is located by Character index, which maps to the string index only
+    # while every visible Character is a single string char. That held for all of
+    # bold, italic, hyperlink and footnote (probe-minimal-span.ps1); if some
+    # composite Character ever breaks it, the mapping would drift and land the
+    # span wrong, so fall back to assigning the whole visible range. That reverts
+    # to the pre-#170 run loss on that paragraph, but never corrupts its text.
+    if ($old.Length -ne $last) { $range.Text = $text; return }
+
+    $max = [Math]::Min($old.Length, $text.Length)
+    $p = 0
+    while ($p -lt $max -and $old[$p] -eq $text[$p]) { $p++ }
+    $maxSuffix = $max - $p
+    $s = 0
+    while ($s -lt $maxSuffix -and $old[$old.Length - 1 - $s] -eq $text[$text.Length - 1 - $s]) { $s++ }
+    $middle = $text.Substring($p, $text.Length - $p - $s)
+
+    # Character indices are 1-based. The changed span is visible characters
+    # [p+1 .. last-s]; when that is empty (a pure insertion) the two bounds meet
+    # at one boundary position and the assignment inserts there.
+    $startPos = if (($p + 1) -le $last) { $chars.Item($p + 1).Start } else { $chars.Item($last).End }
+    $endPos = if (($last - $s) -ge 1) { $chars.Item($last - $s).End } else { $chars.Item(1).Start }
+    $doc.Range($startPos, $endPos).Text = $middle
 }
 
 # Style assignment, and the only two mechanisms that work here.
