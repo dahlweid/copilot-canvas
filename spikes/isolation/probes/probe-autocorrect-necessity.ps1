@@ -54,10 +54,13 @@
 #
 # The host's insertion path is mirrored exactly, not approximated: every
 # character `create_document` and `edit_document` write reaches the document
-# through Set-ParagraphText -> (Get-TextRange $para).Text = $text
-# (word-host.ps1:1717-1734). There is no Selection.TypeText anywhere in the
-# host. Arm C therefore assigns Range.Text, because that is the only way text
-# actually gets in.
+# through `Set-ParagraphText` (word-host.ps1), and that function never types.
+# It writes on three paths and all three are assignments to a Range's `.Text`:
+# the minimal changed span in the normal case, the whole visible range when the
+# character-index mapping it relies on does not hold, and the paragraph's text
+# range when the paragraph has no visible characters. There is no
+# Selection.TypeText anywhere in the host. Arm C therefore assigns Range.Text,
+# because that is the only way text actually gets in.
 #
 # Housekeeping, from the rules this repo learned the hard way:
 #   * Argument-less Quit() only. Quit(<arg>) leaks a WINWORD that process exit

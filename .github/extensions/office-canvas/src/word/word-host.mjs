@@ -288,7 +288,8 @@ export class WordHost {
     // that quotes only the window. Handing a `deadline` moves the subtraction to
     // *after* `#ensureStarted()` returns, so whatever start consumed is deducted
     // and the operation shares one wall clock with it, the way
-    // document-editor.mjs:230 says the whole operation should.
+    // `DocumentEditor`'s edit budget (document-editor.mjs) requires -- "one wall
+    // clock for the whole operation, not one per layer".
     // `budget` is one of three shapes, and the resolution below is the one place
     // a wrong branch could hide, so it is written to fail loudly rather than
     // silently pick a default:

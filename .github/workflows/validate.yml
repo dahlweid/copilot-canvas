@@ -20,6 +20,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history, because check-citation-lines.mjs resolves every "as of
+          # `<sha>`" pin against git and the default depth-1 clone holds only the
+          # head commit — every historical pin would come back unresolvable there.
+          # The tool reports that state rather than passing quietly, so a shallow
+          # clone would not be silently wrong; it would just check nothing.
+          #
+          # Affordable, measured rather than assumed: `git count-objects -vH` puts
+          # this repo at a 3.21 MiB pack over 114 commits.
+          fetch-depth: 0
 
       # No package.json anywhere (constraint C2), so there is nothing to
       # install and no cache key to derive.
@@ -38,36 +48,63 @@ jobs:
       - name: Check every probe citation resolves
         run: node tools/check-citations.mjs
 
-      # The line-number half of #160(a). This is deliberately a separate step
-      # from the one above: that one is *filename-only* and has no notion of a
-      # line, so a citation naming a real file at a dead line passes it. Until
-      # this step existed the tool was built, unit-tested and never run against
-      # this repository, while ADR 0009 and `.github/copilot-instructions.md`
-      # both stated that it gated committed coordinates (#169).
+      # The syntax half of ADR 0009. Deliberately a separate step from the one
+      # above: that one is *filename-only* and asks whether a probe named in a
+      # citation still exists on this branch. This one asks whether any tracked
+      # file carries a positional coordinate at all.
+      #
+      # It used to *validate* coordinates — resolve the file, check the line was
+      # in range. That job was retired because it cannot buy what it appears to:
+      # a coordinate that resolved when written is relocated by the next
+      # insertion above it, in a file its author never touched, and no resolver
+      # can see that. So the guarantee is inverted. Presence of the syntax is
+      # decidable and stays decidable; whether a coordinate still *means* what it
+      # claimed is not.
       #
       # Its unit tests cannot stand in for this step. They run the checker
       # against synthetic in-memory fixtures on purpose — "the fixtures are
       # local to this file so nothing another worktree owns is touched" — which
-      # proves the checker works, not that the tree is clean.
+      # proves the checker works, not that the tree is clean. Until this step
+      # existed the tool was built, unit-tested and never run against this
+      # repository, while ADR 0009 and `.github/copilot-instructions.md` both
+      # stated that it gated committed coordinates (#169).
       #
-      # Read a green run as the tool itself defines it, and no wider: no
-      # citation **that this checker recognises** names a missing file, an
-      # ambiguous file, or an out-of-range line. A coordinate is in range only
-      # if `1 <= lo <= hi <= lineCount`, so `:0` and a reversed `:99-1` are
-      # rejected too, not just a high bound past EOF. Its matcher recognises a
-      # filename ending `.mjs`, `.ps1`, `.js`, `.ts` or `.md` followed by `:NN`
-      # or `:NN-NN`, so a coordinate into any other file type — `validate.yml:99`,
-      # a `.json`, a `.txt` — is not checked at all. That whitelist is
-      # deliberate, not an oversight: matching any extension would start
-      # matching things that are not filenames.
+      # Read a green run as the tool defines it, and no wider — it prints this
+      # itself. It certifies that no line the gate **read** carries a coordinate
+      # the matcher recognises, except where one is pinned to a commit, and it
+      # reports what it did not read: fenced blocks, exempt files, vendored and
+      # binary files. The step shipped claiming "no positional coordinate in any
+      # tracked file" while two sat unread inside a fenced transcript; an
+      # overstatement is worse than a narrow claim, because it is what stops the
+      # next person looking.
       #
-      # It is also not a claim that every citation is correct. A coordinate
-      # landing on real but unrelated code passes here and cannot be caught
-      # mechanically — which is why ADR 0009 now bans the syntax outright in
-      # committed files rather than relying on this gate. This step therefore
-      # validates coordinates; it does not enforce that ADR, and a green run is
-      # not evidence of compliance with it.
-      - name: Check every positional citation resolves
+      # The matcher recognises a filename with a text-file extension followed by a
+      # line number, plus a bare self-reference introduced by a paren, a backtick,
+      # or the words "at"/"line"/"lines". The extension set is wide — it was once
+      # just the handful this tree mostly uses, which left `json`, `css` and
+      # `html` invisible although all three are tracked here, and a coordinate
+      # into `data.json` rots exactly as one into `data.mjs`. The introducer
+      # requirement is the deliberate narrow part: a colon and digits with no
+      # introducer is a clock time, a ratio or a JSON value far more often than a
+      # citation, and a matcher that flagged those would be turned off rather than
+      # obeyed. The gate names both limits in its own output.
+      #
+      # Fenced blocks are skipped because a verbatim probe transcript is
+      # evidence, and evidence is not edited to satisfy a linter. That is ADR
+      # 0009's transcript exception, and the skip is wider than its own
+      # justification — it drops every fenced line, not only pinned ones — which
+      # is why the gate runs the matcher over the skipped lines anyway and
+      # reports how many were coordinate-shaped, without failing on them. On this
+      # tree that is 2, both in spikes/word-icon/FINDINGS.md. Vendored and binary
+      # files are skipped too, as out of scope rather than excused.
+      #
+      # Every "as of `<sha>`" pin is resolved against git, because the shape of a
+      # SHA is not evidence that a commit exists; see fetch-depth above.
+      #
+      # It is still not a claim that every reference is correct: a renamed
+      # function or a moved file breaks a name too. It is the narrower claim that
+      # no reference it read is a bare position — the rot this tree measured.
+      - name: Check no committed file carries a positional coordinate
         run: node tools/check-citation-lines.mjs
 
       # `node --test <dir>` fails to resolve modules on some Node versions, so the

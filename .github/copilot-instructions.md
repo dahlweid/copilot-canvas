@@ -103,11 +103,19 @@ welcome and has repeatedly found genuine defects.
   coordinate may sit *beside* the quote but never replace it. **In a committed
   file**, do not write a coordinate at all — reference code by name and file,
   `Set-ParagraphText (word-host.ps1)`, and note this covers a bare `:NN` into the
-  file's own body. Two exceptions: a coordinate pinned to a commit (`… as of
-  4abf952`), which cannot rot, and one quoted as the subject under discussion.
-  Neither half is gated: nothing reads tracker text, and
-  `check-citation-lines.mjs` validates coordinates rather than forbidding them,
-  so a green run is not evidence of compliance.
+  file's own body. Three exceptions: a coordinate pinned to a commit (`… as of
+  4abf952`), which cannot rot; one inside a verbatim probe transcript, because a
+  recorded run is evidence and evidence is not edited to satisfy a gate; and one
+  quoted as the subject under discussion. The gate adds a fourth pass — vendored
+  and binary files — which is a limit of its scope, not an exception anyone may
+  invoke. Only the in-tree half is gated: nothing
+  reads tracker text, so that half stays convention, while
+  `check-citation-lines.mjs` now **rejects** a coordinate in any tracked line it
+  reads rather than validating it. Read its green message as it states itself —
+  for the fenced and exempt files it read past, it counts the lines and says how
+  many were coordinate-shaped; vendored and binary files it never opens, so
+  there it can only count files. A pin is resolved against git, so a
+  SHA-shaped string naming no commit is rejected rather than waved past.
 
 ## If you are coordinating work rather than doing it
 
