@@ -106,3 +106,54 @@ test("a refresh cannot land between outline markup and outline positions", async
         await rm(root, { recursive: true, force: true });
     }
 });
+
+test("an edit or revert cannot enqueue after a document starts closing", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "outline-interleave-"));
+    const docPath = path.join(root, "closing.docx");
+    const markupEntered = deferred();
+    const releaseMarkup = deferred();
+    await writeFile(docPath, "fixture");
+    let outline;
+    let closing;
+    let edit;
+    let revert;
+
+    const cache = new RenderCache({ cacheRoot: path.join(root, "cache") });
+    cache.host = {
+        async openDocument({ docId, workDir }) {
+            await mkdir(workDir, { recursive: true });
+            return { docId, pageCount: 1, wordCount: 1, sizeBytes: 7, modifiedIso: "2026-01-01T00:00:00.000Z" };
+        },
+        async outlineMarkup({ out }) {
+            await writeFile(out, flatOpc([paragraph("Heading", { styleId: "berschrift1" })]));
+            markupEntered.resolve();
+            await releaseMarkup.promise;
+        },
+        async outlinePositions({ wordIndices }) {
+            return { positions: wordIndices.map((wordIndex) => ({ wordIndex, start: 0, page: 1 })) };
+        },
+    };
+
+    try {
+        await cache.open(docPath);
+        outline = cache.outline(docPath);
+        await markupEntered.promise;
+        closing = cache.close(docPath);
+
+        edit = cache.editDocument(docPath, {});
+        revert = cache.revertDocument(docPath);
+        const stillQueued = Symbol("still queued");
+        const outcomes = await Promise.all(
+            [edit, revert].map((operation) =>
+                Promise.race([operation.then(() => null, (error) => error), turns(20).then(() => stillQueued)]),
+            ),
+        );
+        for (const outcome of outcomes) {
+            assert.equal(outcome?.code, "not_open", "an edit or revert appended to a document's closing queue");
+        }
+    } finally {
+        releaseMarkup.resolve();
+        await Promise.allSettled([outline, closing, edit, revert].filter(Boolean));
+        await rm(root, { recursive: true, force: true });
+    }
+});

@@ -241,6 +241,9 @@ export class RenderCache {
         const docPath = requireSupported(rawPath);
         const state = this.#docs.get(identityOf(docPath));
         if (!state) return this.#editorFor().edit(docPath, intent, options);
+        if (state.closing) {
+            throw new DocumentError("not_open", "That document is not open in this canvas.");
+        }
         return this.#enqueueDocumentOperation(state, async () => {
             const result = await this.#editorFor().edit(docPath, intent, options);
             await this.#invalidateState(state);
@@ -253,6 +256,9 @@ export class RenderCache {
         const docPath = requireSupported(rawPath);
         const state = this.#docs.get(identityOf(docPath));
         if (!state) return this.#editorFor().revert(docPath, options);
+        if (state.closing) {
+            throw new DocumentError("not_open", "That document is not open in this canvas.");
+        }
         return this.#enqueueDocumentOperation(state, async () => {
             const result = await this.#editorFor().revert(docPath, options);
             await this.#invalidateState(state);
