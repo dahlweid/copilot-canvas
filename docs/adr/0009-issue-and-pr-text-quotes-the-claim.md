@@ -137,13 +137,14 @@ $writable` — real, plausible, unrelated lines of the same file. This is #168,
 and the exact offsets are deliberately not repeated here: they would rot the way
 the ones above them did. Re-derive them by searching for the names.
 
-`check-citation-lines.mjs` reports these as green, and it is worth being exact
-about why, because the obvious explanation is not the true one and the true one
-is worse.
+`check-citation-lines.mjs` exits successfully on this file, and it is worth
+being exact about what that does and does not mean, because the obvious reading
+is not the true one and the true one is worse.
 
-The gate does not evaluate them and find them acceptable. **It never sees them
-at all.** Its matcher requires a filename with a recognised extension before the
-colon —
+The gate did not examine these four and judge them acceptable. **It never saw
+them at all**, and it reports no verdict on any individual citation — only that
+the run as a whole found nothing to report. Its matcher requires a filename with
+a recognised extension before the colon —
 
 > `/(?:[A-Za-z0-9._-]+[/\\])*[A-Za-z0-9._-]+\.(?:mjs|ps1|js|ts|md):\d+(?:-\d+)?/g`
 
