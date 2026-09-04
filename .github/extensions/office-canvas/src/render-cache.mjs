@@ -8,14 +8,15 @@
 // The cache key is path + mtime + size. That makes reopening an unchanged
 // document instant and makes an edited document re-render exactly once.
 
-import { createHash } from "node:crypto";
-import { mkdir, readdir, rm, stat } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdir, readFile, readdir, rm, stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { WordHost } from "./word/word-host.mjs";
 import { DocumentReader } from "./word/document-reader.mjs";
 import { DocumentEditor } from "./word/document-editor.mjs";
 import { DocumentAuthor } from "./word/document-author.mjs";
+import { extractOutlineEntries, resolveOutlineEntries } from "./word/outline-map.mjs";
 
 export class DocumentError extends Error {
     constructor(code, message) {
@@ -351,7 +352,19 @@ export class RenderCache {
 
     async outline(rawPath, { limit } = {}) {
         const state = this.#require(rawPath);
-        return this.host.outline({ docId: state.docId, limit });
+        const out = path.join(state.workDir, `outline-${randomUUID()}.xml`);
+        try {
+            await this.host.outlineMarkup({ docId: state.docId, out });
+            const entries = extractOutlineEntries(await readFile(out, "utf8"), { limit: limit ?? 2000 });
+            if (!entries.length) return { headings: [], count: 0 };
+            const { positions } = await this.host.outlinePositions({
+                docId: state.docId,
+                wordIndices: entries.map((entry) => entry.wordIndex),
+            });
+            return resolveOutlineEntries(entries, positions);
+        } finally {
+            await rm(out, { force: true }).catch(() => {});
+        }
     }
 
     async search(rawPath, query, { limit, matchCase, wholeWord } = {}) {

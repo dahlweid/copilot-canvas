@@ -1404,76 +1404,42 @@ function Cmd-Export($a) {
     }
 }
 
-function Cmd-Outline($a) {
+function Cmd-OutlineMarkup($a) {
     $doc = Resolve-Doc ([string]$a.docId)
-    $limit = 2000
-    if ($null -ne $a.limit) { $limit = [int]$a.limit }
+    $out = [string]$a.out
+    if ([string]::IsNullOrWhiteSpace($out)) {
+        throw (New-HostError 'invalid_request' 'No output path supplied for the outline markup.')
+    }
 
-    $found = New-Object System.Collections.ArrayList
+    $outDir = Split-Path -Parent $out
+    if (-not [string]::IsNullOrWhiteSpace($outDir) -and -not (Test-Path -LiteralPath $outDir)) {
+        New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+    }
+    $xml = [string]$doc.Content.WordOpenXML
+    try {
+        [IO.File]::WriteAllText($out, $xml, (New-Object System.Text.UTF8Encoding($false)))
+    } catch {
+        throw (New-HostError 'write_failed' "Could not write the outline markup to $out. ($($_.Exception.Message))")
+    }
+    return @{ out = $out; bytes = [int64](Get-Item -LiteralPath $out).Length }
+}
 
-    # Style-based Find costs one COM round trip per heading. Walking every
-    # paragraph would cost one per paragraph, which is unusably slow on long
-    # documents.
-    foreach ($level in 1..9) {
-        if ($found.Count -ge $limit) { break }
-        $styleId = Get-HeadingStyleId $level
-        try {
-            $rng = $doc.Content
-            $f = $rng.Find
-            $f.ClearFormatting()
-            $f.Text = ''
-            $f.Forward = $true
-            $f.Wrap = $WD_FIND_STOP
-            $f.Format = $true
-            $f.Style = $styleId
-            $guard = 0
-            while ($guard -lt $limit -and $f.Execute()) {
-                $guard++
-                $text = ([string]$rng.Text).Trim([char]13, [char]7, [char]11, [char]12, ' ')
-                if (-not [string]::IsNullOrWhiteSpace($text)) {
-                    [void]$found.Add(@{
-                            level = $level
-                            text  = $text
-                            page  = (Get-PageOf $rng)
-                            start = [int]$rng.Start
-                        })
-                }
-                if ($found.Count -ge $limit) { break }
-            }
-        } catch {
-            # A document that does not define this heading style simply has no
-            # headings at this level.
+function Cmd-OutlinePositions($a) {
+    $doc = Resolve-Doc ([string]$a.docId)
+    $positions = New-Object System.Collections.ArrayList
+    foreach ($rawIndex in @($a.wordIndices)) {
+        $wordIndex = [int]$rawIndex
+        if ($wordIndex -le 0) {
+            throw (New-HostError 'invalid_request' 'Outline paragraph indices must be positive.')
         }
+        $para = $doc.Paragraphs.Item($wordIndex)
+        [void]$positions.Add(@{
+                wordIndex = $wordIndex
+                start     = [int]$para.Range.Start
+                page      = (Get-PageOf $para.Range)
+            })
     }
-
-    # Fallback for documents using custom heading styles: scan outline levels
-    # directly, but only when the document is small enough for that to be cheap.
-    if ($found.Count -eq 0) {
-        try {
-            $paraCount = [int]$doc.Paragraphs.Count
-            if ($paraCount -le 2000) {
-                for ($i = 1; $i -le $paraCount; $i++) {
-                    $p = $doc.Paragraphs.Item($i)
-                    $lvl = [int]$p.OutlineLevel
-                    if ($lvl -lt $WD_OUTLINE_BODY_TEXT) {
-                        $text = ([string]$p.Range.Text).Trim([char]13, [char]7, ' ')
-                        if (-not [string]::IsNullOrWhiteSpace($text)) {
-                            [void]$found.Add(@{
-                                    level = $lvl
-                                    text  = $text
-                                    page  = (Get-PageOf $p.Range)
-                                    start = [int]$p.Range.Start
-                                })
-                        }
-                    }
-                    if ($found.Count -ge $limit) { break }
-                }
-            }
-        } catch { }
-    }
-
-    $sorted = @($found | Sort-Object { $_.start })
-    return @{ headings = $sorted; count = $sorted.Count }
+    return @{ positions = $positions.ToArray() }
 }
 
 function Cmd-Search($a) {
@@ -2272,7 +2238,8 @@ try {
                 'edit' { Send-Ok $id (Cmd-Edit $cmdArgs) }
                 'create' { Send-Ok $id (Cmd-Create $cmdArgs) }
                 'export' { Send-Ok $id (Cmd-Export $cmdArgs) }
-                'outline' { Send-Ok $id (Cmd-Outline $cmdArgs) }
+                'outline-markup' { Send-Ok $id (Cmd-OutlineMarkup $cmdArgs) }
+                'outline-positions' { Send-Ok $id (Cmd-OutlinePositions $cmdArgs) }
                 'search' { Send-Ok $id (Cmd-Search $cmdArgs) }
                 'text' { Send-Ok $id (Cmd-Text $cmdArgs) }
                 'info' { Send-Ok $id (Cmd-Info $cmdArgs) }
