@@ -145,7 +145,8 @@ function Start-Ppt([string]$Exe, [string]$Desktop, [string]$File) {
     # StartTime is captured here, at launch, because Stop-VerifiedPpt refuses a
     # kill it cannot match on both name and start. Without it every sweep below
     # would decline and the teardown would quietly become a leak. It matters more
-    # here than anywhere: :178 reports "process exited - handed off" as a VERDICT
+    # here than anywhere: P1's VERDICT below reports "process exited - handed off"
+    # as an outcome
     # of this very experiment, so a pid that has been recycled is the expected
     # case, not the exotic one.
     $start = $null

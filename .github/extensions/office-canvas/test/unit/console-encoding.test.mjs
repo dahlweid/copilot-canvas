@@ -342,9 +342,11 @@ test("the probe that varies the encoding is still present", async (t) => {
 //   * the preamble boundary is `USES_CONSOLE` (`In|Out|Error`) rather than the
 //     original's `In|Out`. An extra alternative can only pull a first match
 //     earlier, so the boundary can only shrink -- fail-closed. Measured in
-//     `word-host.ps1` it does not move at all today: `:88-89` are the encoding
-//     *properties*, which `\b` excludes, the first real use is `[Console]::Out`
-//     at `:142`, and the first `Error` is at `:344`. It would shrink only if a
+//     `word-host.ps1` it does not move at all today: the `[Console]::OutputEncoding`
+//     and `InputEncoding` assignments in its preamble are the encoding
+//     *properties*, which `\b` excludes; the first real use is the `[Console]::Out`
+//     write in `Send-Message`, and the first `Error` is the `[Console]::Error`
+//     write in `Write-HostDiagnostic`. It would shrink only if a
 //     stderr write were ever added above the assignments, which is the case
 //     worth reddening on.
 //   * the pattern is the probe's full path, not its basename, for the reason

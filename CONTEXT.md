@@ -1035,7 +1035,8 @@ naming a line that is entirely correct. Same class as the rest of this section:
 the failure names a cause the code never distinguished.
 
 This has now been hit independently twice, and it was **already** guarded the
-first time — `.github/extensions/office-canvas/test/integration/make-fixture.ps1:124`
+first time — the fixture builder in
+`.github/extensions/office-canvas/test/integration/make-fixture.ps1`
 carries a comment refusing `$table` for
 exactly this reason. A guard that exists as a comment at one call site is
 findable only by someone already reading that site, which is no one who needs
@@ -1287,9 +1288,9 @@ The operational consequence, given a two-round cap: **on an unchanged tree a
 second identical pass re-reads the same diff.** Round 2 must change the angle —
 a different model, aimed at what round 1's framing structurally could not see —
 or it is a formality. On #46, round 1 proved `[Console]::InputEncoding` is set
-at line 60 and precedes first use; it never asked whether that assignment can
+in `word-host.ps1`'s preamble and precedes first use; it never asked whether that assignment can
 *throw*, which on Windows it can when stdin is a redirected pipe, which is
-exactly how this host is spawned. Same line, same diff, question round 1 was
+exactly how this host is spawned. Same assignment, same diff, question round 1 was
 never pointed at.
 
 **Do not ask for a WINWORD census delta. It is below this machine's noise
@@ -1323,7 +1324,7 @@ and attributes by the pid the host itself started, so other sessions' churn
 cannot enter it"* — is wrong in both clauses, and was corrected by the session
 that was asked to run it. `pidsBefore` is captured before the first test and
 asserted after the last, so the window is ~1.5–2.5 minutes, the **same order as
-the census**. And `newWordPids` (`word-pids.mjs:73-74`) is a pure set difference
+the census**. And `newWordPids` in `word-pids.mjs` is a pure set difference
 with no ownership predicate; the `ledger` only splits the failure *message* into
 owned versus unattributed, as its own docstring says: *"Both still fail."* The
 text even names "another session's" as a possible cause of a red.
@@ -1338,12 +1339,15 @@ leaks attribution *cannot* see, such as the second WINWORD that
 it. So the mechanism below is unchanged, and the corrected sentence stays
 corrected.
 
-What actually does the work is `timeoutMs = 90000` at `word-pids.mjs:146`:
+What actually does the work is the `timeoutMs = 90000` default on
+`assertNoLeakedWord` in `word-pids.mjs`:
 it polls and fails only if a pid is **still alive at the deadline**, so a
 foreign Word that exits during the poll cannot fail it, whereas a single-sample
 census counts it. That is the mechanism, and it is worth stating what it is
-*not*: the deadline does not outlast foreign churn in general. The file's own
-comment at `:95-102` says exit latency **is not bounded** by the idle
+*not*: the deadline does not outlast foreign churn in general. The docstring on
+that same function — *"The deadline is 90 s rather than the ~6 s the idle
+measurements suggest, because exit latency is not bounded by them"* — says exit
+latency **is not bounded** by the idle
 measurements, that Word's shutdown contends on per-user state, and that one run
 had a Word survive a **30 s** poll and exit on its own. 90 s is generous — free
 on green runs, so there is no reason to shave it — not proven sufficient. The
@@ -1419,7 +1423,8 @@ success flag derived from "the call did not throw" as unmeasured until something
 reads the state back.
 
 **A claim discharged onto a neighbouring test is an unchecked citation.**
-`create-smoke.mjs:98` told the reader that a green bait proves nothing and that
+The `"text goes in verbatim, with no autocorrect substitution"` check in
+`create-smoke.mjs` told the reader that a green bait proves nothing and that
 *"the evidence for that is the separate settings read-back check"*, naming a
 line — and that line asserted the flag, not the state, so it never carried the
 claim. `check-citations` guards `probe-*.{ps1,mjs}` paths only; **prose pointing
@@ -1704,7 +1709,7 @@ Four instances in one afternoon, across four sessions:
 | --- | --- | --- |
 | "the mojibake is CP437 arithmetic" | run `chcp` | 850 |
 | "suppression is verified" | read the function | five assignments, no read-back |
-| "the leak assertion attributes by owner" | `word-pids.mjs:73-74` | pure set difference |
+| "the leak assertion attributes by owner" | read `newWordPids` in `word-pids.mjs` | pure set difference |
 | "the settings are per-process" | quit the writer, then read | they persist |
 
 **In every one the conclusion was already right, which is exactly why nothing

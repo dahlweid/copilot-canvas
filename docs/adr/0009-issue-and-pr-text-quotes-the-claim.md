@@ -137,9 +137,11 @@ $writable` — real, plausible, unrelated lines of the same file. This is #168,
 and the exact offsets are deliberately not repeated here: they would rot the way
 the ones above them did. Re-derive them by searching for the names.
 
-`check-citation-lines.mjs` exits successfully on this file, and it is worth
-being exact about what that does and does not mean, because the obvious reading
-is not the true one and the true one is worse.
+`check-citation-lines.mjs`, **as it stood when this was written**, exits
+successfully on this file, and it is worth being exact about what that does and
+does not mean, because the obvious reading is not the true one and the true one
+is worse. (This analysis is what retired that version of the tool; the last
+section records what replaced it.)
 
 The gate did not examine these four and judge them acceptable. **It never saw
 them at all.** The tool does name individual citations when it has a finding —
@@ -179,13 +181,21 @@ underneath a safety claim. That is #141's shape, in the tree, on shipped code.
 Both are load-bearing, and a version of this convention that hid either would be
 worse than none.
 
-**Nothing enforces either half today.** No CI check reads issue or PR text — no
+**Only the in-tree half is enforced.** No CI check reads issue or PR text — no
 check in this repo can, because those bodies live on GitHub, not in the tree.
+That half stays convention.
+
 The in-tree half is different in kind, because a ban on a *syntax* is decidable
-where a check on whether a coordinate still *means* what it claimed is not; but
-no gate rejects that syntax yet. `check-citation-lines.mjs` validates
-coordinates, it does not forbid them, so a green run is not evidence of
-compliance with this ADR. Until that is built, both halves are convention.
+where a check on whether a coordinate still *means* what it claimed is not, and
+it is now gated: `check-citation-lines.mjs` was inverted from *validate* to
+*reject*. It no longer asks whether a coordinate resolves — the analysis above is
+why that question was worth nothing — it asks whether one is present, and fails
+the build when one is. The two exceptions above are the gate's two allowances: a
+coordinate followed on the same line by an "as of `<sha>`" pin passes and is
+counted, and a short exempt list covers the files that carry rot-shaped fixtures
+as their subject matter — the checker, its unit test, and this document. A green
+run is therefore evidence of compliance with the in-tree half, and only that
+half.
 
 **Dropping the number does not make a reference correct.** A name survives
 insertion, which a coordinate does not, and `check-citations.mjs` still guards

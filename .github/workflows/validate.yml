@@ -38,36 +38,41 @@ jobs:
       - name: Check every probe citation resolves
         run: node tools/check-citations.mjs
 
-      # The line-number half of #160(a). This is deliberately a separate step
-      # from the one above: that one is *filename-only* and has no notion of a
-      # line, so a citation naming a real file at a dead line passes it. Until
-      # this step existed the tool was built, unit-tested and never run against
-      # this repository, while ADR 0009 and `.github/copilot-instructions.md`
-      # both stated that it gated committed coordinates (#169).
+      # The syntax half of ADR 0009. Deliberately a separate step from the one
+      # above: that one is *filename-only* and asks whether a probe named in a
+      # citation still exists on this branch. This one asks whether any tracked
+      # file carries a positional coordinate at all.
+      #
+      # It used to *validate* coordinates — resolve the file, check the line was
+      # in range. That job was retired because it cannot buy what it appears to:
+      # a coordinate that resolved when written is relocated by the next
+      # insertion above it, in a file its author never touched, and no resolver
+      # can see that. So the guarantee is inverted. Presence of the syntax is
+      # decidable and stays decidable; whether a coordinate still *means* what it
+      # claimed is not.
       #
       # Its unit tests cannot stand in for this step. They run the checker
       # against synthetic in-memory fixtures on purpose — "the fixtures are
       # local to this file so nothing another worktree owns is touched" — which
-      # proves the checker works, not that the tree is clean.
+      # proves the checker works, not that the tree is clean. Until this step
+      # existed the tool was built, unit-tested and never run against this
+      # repository, while ADR 0009 and `.github/copilot-instructions.md` both
+      # stated that it gated committed coordinates (#169).
       #
-      # Read a green run as the tool itself defines it, and no wider: no
-      # citation **that this checker recognises** names a missing file, an
-      # ambiguous file, or an out-of-range line. A coordinate is in range only
-      # if `1 <= lo <= hi <= lineCount`, so `:0` and a reversed `:99-1` are
-      # rejected too, not just a high bound past EOF. Its matcher recognises a
-      # filename ending `.mjs`, `.ps1`, `.js`, `.ts` or `.md` followed by `:NN`
-      # or `:NN-NN`, so a coordinate into any other file type — `validate.yml:99`,
-      # a `.json`, a `.txt` — is not checked at all. That whitelist is
-      # deliberate, not an oversight: matching any extension would start
-      # matching things that are not filenames.
+      # Read a green run as the tool defines it, and no wider: no tracked file
+      # outside the exempt list carries a coordinate **the matcher recognises**,
+      # except where one is pinned to a commit. The matcher recognises a filename
+      # ending `.mjs`, `.ps1`, `.js`, `.ts`, `.md`, `.yml` or `.yaml` followed by
+      # a line number, plus a bare self-reference introduced by a paren, a
+      # backtick, or the words "at"/"line"/"lines". That whitelist is deliberate:
+      # a colon and digits with no introducer is a clock time, a ratio and a JSON
+      # value far more often than it is a citation, and a matcher that flagged
+      # those would be turned off rather than obeyed.
       #
-      # It is also not a claim that every citation is correct. A coordinate
-      # landing on real but unrelated code passes here and cannot be caught
-      # mechanically — which is why ADR 0009 now bans the syntax outright in
-      # committed files rather than relying on this gate. This step therefore
-      # validates coordinates; it does not enforce that ADR, and a green run is
-      # not evidence of compliance with it.
-      - name: Check every positional citation resolves
+      # It is still not a claim that every reference is correct: a renamed
+      # function or a moved file breaks a name too. It is the narrower claim that
+      # no reference is a bare position — the rot this tree actually measured.
+      - name: Check no committed file carries a positional coordinate
         run: node tools/check-citation-lines.mjs
 
       # `node --test <dir>` fails to resolve modules on some Node versions, so the

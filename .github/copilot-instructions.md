@@ -105,9 +105,10 @@ welcome and has repeatedly found genuine defects.
   `Set-ParagraphText (word-host.ps1)`, and note this covers a bare `:NN` into the
   file's own body. Two exceptions: a coordinate pinned to a commit (`… as of
   4abf952`), which cannot rot, and one quoted as the subject under discussion.
-  Neither half is gated: nothing reads tracker text, and
-  `check-citation-lines.mjs` validates coordinates rather than forbidding them,
-  so a green run is not evidence of compliance.
+  Only the in-tree half is gated: nothing reads tracker text, so that half stays
+  convention, while `check-citation-lines.mjs` now **rejects** a coordinate in
+  any tracked file rather than validating it, allowing only an "as of `<sha>`"
+  pin and a short exempt list of files carrying rot-shaped fixtures.
 
 ## If you are coordinating work rather than doing it
 

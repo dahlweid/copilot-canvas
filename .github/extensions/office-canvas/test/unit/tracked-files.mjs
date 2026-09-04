@@ -83,8 +83,9 @@ export async function trackedFiles(pathspec) {
  *   segment (`id: "test"`), so the artefact carries no tests. This suite cannot
  *   run there at all, with or without git.
  * - **Repo-folder.** `install_extension` "copies a folder, not a repository"
- *   (`tools/package-extension.mjs:103`) and its own skip list is `dist` /
- *   `build` / `out` (`:97-98`) -- **`test` is not in it**. The packager excludes
+ *   (the `vcs` exclusion rule in `tools/package-extension.mjs`) and its own skip
+ *   list is `dist` /
+ *   `build` / `out` (the `output` rule there) -- **`test` is not in it**. The packager excludes
  *   `test` precisely because this path will not. So the installed directory
  *   contains `test/unit/*.test.mjs` and has no `.git`, which is this mode
  *   exactly.

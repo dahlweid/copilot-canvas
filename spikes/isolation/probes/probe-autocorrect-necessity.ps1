@@ -54,8 +54,8 @@
 #
 # The host's insertion path is mirrored exactly, not approximated: every
 # character `create_document` and `edit_document` write reaches the document
-# through Set-ParagraphText -> (Get-TextRange $para).Text = $text
-# (word-host.ps1:1717-1734). There is no Selection.TypeText anywhere in the
+# through `Set-ParagraphText` (word-host.ps1), whose only write is
+# `(Get-TextRange $para).Text = $text`. There is no Selection.TypeText anywhere in the
 # host. Arm C therefore assigns Range.Text, because that is the only way text
 # actually gets in.
 #

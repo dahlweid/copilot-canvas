@@ -1,25 +1,30 @@
-// Unit tests for the positional-citation checker (`tools/check-citation-lines.mjs`).
+// Unit tests for the positional-coordinate gate (`tools/check-citation-lines.mjs`).
 //
-// The checker's whole value is a coverage claim: it catches the citation rots
-// that are decidable from the filesystem alone (missing/case-mismatched file,
-// ambiguous basename, out-of-range line) and provably does NOT catch a
-// coordinate that still lands on real but unrelated code. A test that could not
-// distinguish those two is worthless here, so every assertion below is built to
-// fail if the checker's behaviour drifts:
+// The tool was inverted: it used to *validate* coordinates (resolve the file,
+// check the line was in range) and now *rejects* them outright, per ADR 0009.
+// That changes what a test here has to prove. Validation was checkable and
+// worthless — a coordinate correct when written is relocated by the next
+// insertion above it, which no resolver can see. Rejection is a claim about
+// syntax, so the risk moves to the two edges of the matcher:
 //
-//   * the CATCHES tests feed a rot and assert it is reported. Delete the
-//     corresponding branch in the checker and these go red.
-//   * the NEGATIVE CONTROL feeds the exact shape of the six #160 rots the
-//     checker cannot see — a citation onto real, unrelated code — and asserts it
-//     passes. If someone "strengthens" the checker into pretending it catches
-//     this class (e.g. by flagging any comment-only or brace-only target), this
-//     test goes red and stops the overstatement. It is the assertion that keeps
-//     the coverage claim honest.
+//   * too narrow, and the gate is silent on the form actually used. #168 was
+//     exactly this: four bare `(:1531)` self-references the old matcher could
+//     not see, sitting under a safety claim. The CATCHES tests pin each form.
+//   * too wide, and it flags a clock time or a JSON value, gets turned off, and
+//     protects nothing. The FALSE-POSITIVE CONTROL pins that boundary.
 //
-// The checker is driven through its pure core `analyzeCitations(tracked,
-// readFile)`, with an in-memory file map. No git, no disk, no shared helper —
-// the fixtures are local to this file so nothing another worktree owns is
-// touched. Office-free; runs on ubuntu-latest.
+// The inversion itself has one load-bearing regression guard: a coordinate onto
+// a real, in-range line — the input the old tool deliberately passed — must now
+// be rejected. If someone restores resolution semantics, that test goes red.
+//
+// Every allowance is tested with a control at a non-allowed path, so an
+// exemption that leaked and became global would fail rather than pass silently.
+//
+// The gate is driven through its pure core `findCoordinates(tracked, readFile)`,
+// with an in-memory file map. No git, no disk, no shared helper — the fixtures
+// are local to this file so nothing another worktree owns is touched. This file
+// is on the gate's exempt list precisely because its fixtures are rot-shaped.
+// Office-free; runs on ubuntu-latest.
 //
 // Run: node --test ".github/extensions/office-canvas/test/unit/*.test.mjs"
 
@@ -30,12 +35,12 @@ import { fileURLToPath } from "node:url";
 
 const UNIT = path.dirname(fileURLToPath(import.meta.url));
 const CHECKER = path.resolve(UNIT, "..", "..", "..", "..", "..", "tools", "check-citation-lines.mjs");
-const { analyzeCitations } = await import(`file://${CHECKER.split(path.sep).join("/")}`);
+const { findCoordinates } = await import(`file://${CHECKER.split(path.sep).join("/")}`);
 
 /**
  * Build a reader over an in-memory { path: text } map. A path not in the map
  * throws an ENOENT-shaped error, exactly as `fs.readFileSync` does, so the
- * checker's unreadable-vs-missing split is exercised for real.
+ * gate's unreadable branch is exercised for real.
  */
 function readerOver(files) {
   return (p) => {
@@ -50,267 +55,247 @@ function readerOver(files) {
 }
 
 function analyze(files) {
-  return analyzeCitations(Object.keys(files), readerOver(files));
+  return findCoordinates(Object.keys(files), readerOver(files));
 }
 
-test("CATCHES: a citation whose file exists only under a different case is missing", () => {
-  // The `Word-host.mjs:95` shape from #160 site 7. The tree has word-host.mjs;
-  // the citation writes Word-host.mjs. Case-sensitive resolution must miss it.
-  const files = {
-    "src/word/word-host.mjs": "line1\nline2\nline3\n",
-    "test/notes.md": "see `Word-host.mjs:2`, verbatim.\n",
-  };
-  const { missing, ambiguous, outOfRange } = analyze(files);
-  assert.equal(ambiguous.length, 0);
-  assert.equal(outOfRange.length, 0);
-  assert.equal(missing.length, 1, "a case-only mismatch was not reported missing");
-  assert.equal(missing[0].written, "Word-host.mjs:2");
+/** The written forms rejected, sorted, for comparing against an expected set. */
+function written(result) {
+  return result.coordinates.map((c) => c.written).sort();
+}
 
-  // Control that this is really about case, not about the file being absent: the
-  // correctly-cased citation to the same line must NOT be reported.
-  const ok = analyze({
-    "src/word/word-host.mjs": "line1\nline2\nline3\n",
-    "test/notes.md": "see `word-host.mjs:2`.\n",
-  });
-  assert.equal(ok.missing.length, 0, "the correctly-cased citation was wrongly reported missing");
-});
-
-test("CATCHES: a bare basename matching two tracked files is ambiguous", () => {
-  // The `make-fixture.ps1:92` shape from #160 site 8. Two files share the
-  // basename and neither is nearer the citing doc, so no proximity winner.
-  const files = {
-    "a/make-fixture.ps1": "x\ny\n",
-    "b/make-fixture.ps1": "x\ny\n",
-    "CONTEXT.md": "the guard at `make-fixture.ps1:1`.\n",
-  };
-  const { ambiguous, missing } = analyze(files);
-  assert.equal(missing.length, 0);
-  assert.equal(ambiguous.length, 1, "an ambiguous basename was not reported");
-  assert.equal(ambiguous[0].found.length, 2);
-
-  // Control: writing enough of the path to pick one file resolves it.
-  const ok = analyze({
-    "a/make-fixture.ps1": "x\ny\n",
-    "b/make-fixture.ps1": "x\ny\n",
-    "CONTEXT.md": "the guard at `a/make-fixture.ps1:1`.\n",
-  });
-  assert.equal(ok.ambiguous.length, 0, "a path-qualified citation was still reported ambiguous");
-});
-
-test("CATCHES: a proximity tie-break resolves a colliding basename cited from a nearby probe", () => {
-  // The disambiguation the checker inherits from its sibling: a bare basename
-  // cited from within one of the colliding directories resolves to the nearer
-  // file, and does NOT count as ambiguous. (Fixtures avoid the `probe-` prefix
-  // so the sibling probe checker does not also scan this file's strings.)
-  const files = {
-    "spikes/pp/fx-x.ps1": "a\nb\n",
-    "spikes/iso/fx-x.ps1": "a\nb\n",
-    "spikes/pp/other.ps1": "cite `fx-x.ps1:1`\n",
-  };
-  const { ambiguous } = analyze(files);
-  assert.equal(ambiguous.length, 0, "the nearer colliding probe should win outright");
-});
-
-test("CATCHES: a line past the end of the cited file is out of range", () => {
-  const files = {
-    "src/a.mjs": "one\ntwo\nthree\n", // 3 lines; trailing newline is not a 4th
-    "doc.md": "at `src/a.mjs:99`.\n",
-  };
-  const { outOfRange, missing, ambiguous } = analyze(files);
-  assert.equal(missing.length, 0);
-  assert.equal(ambiguous.length, 0);
-  assert.equal(outOfRange.length, 1, "an out-of-range line was not reported");
-  assert.equal(outOfRange[0].written, "src/a.mjs:99");
-
-  // The HIGH end of a range is what is checked: a range straddling the end must
-  // still fail. If the checker ever tested lo instead of hi this goes red.
-  const straddle = analyze({
-    "src/a.mjs": "one\ntwo\nthree\n",
-    "doc.md": "at `src/a.mjs:3-99`.\n",
-  });
-  assert.equal(straddle.outOfRange.length, 1, "a range straddling EOF was not reported");
-});
-
-test("CATCHES: a low bound that names no line — `:0`, and a reversed range whose lo is past EOF", () => {
-  // Round 2 found this: the checker destructured `{ file, hi }` and tested only
-  // `hi > lineCount`, so `lo` was computed by parseCitation and thrown away.
-  // Two recognised-but-invalid coordinates slipped through as a result, and both
-  // are silent — they name no line, yet the gate reported the file clean.
+test("REGRESSION GUARD: a coordinate onto a real, in-range line is rejected — the input the old tool passed", () => {
+  // This is the whole inversion in one assertion. `word-pids.mjs:3` names a file
+  // that exists, at a line that exists, holding the very function the prose
+  // claims — the old validate-semantics tool passed it, correctly by its own
+  // rules. Under reject semantics it must fail, because resolving today says
+  // nothing about resolving after the next insertion above line 3.
   //
-  // These fail OPEN, which is the dangerous direction: the tool's whole claim is
-  // that a coordinate it recognises resolves. Against the pre-fix condition both
-  // assertions below go red (outOfRange would be 0 in each).
-  const src = "one\ntwo\nthree\n"; // 3 lines
-
-  // `:0` — below the first line. hi is 0 too, so `hi > 3` is false and it passed.
-  const zero = analyze({ "src/a.mjs": src, "doc.md": "see `src/a.mjs:0`.\n" });
-  assert.equal(zero.outOfRange.length, 1, "a citation to line 0 was not flagged");
-  assert.equal(zero.outOfRange[0].written, "src/a.mjs:0");
-
-  // `:99-1` — reversed. hi is 1, which is a real line, so `hi > 3` is false and
-  // it passed while its low bound sat 96 lines past the end of the file.
-  const reversed = analyze({ "src/a.mjs": src, "doc.md": "see `src/a.mjs:99-1`.\n" });
-  assert.equal(reversed.outOfRange.length, 1, "a reversed range was not flagged");
-  assert.equal(reversed.outOfRange[0].written, "src/a.mjs:99-1");
-
-  // The complement, so the new lo checks cannot pass by rejecting everything:
-  // ordinary in-range coordinates, including a degenerate lo === hi range and a
-  // range covering the whole file, must still be accepted.
-  for (const ok of ["src/a.mjs:1", "src/a.mjs:1-3", "src/a.mjs:2-2", "src/a.mjs:3"]) {
-    const r = analyze({ "src/a.mjs": src, "doc.md": `see \`${ok}\`.\n` });
-    assert.equal(
-      r.outOfRange.length + r.missing.length + r.ambiguous.length,
-      0,
-      `${ok} is a valid coordinate and must not be flagged`,
-    );
-  }
-});
-
-test("EOF boundary: a citation at lineCount+1 on a newline-terminated file is out of range, one at lineCount is not", () => {
-  // The off-by-one round 1 found: `"one\ntwo\n".split(/\r?\n/)` is
-  // ["one","two",""] with length 3, so a naive count believes a 2-line file has
-  // 3 lines and a citation to :3 (EOF+1) passes. Newline-terminated is the NORMAL
-  // case in this tree, so the bug fails the gate OPEN on ordinary files. This is
-  // the regression guard. Against the pre-fix `.split(/\r?\n/).length` counting,
-  // the first assertion goes red (outOfRange would be 0).
-  const file = "one\ntwo\n"; // two lines, newline-terminated
-
-  const past = analyze({
-    "src/a.mjs": file,
-    "doc.md": "at `src/a.mjs:3`.\n", // EOF+1: line 3 does not exist
-  });
-  assert.equal(past.outOfRange.length, 1, "a citation one line past a newline-terminated file was not flagged");
-  assert.equal(past.outOfRange[0].written, "src/a.mjs:3");
-
-  const last = analyze({
-    "src/a.mjs": file,
-    "doc.md": "at `src/a.mjs:2`.\n", // the real last line
-  });
-  assert.equal(last.outOfRange.length, 0, "the real last line of the file was wrongly flagged out of range");
-  assert.equal(last.missing.length + last.ambiguous.length, 0);
-});
-
-test("EOF boundary: an empty file has zero lines, so any positional citation into it is out of range", () => {
-  // Deliberate, pinned semantic: `"".split(/\r?\n/)` is [""], and countLines maps
-  // that to 0 — an empty file has no line 1. A citation to :1 of an empty file is
-  // therefore a broken coordinate and must be reported, not silently accepted.
-  const { outOfRange } = analyze({
-    "src/empty.mjs": "",
-    "doc.md": "see `src/empty.mjs:1`.\n",
-  });
-  assert.equal(outOfRange.length, 1, "a citation into an empty file was not flagged out of range");
-  assert.equal(outOfRange[0].written, "src/empty.mjs:1");
-  assert.equal(outOfRange[0].lineCount, 0, "an empty file should count as 0 lines");
-});
-
-test("NEGATIVE CONTROL: a citation onto real but unrelated code passes — the class the checker cannot see", () => {
-  // This is the exact shape of the six #160 rots the checker is blind to, and
-  // the assertion that keeps its coverage claim honest. `word-pids.mjs:1` here
-  // is a live, in-range coordinate on a real file — it just lands on the wrong
-  // line for what the prose claims ("pure set difference"). The checker has no
-  // way to know the intended referent, so it MUST pass. If it ever reports this,
-  // it is pretending to a coverage it does not have.
-  const files = {
-    "test/word-pids.mjs": "import x from 'y';\n// unrelated line\nexport const z = 1;\n",
-    "CONTEXT.md": "`newWordPids` (`word-pids.mjs:1`) is a pure set difference\n",
-  };
-  const { missing, ambiguous, outOfRange } = analyze(files);
-  assert.equal(missing.length, 0, "a live in-range coordinate must not be reported missing");
-  assert.equal(ambiguous.length, 0);
-  assert.equal(outOfRange.length, 0, "a live in-range coordinate must not be reported out of range");
-
-  // Stated as an equality so the point is explicit: nothing is flagged, even
-  // though a human knows the citation is wrong. That is the coverage boundary.
-  assert.deepEqual(
-    { missing: missing.length, ambiguous: ambiguous.length, outOfRange: outOfRange.length },
-    { missing: 0, ambiguous: 0, outOfRange: 0 },
-  );
-});
-
-test("a citation onto a real, correct line passes", () => {
+  // If anyone reinstates resolution ("only flag coordinates that are broken"),
+  // this goes red. It is the test that keeps the inversion from being undone.
   const files = {
     "test/word-pids.mjs": "a\nb\nexport async function newWordPids() {}\n",
     "CONTEXT.md": "`newWordPids` (`word-pids.mjs:3`) is a pure set difference\n",
   };
-  const { missing, ambiguous, outOfRange } = analyze(files);
-  assert.equal(missing.length + ambiguous.length + outOfRange.length, 0);
-});
+  const result = analyze(files);
+  assert.equal(result.coordinates.length, 1, "a resolvable coordinate was not rejected");
+  assert.equal(result.coordinates[0].written, "word-pids.mjs:3");
+  assert.equal(result.coordinates[0].kind, "qualified");
+  assert.equal(result.coordinates[0].path, "CONTEXT.md");
+  assert.equal(result.coordinates[0].line, 1, "the reporting line number is the citing line");
 
-test("both citations on a shared line are seen — the >1-per-line blind spot", () => {
-  // The parser blind spot found reconciling the #160 audit: two positional
-  // citations on one line. A one-per-line scan sees the first and drops the
-  // second. The property currently holds only because `line.match(/…/g)`
-  // enumerates all matches; a later refactor to `exec`, a capture-group change,
-  // or a `for…of` with an early `break` could silently restore the one-per-line
-  // scan, and the checker would still exit 0 while going blind to a whole class.
-  //
-  // So this asserts BOTH citations are emitted, not merely that the second one
-  // is caught when it happens to be missing. Both are made to fail in DIFFERENT
-  // buckets — first missing, second out-of-range — so a scan that dropped either
-  // would change a count this test pins exactly.
-  const files = {
-    "spikes/real.mjs": "a\nb\n", // 2 real lines; :99 is out of range
-    "spikes/fx-b.ps1": "line\ncite `gone.mjs:5` and `real.mjs:99` together\n",
-  };
-  const { missing, outOfRange } = analyze(files);
-  assert.equal(missing.length, 1, "the first citation on the line was not emitted");
-  assert.equal(missing[0].written, "gone.mjs:5");
-  assert.equal(outOfRange.length, 1, "the second citation on the line was dropped (one-per-line regression)");
-  assert.equal(outOfRange[0].written, "real.mjs:99");
-
-  // The count itself, pinned: exactly two citations were scanned off this line.
-  // A scanner that finds nothing because it scanned nothing also exits 0 and
-  // still reports a count — this equality is what refuses that.
-  assert.equal(
-    missing.length + outOfRange.length,
-    2,
-    "exactly two citations share this line; a count other than 2 means the line was under- or over-scanned",
-  );
-});
-
-test("every authored positional citation on a line is scanned — count guard against a silent-empty scan", () => {
-  // A second, direct guard on the same property, phrased as a total. Three
-  // citations across two lines, every one pointing at a missing file, so the
-  // emitted count equals the authored count. If a refactor makes the scanner
-  // find fewer (or nothing), this equality fails rather than passing green on an
-  // empty scan.
-  const files = {
-    "doc.md": "first `a.mjs:1` and `b.mjs:2` on one line\nthen `c.mjs:3` alone\n",
-  };
-  const { missing } = analyze(files);
-  assert.equal(missing.length, 3, "expected all three authored citations to be scanned and reported missing");
-  assert.deepEqual(
-    missing.map((m) => m.written).sort(),
-    ["a.mjs:1", "b.mjs:2", "c.mjs:3"],
-    "a citation was dropped from the scan",
-  );
-});
-
-test("citations inside a fenced code block are skipped — captured output, not authored claims", () => {
-  // The FINDINGS.md shape: a `file:line` inside ```...``` is transcript. It must
-  // not be resolved, even when the named file does not exist.
-  const files = {
-    "spikes/FINDINGS.md": "prose\n```\n\"icon\" appears in [generated/rpc.d.ts:18]\n```\nmore prose\n",
-  };
-  const { missing, ambiguous, outOfRange } = analyze(files);
-  assert.equal(
-    missing.length + ambiguous.length + outOfRange.length,
-    0,
-    "a citation inside a fenced code block was checked; it should be skipped",
-  );
-
-  // Control: the SAME missing citation OUTSIDE a fence must be caught, or the
-  // test above would pass simply because the checker never catches anything.
-  const outside = analyze({
-    "spikes/FINDINGS.md": "prose naming generated/rpc.d.ts:18 directly\n",
+  // Control: the same sentence written the way ADR 0009 asks for passes. Without
+  // this, the assertion above could be satisfied by a gate that rejects the file
+  // for some unrelated reason, or by one that rejects everything.
+  const named = analyze({
+    "test/word-pids.mjs": "a\nb\nexport async function newWordPids() {}\n",
+    "CONTEXT.md": "`newWordPids` (`word-pids.mjs`) is a pure set difference\n",
   });
-  assert.equal(outside.missing.length, 1, "the fence-skip test is vacuous: the citation is not caught even outside a fence");
+  assert.equal(named.coordinates.length, 0, "a name-only reference must pass");
+});
+
+test("CATCHES: a bare self-reference — the #168 form the old matcher could not see", () => {
+  // The four coordinates in ADR 0009's own evidence are bare: `(:1531)`, with no
+  // filename in front. The old matcher required a filename before the colon and
+  // returned no matches at all, so the file was reported clean. A bare
+  // self-reference is simultaneously the most fragile form (it rots on any
+  // insertion above it in its own file) and the least checkable, which is
+  // exactly why it has to be pinned here.
+  const paren = analyze({
+    "src/word/host.ps1": "# every write goes through Set-ParagraphText (:1531)\n",
+  });
+  assert.equal(paren.coordinates.length, 1, "a parenthesised bare self-reference was not rejected");
+  assert.equal(paren.coordinates[0].written, ":1531");
+  assert.equal(paren.coordinates[0].kind, "bare");
+
+  const backtick = analyze({ "notes.md": "the guard at `:486` handles this\n" });
+  assert.equal(backtick.coordinates.length, 1, "a backticked bare self-reference was not rejected");
+  assert.equal(backtick.coordinates[0].written, ":486");
+
+  const range = analyze({ "spikes/x.ps1": "# the job above (:98-100) proves it\n" });
+  assert.equal(range.coordinates.length, 1, "a bare range was not rejected");
+  assert.equal(range.coordinates[0].written, ":98-100");
+
+  for (const prose of ["see at :126 for the census", "the line :129 above", "lines :12-14 below"]) {
+    const r = analyze({ "doc.md": `${prose}\n` });
+    assert.equal(r.coordinates.length, 1, `a prose-introduced bare coordinate was missed: ${prose}`);
+  }
+});
+
+test("FALSE-POSITIVE CONTROL: a colon and digits that is not a citation is left alone", () => {
+  // The other edge. A matcher that flagged every `:\d+` would hit a clock time,
+  // a JSON value, a port, a ratio — and would be turned off rather than obeyed,
+  // protecting nothing. The introducer requirement is what buys the difference,
+  // so these must pass while the bare forms above are caught.
+  const files = {
+    "doc.md":
+      "the run started at 09:41 and took 1:30\n" +
+      'a payload like {"id":1, "level":2} is fine\n' +
+      "listening on localhost:8080\n" +
+      "a ratio of 3:1 either way\n",
+  };
+  const result = analyze(files);
+  assert.deepEqual(
+    written(result),
+    [],
+    "a non-citation colon-digit shape was rejected; the gate would be turned off rather than obeyed",
+  );
+
+  // Control that the file is genuinely being read, not skipped for some other
+  // reason: adding one real coordinate to it must produce exactly one finding.
+  const withOne = analyze({ "doc.md": `${files["doc.md"]}and the guard at \`:486\`\n` });
+  assert.equal(withOne.coordinates.length, 1, "the false-positive test is vacuous: this file is not being scanned");
+});
+
+test("ALLOWANCE: a coordinate pinned to a commit passes, is counted, and the unpinned twin fails", () => {
+  // ADR 0009's first exception. A SHA fixes the tree the number indexes, so a
+  // pinned coordinate cannot rot. It is reported in `pinned` rather than silently
+  // dropped, so a green run can state how much the allowance let through.
+  const pinned = analyze({
+    "CONTEXT.md": "it appears once, at `structure-map.mjs:266` as of `4abf952`.\n",
+  });
+  assert.equal(pinned.coordinates.length, 0, "a commit-pinned coordinate was rejected");
+  assert.equal(pinned.pinned.length, 1, "a commit-pinned coordinate was not counted as an allowance");
+  assert.equal(pinned.pinned[0].written, "structure-map.mjs:266");
+
+  // Control: the identical coordinate without the pin fails. If this passed, the
+  // allowance would be matching something other than the pin.
+  const bare = analyze({ "CONTEXT.md": "it appears once, at `structure-map.mjs:266`.\n" });
+  assert.equal(bare.coordinates.length, 1, "the pin allowance leaked: an unpinned coordinate passed");
+
+  // The pin must follow the coordinate it governs, immediately. A line carrying
+  // a pinned and two unpinned coordinates must report both unpinned ones — if
+  // the check were "does this line mention a SHA anywhere after this", the
+  // coordinate written *before* the pin would be covered by it too, and this
+  // deepEqual would be missing an entry.
+  const mixed = analyze({
+    "CONTEXT.md": "`b.mjs:2` and `a.mjs:1` as of `4abf952`, then `c.mjs:3` after.\n",
+  });
+  assert.deepEqual(
+    written(mixed),
+    ["b.mjs:2", "c.mjs:3"],
+    "the pin must govern only the coordinate it immediately follows",
+  );
+  assert.deepEqual(mixed.pinned.map((c) => c.written), ["a.mjs:1"]);
+});
+
+test("ALLOWANCE: the three fixture-carrying files are exempt, and the exemption is narrow", () => {
+  // ADR 0009's second exception: a coordinate that is the subject under
+  // discussion rather than a reference being followed. Three files qualify — the
+  // gate itself, this test, and the ADR — and no others.
+  for (const p of [
+    "tools/check-citation-lines.mjs",
+    ".github/extensions/office-canvas/test/unit/check-citation-lines.test.mjs",
+    "docs/adr/0009-issue-and-pr-text-quotes-the-claim.md",
+  ]) {
+    const r = analyze({ [p]: "example `Word-host.mjs:95` and a bare `:1531`\n" });
+    assert.equal(r.coordinates.length, 0, `the gate flagged a coordinate in its own exempt file ${p}`);
+  }
+
+  // Control: the identical text in any OTHER file is still rejected, both forms.
+  // Without this the three asserts above would be satisfied by a global pass.
+  const elsewhere = analyze({ "docs/notes.md": "example `Word-host.mjs:95` and a bare `:1531`\n" });
+  assert.equal(elsewhere.coordinates.length, 2, "the exemption leaked: a fourth file was not checked");
+
+  // And narrow in the other direction: a *near-miss* path is not exempt. An
+  // exemption matched by basename or by prefix would silently cover the whole
+  // ADR directory or every test whose name starts the same way.
+  const nearMiss = analyze({
+    "docs/adr/0010-something-else.md": "see `a.mjs:1`\n",
+    "tools/check-citations.mjs": "see `b.mjs:2`\n",
+  });
+  assert.deepEqual(
+    written(nearMiss),
+    ["a.mjs:1", "b.mjs:2"],
+    "the exemption is matching by prefix or basename, not by exact path",
+  );
+});
+
+test("a coordinate inside a fenced code block is skipped — captured output, not an authored reference", () => {
+  // The FINDINGS.md shape: a `file:line` inside ```...``` is a transcript of a
+  // grep result. Rewriting it would falsify the recording.
+  const fenced = analyze({
+    "spikes/FINDINGS.md": "prose\n```\n\"icon\" appears in [generated/rpc.d.ts:18]\n```\nmore prose\n",
+  });
+  assert.equal(fenced.coordinates.length, 0, "a coordinate inside a fenced block was rejected");
+
+  // Control: the same coordinate outside a fence must be caught, or the test
+  // above passes simply because nothing is ever caught in this file.
+  const outside = analyze({ "spikes/FINDINGS.md": "prose naming generated/rpc.d.ts:18 directly\n" });
+  assert.equal(outside.coordinates.length, 1, "the fence-skip test is vacuous: the coordinate is not caught outside one either");
+
+  // A fence that opens and closes must not swallow the rest of the file. If the
+  // toggle were a one-way latch, everything after the first fence would go
+  // unscanned — a silent hole exactly where long documents keep their examples.
+  const reopened = analyze({
+    "spikes/FINDINGS.md": "```\na.mjs:1\n```\nprose citing b.mjs:2 outside\n```\nc.mjs:3\n```\n",
+  });
+  assert.deepEqual(written(reopened), ["b.mjs:2"], "fence tracking is not toggling; part of the file went unscanned");
+});
+
+test("vendored third-party code is skipped, and only under the vendor path", () => {
+  // Minified vendor bundles carry coordinate-shaped strings by the dozen and are
+  // not authored here, so nothing in them is a reference into this tree.
+  const vendored = analyze({
+    ".github/extensions/office-canvas/src/ui/vendor/pdf.min.mjs": "n(e,t):9,r=a.mjs:12\n",
+  });
+  assert.equal(vendored.coordinates.length, 0, "a vendored file was scanned");
+
+  // Control: a file with "vendor" in its name that is not under the vendor path
+  // is still scanned, so the skip cannot be widened by an accidental substring.
+  const notVendor = analyze({
+    ".github/extensions/office-canvas/src/ui/vendor-notes.md": "see `a.mjs:12`\n",
+  });
+  assert.equal(notVendor.coordinates.length, 1, "the vendor skip is matching a substring, not the path");
+});
+
+test("every coordinate on a line is reported — count guard against a silent-empty scan", () => {
+  // A scanner that finds nothing also exits 0. These equalities are what refuse
+  // that: the emitted count equals the authored count, across one line and
+  // several, and a refactor that dropped the second match on a line (an `exec`
+  // loop with an early break, say) changes a number pinned here.
+  const oneLine = analyze({ "spikes/fx-b.ps1": "cite `gone.mjs:5` and `real.mjs:99` together\n" });
+  assert.deepEqual(written(oneLine), ["gone.mjs:5", "real.mjs:99"], "a coordinate sharing a line was dropped");
+
+  const several = analyze({ "doc.md": "first `a.mjs:1` and `b.mjs:2` on one line\nthen `c.mjs:3` alone\n" });
+  assert.deepEqual(written(several), ["a.mjs:1", "b.mjs:2", "c.mjs:3"], "a coordinate was dropped from the scan");
+  assert.deepEqual(
+    several.coordinates.map((c) => c.line),
+    [1, 1, 2],
+    "the reported line numbers do not match where the coordinates were authored",
+  );
+});
+
+test("a qualified coordinate is counted once, not also as a bare self-reference", () => {
+  // `a.mjs:12` contains `:12`, and the bare matcher would find it if the
+  // qualified matches were not blanked out first — turning every cross-file
+  // citation into two findings and making the count meaningless. The backtick in
+  // front of the filename is a bare-form introducer, so this is not hypothetical.
+  const r = analyze({ "doc.md": "see `a.mjs:12` here\n" });
+  assert.equal(r.coordinates.length, 1, "a qualified coordinate was double-counted as bare");
+  assert.equal(r.coordinates[0].kind, "qualified");
+  assert.equal(r.coordinates[0].written, "a.mjs:12");
+});
+
+test("the extension whitelist covers the file types this tree references", () => {
+  // Deliberate list, not an oversight: matching any extension starts matching
+  // things that are not filenames. `.yml` is included because a workflow file is
+  // referenced like any other source here.
+  const covered = analyze({
+    "doc.md": "`a.mjs:1` `b.ps1:2` `c.js:3` `d.ts:4` `e.md:5` `validate.yml:6` `f.yaml:7`\n",
+  });
+  assert.equal(covered.coordinates.length, 7, "an extension in the documented whitelist is not matched");
+
+  // Outside the list: not matched as qualified. `report.txt:9` is a filename with
+  // a number after it, and the gate says so plainly rather than pretending to a
+  // coverage it does not have.
+  const uncovered = analyze({ "doc.md": "see report.txt:9 and data.json:4\n" });
+  assert.equal(uncovered.coordinates.length, 0, "the whitelist has quietly widened");
 });
 
 test("an unreadable file is reported, never silently skipped", () => {
-  // A tracked path the reader cannot open must surface as unreadable, so a guard
-  // that quietly declined to look at part of the repo is distinguishable from a
-  // clean run. Modelled by a reader that throws for one path.
+  // A guard that quietly declines to look at part of the repo is
+  // indistinguishable from a clean run — the failure this class of tool exists
+  // to stop. Modelled by a reader that throws for one path.
   const reader = (p) => {
     if (p === "broken.md") {
       const err = new Error("EISDIR");
@@ -319,35 +304,9 @@ test("an unreadable file is reported, never silently skipped", () => {
     }
     return "ok\n";
   };
-  const { unreadable } = analyzeCitations(["broken.md", "fine.md"], reader);
+  const { unreadable, coordinates } = findCoordinates(["broken.md", "fine.md"], reader);
   assert.equal(unreadable.length, 1);
   assert.equal(unreadable[0].path, "broken.md");
   assert.equal(unreadable[0].why, "EISDIR");
-});
-
-test("the checker exempts its own two files (source and this test)", () => {
-  // The checker names example coordinates (Word-host.mjs:95) in its own header,
-  // and this test file carries rot-shaped citations as fixtures throughout; the
-  // checker must flag neither, or the gate would fail on its own machinery.
-  // Modelled by putting a would-be-missing citation at each exempt path and
-  // asserting silence — and, as a control, the SAME citation at a third path is
-  // caught, so the exemption is proven narrow rather than global.
-  const exemptSource = analyze({
-    "tools/check-citation-lines.mjs": "// example `Word-host.mjs:95` in a comment\n",
-  });
-  assert.equal(exemptSource.missing.length, 0, "the checker flagged a citation in its own source");
-
-  const exemptTest = analyze({
-    ".github/extensions/office-canvas/test/unit/check-citation-lines.test.mjs":
-      'assert.equal(missing[0].written, "Word-host.mjs:95");\n',
-  });
-  assert.equal(exemptTest.missing.length, 0, "the checker flagged a citation in its own test file");
-
-  // Control: the identical citation in any OTHER file is still caught. If this
-  // did not fail, the exemption would be silently global and the two asserts
-  // above would be vacuous.
-  const elsewhere = analyze({
-    "docs/notes.md": "see `Word-host.mjs:95`\n",
-  });
-  assert.equal(elsewhere.missing.length, 1, "the exemption leaked: a third file was not checked");
+  assert.equal(coordinates.length, 0);
 });

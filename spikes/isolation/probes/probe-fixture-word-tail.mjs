@@ -1,10 +1,10 @@
-// Does the *fixture generator's own* Word still exist when the check at
-// read-smoke.mjs:157 runs?
+// Does the *fixture generator's own* Word still exist when the "a missing file
+// is reported without starting Word" check in read-smoke.mjs runs?
 //
 // Issue #37 attributes that check's 17-in-18 pass rate to another session
 // driving Word. That is an inference, and there is a nearer candidate nobody
-// measured: read-smoke takes its `pidsBefore` census at :126, and only *then*
-// calls `make-fixture.ps1` at :129, which does `New-Object -ComObject
+// measured: read-smoke takes its `pidsBefore` census first, and only *then*
+// calls `make-fixture.ps1` through its `makeFixture` helper, which does `New-Object -ComObject
 // Word.Application` and `$w.Quit()`. So the fixture's own WINWORD is created
 // **inside the differencing window**, and `Quit()` returns 3-28 ms before the
 // process actually goes (probe-quit-exit-gap.ps1; measured tail 2.7-6.1 s on an
@@ -14,7 +14,7 @@
 //
 // This reproduces exactly that prefix and nothing else: census, generate the
 // fixture, then census again as fast as read-smoke would. It reports what
-// read-smoke:157 would have concluded, then polls until the pid is gone so the
+// read-smoke's missing-file check would have concluded, then polls until the pid is gone so the
 // tail past `execFile` resolving is a number rather than a guess.
 //
 // It kills nothing. Every pid it names is one make-fixture.ps1 created and
