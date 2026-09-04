@@ -38,6 +38,25 @@ jobs:
       - name: Check every probe citation resolves
         run: node tools/check-citations.mjs
 
+      # The line-number half of #160(a). This is deliberately a separate step
+      # from the one above: that one is *filename-only* and has no notion of a
+      # line, so a citation naming a real file at a dead line passes it. Until
+      # this step existed the tool was built, unit-tested and never run against
+      # this repository, while ADR 0009 and `.github/copilot-instructions.md`
+      # both stated that it gated committed coordinates (#169).
+      #
+      # Its unit tests cannot stand in for this step. They run the checker
+      # against synthetic in-memory fixtures on purpose — "the fixtures are
+      # local to this file so nothing another worktree owns is touched" — which
+      # proves the checker works, not that the tree is clean.
+      #
+      # Read a green run as the tool itself defines it: no citation names a
+      # missing file, an ambiguous file, or an out-of-range line. It is not a
+      # claim that every citation is correct, because a coordinate landing on
+      # real but unrelated code passes here and cannot be caught mechanically.
+      - name: Check every positional citation resolves
+        run: node tools/check-citation-lines.mjs
+
       # `node --test <dir>` fails to resolve modules on some Node versions, so the
       # file set is expanded by the shell and handed to Node as discrete
       # arguments. That is deliberate: passing a *pattern* means two different
