@@ -52,7 +52,9 @@ jobs:
       #
       # Read a green run as the tool itself defines it, and no wider: no
       # citation **that this checker recognises** names a missing file, an
-      # ambiguous file, or an out-of-range line. Its matcher recognises a
+      # ambiguous file, or an out-of-range line. A coordinate is in range only
+      # if `1 <= lo <= hi <= lineCount`, so `:0` and a reversed `:99-1` are
+      # rejected too, not just a high bound past EOF. Its matcher recognises a
       # filename ending `.mjs`, `.ps1`, `.js`, `.ts` or `.md` followed by `:NN`
       # or `:NN-NN`, so a coordinate into any other file type — `validate.yml:99`,
       # a `.json`, a `.txt` — is not checked at all. That whitelist is
