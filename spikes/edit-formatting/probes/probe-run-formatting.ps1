@@ -59,7 +59,8 @@
 # property of the COM calls (see probe-authoring.ps1), and this question is
 # fully answerable in memory. Avoiding the save avoids that entire failure mode.
 #
-# Cleanup kills only WINWORD PIDs absent before the probe started. A WINWORD
+# Cleanup kills at most one WINWORD: the one attributed to this probe through
+# its own window handle, and only through Stop-VerifiedWord. A WINWORD
 # belonging to the user is routinely alive on this machine and must survive.
 
 # Attribution and cleanup
@@ -77,6 +78,17 @@
 # and only once a document is open -- so the pid is taken after the first
 # document is added, not at creation.
 #
+# Attribution LICENSES a kill; it does not perform one. spikes/isolation/probes/
+# _common.ps1 says a pid resolved from a window handle off our own RCW may be
+# killed "and then only through Stop-VerifiedWord", and the reason is that an
+# attributed pid is still just a number: the process bearing it can exit during
+# the wait and have the number reused underneath the checks. That helper pins
+# `.Handle` FIRST -- Windows will not recycle a pid while a handle to the
+# process object is open -- then checks ProcessName, then matches the StartTime
+# recorded at attribution, and refuses rather than kills when any step fails.
+# It is imported here rather than copied, so this probe cannot drift from the
+# one sound kill in the tree.
+#
 # The wait after Quit() polls rather than sleeping a fixed interval:
 # Application.Quit() returns long before its process exits (measured 2.7-6.1 s
 # idle), and that tail is load-dependent and expressly not bounded by a
@@ -84,6 +96,8 @@
 # turns a normal exit into a force-kill and reports it as a leak.
 
 $ErrorActionPreference = 'Stop'
+
+. (Join-Path $PSScriptRoot '..\..\isolation\probes\_common.ps1')
 
 Add-Type -Namespace Win32 -Name Wnd -MemberDefinition @'
 [DllImport("user32.dll", SetLastError = true)]
@@ -134,6 +148,7 @@ function Report($label, $range) {
 
 $app = $null
 $ownPid = 0
+$ownStart = $null
 try {
     $app = New-Object -ComObject Word.Application
     $app.Visible = $false
@@ -147,7 +162,11 @@ try {
             if ($ownPid -eq 0) {
                 try {
                     $ownPid = Get-PidFromHwnd ([IntPtr][int64]$app.ActiveWindow.Hwnd)
-                    Write-Host "attributed this probe's WINWORD: pid $ownPid"
+                    # The launch-time half of Stop-VerifiedWord's contract. Read
+                    # it now, while the pid is known live; without it the helper
+                    # declines every time and the teardown becomes a silent leak.
+                    $ownStart = Get-WordStartTime $ownPid
+                    Write-Host "attributed this probe's WINWORD: pid $ownPid (start $ownStart)"
                     Write-Host ''
                 } catch {
                     Write-Host "attribution FAILED -- $($_.Exception.Message.Split([char]10)[0])"
@@ -219,13 +238,17 @@ if ($ownPid -gt 0) {
         if (-not (Get-Process -Id $ownPid -ErrorAction SilentlyContinue)) { break }
         Start-Sleep -Milliseconds 250
     }
-    if (Get-Process -Id $ownPid -ErrorAction SilentlyContinue) {
-        # Attributed, so this kill is sound: the pid came from this probe's own
-        # window handle, not from a census difference.
-        Write-Host "cleanup: attributed WINWORD $ownPid still up after 60 s; killing it"
-        try { Stop-Process -Id $ownPid -Force } catch { }
-    } else {
-        Write-Host "cleanup: attributed WINWORD $ownPid exited on its own"
+    # Whether it exited on its own or is still up, the decision goes through the
+    # shared helper. Reaching this line does not prove the pid is still the Word
+    # we attributed -- it may have exited and had its number reused during the
+    # poll -- so identity is re-established (handle pin, name, StartTime) rather
+    # than assumed from `$ownPid -gt 0`. 'gone' is the normal outcome; anything
+    # beginning 'declined' or 'killed:survived' is said out loud.
+    $outcome = Stop-VerifiedWord $ownPid $ownStart
+    switch ($outcome) {
+        'gone'    { Write-Host "cleanup: attributed WINWORD $ownPid exited on its own" }
+        'killed'  { Write-Host "cleanup: attributed WINWORD $ownPid was still up after 60 s; verified and killed" }
+        default   { Write-Host "cleanup: Stop-VerifiedWord($ownPid) returned '$outcome' -- a Word may be left behind; confirm and close by hand" }
     }
 } else {
     Write-Host 'cleanup: no pid was attributed, so nothing is killed'
@@ -233,9 +256,5 @@ if ($ownPid -gt 0) {
 
 # Reported, never acted on. A WINWORD that is new since the baseline is not
 # thereby this probe's -- that inference is what #136 measured unsound.
-$strangers = @(Get-WordPids | Where-Object { $pidsBefore -notcontains $_ -and $_ -ne $ownPid })
-if ($strangers.Count -gt 0) {
-    Write-Host "note: WINWORD pids new since baseline and NOT attributed to this probe: $($strangers -join ', ')"
-    Write-Host '      left alone deliberately -- they may belong to anyone.'
-}
+Write-CensusSurvivors @(Get-WordPids | Where-Object { $pidsBefore -notcontains $_ -and $_ -ne $ownPid })
 Write-Host "WINWORD after: $(if (Get-WordPids) { (Get-WordPids) -join ', ' } else { '(none)' })"
