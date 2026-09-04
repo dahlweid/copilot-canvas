@@ -102,8 +102,11 @@ const UNLOCATABLE_OPS = new Set(["delete_paragraph"]);
  *
  *   * either side empty -- nothing to diff against;
  *   * the two are equal -- the edit changed nothing this normalization can see;
- *   * the replacement span is empty -- a pure deletion inside the paragraph
- *     leaves no text on the page to draw a box around;
+ *   * the prefix and the suffix meet or cross in `next` -- there is no text
+ *     between them to draw a box around. A pure deletion reaches here, and so
+ *     does an insertion of text that duplicates what it sits beside ("one two"
+ *     -> "one two two"), where *which* copy is the new one is not determined by
+ *     the strings;
  *   * the span covers the whole paragraph -- no prefix and no suffix survived,
  *     so narrowing would carry a second copy of the text already in the record.
  *
@@ -141,7 +144,13 @@ export function changedSpan(previous, next) {
 
     let start = prefix;
     let end = next.length - suffix;
-    if (start >= end) return null; // pure deletion: nothing was put in its place
+    // The prefix and the suffix account for all of `next` between them, so
+    // nothing distinguishable was added. A deletion is the obvious way here, but
+    // not the only one -- an insertion duplicating its neighbour lands here too,
+    // and the strings do not say which copy is new. Naming a cause the scan did
+    // not establish would be the wrong claim, so this branch only says what it
+    // observed.
+    if (start >= end) return null;
 
     while (start > 0 && next[start - 1] !== " ") start -= 1;
     while (end < next.length && next[end] !== " ") end += 1;

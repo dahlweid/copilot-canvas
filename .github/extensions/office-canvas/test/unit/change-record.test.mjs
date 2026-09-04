@@ -193,6 +193,18 @@ test("a pure deletion inside a paragraph narrows to nothing", () => {
     assert.equal(record.text, "One four.");
 });
 
+test("an insertion that duplicates its neighbour narrows to nothing", () => {
+    // Reached by an adversarial probe rather than by design, and it corrected a
+    // comment: this branch used to say "pure deletion", which is a cause the
+    // scan cannot establish. "one two" -> "one two two" is an *insertion*, and
+    // the prefix and suffix still meet -- the strings do not say which "two" is
+    // the new one, so there is no span that can be claimed. Being unable to
+    // decide is precisely why the whole-paragraph box is the honest answer.
+    const record = changeRecordFrom(replacement("one two", "one two two"), { now: CLOCK });
+    assert.equal(record.span, null);
+    assert.equal(record.locatable, true);
+});
+
 test("a rewrite sharing no prefix or suffix carries no span", () => {
     // The derived span would be the whole paragraph, so carrying it would put a
     // second copy of the same string in the record and imply a narrowing that
