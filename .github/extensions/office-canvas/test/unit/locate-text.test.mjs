@@ -281,6 +281,32 @@ test("a span narrows a page-straddling partial match too", () => {
     assert.equal(elsewhere.narrowed, false);
 });
 
+test("a span narrows on the continuation page too, and only for text that page holds", () => {
+    // The twin of the test above, on the other partial branch: here the
+    // paragraph's *tail* sits at the start of the page, which is what a reader
+    // sees on the page after a break. Round 2 of #181 pointed out that this
+    // direction had no positive test and had to be probed by hand -- the two
+    // branches map the needle onto the page through different offsets, so one
+    // passing says nothing about the other.
+    const head = "Ein langer Absatz beginnt auf der ersten Seite und";
+    const tail = "läuft auf der zweiten Seite weiter. Hallo Markus. Und Schluss.";
+    const target = `${head} ${tail}`;
+    const items = lines("läuft auf der zweiten Seite weiter.", "Hallo Markus. Und Schluss.", "Später mehr.");
+
+    const inside = locateText(items, target, { span: "Hallo Markus." });
+    assert.equal(inside.status, "partial");
+    assert.equal(inside.where, "start");
+    assert.equal(inside.narrowed, true);
+    assert.deepEqual(inside.range, { startItem: 1, endItem: 1 });
+
+    // Unique in the paragraph, but it lives in the head -- which is on the page
+    // before this one. The fragment box stands rather than a box being invented
+    // for text this page does not carry.
+    const elsewhere = locateText(items, target, { span: "ersten Seite" });
+    assert.equal(elsewhere.status, "partial");
+    assert.equal(elsewhere.narrowed, false);
+});
+
 test("a straddling page whose own text repeats the span is not narrowed onto it", () => {
     // Round 1 of #181, reproduced. The paragraph crosses a break; the change is
     // in the tail, on the *next* page; and the head on this page happens to

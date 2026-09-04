@@ -122,6 +122,17 @@ const UNLOCATABLE_OPS = new Set(["delete_paragraph"]);
  * ("ello Markus") is both meaningless to a reader and *more* likely to occur
  * twice than the whole word is, and occurring twice is what makes it
  * unlocatable -- so widening helps on both counts and costs a line of code.
+ * Spaces on the edge of the raw span are dropped before that widening runs,
+ * for the reason given at the trim itself.
+ *
+ * What the result guarantees is therefore: everything outside the span is
+ * unchanged text *apart from whitespace*. The span holds every changed
+ * character that is not a space, and `prefix + span + suffix` reconstructs
+ * `next`. It is not the stronger claim that the text before the span is a
+ * prefix of `previous` verbatim -- an inserted separator can now sit outside
+ * the box, and that is deliberate, because the only word-aligned window
+ * containing that space also contains the unchanged word in front of it. A
+ * space carries no glyph to box; the word does.
  */
 export function changedSpan(previous, next) {
     if (!previous || !next || previous === next) return null;
@@ -159,6 +170,28 @@ export function changedSpan(previous, next) {
     // not establish would be the wrong claim, so this branch only says what it
     // observed.
     if (start >= end) return null;
+
+    // Spaces at the edge of the raw span come off before the widening does
+    // anything, because an insertion at a sentence boundary starts or ends *on*
+    // the inserted separator -- and a widening that starts from a space steps
+    // straight through it into the unchanged word beyond. Round 2 of #181
+    // measured five instances: appending to "... modular." highlighted
+    // "modular. Hallo Markus.", and appending to a short paragraph widened all
+    // the way out to the whole text and so narrowed nothing at all.
+    //
+    // A span consisting only of spaces is left alone rather than trimmed to
+    // nothing: the edit changed the gaps and not the glyphs ("onthe mat" ->
+    // "on the mat"), there is no character in it to keep, and the words either
+    // side are the narrowest honest answer to where it happened. Trimming that
+    // to empty would throw away a good box for the whole-paragraph one.
+    const rawStart = start;
+    const rawEnd = end;
+    while (start < end && next[start] === " ") start += 1;
+    while (end > start && next[end - 1] === " ") end -= 1;
+    if (start === end) {
+        start = rawStart;
+        end = rawEnd;
+    }
 
     while (start > 0 && next[start - 1] !== " ") start -= 1;
     while (end < next.length && next[end] !== " ") end += 1;

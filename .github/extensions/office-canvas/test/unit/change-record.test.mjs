@@ -250,23 +250,68 @@ test("the span is always a substring of the text the record carries", () => {
     // part of that text could never be found there, so this is the invariant the
     // locator's narrowing depends on -- checked over the whole corpus rather
     // than at one example.
+    //
+    // Each pair states the span it must produce. The loop used to skip a `null`
+    // and assert only substring-ness on the rest, which made it blind twice
+    // over: the two boundary-insertion pairs below both narrowed wrongly and it
+    // passed anyway. An assertion that cannot fail for the reason its comment
+    // gives is not a test.
     const pairs = [
-        ["One two three.", "One two and a half three."],
-        ["One two three.", "One 2 three."],
-        ["Ein Satz über Straßen.", "Ein Satz über Strassen."],
-        ["a b c d e f g", "a b c X e f g"],
-        ["Trailing words here.", "Trailing words here. And more."],
-        ["Leading words here.", "More. Leading words here."],
+        ["One two three.", "One two and a half three.", "and a half"],
+        ["One two three.", "One 2 three.", "2"],
+        ["Ein Satz über Straßen.", "Ein Satz über Strassen.", "Strassen."],
+        ["a b c d e f g", "a b c X e f g", "X"],
+        ["Trailing words here.", "Trailing words here. And more.", "And more."],
+        ["Leading words here.", "More. Leading words here.", "More."],
     ];
-    for (const [before, after] of pairs) {
+    for (const [before, after, expected] of pairs) {
         const record = changeRecordFrom(replacement(before, after), { now: CLOCK });
-        if (record.span === null) continue;
+        assert.equal(record.span, expected, `${JSON.stringify(before)} -> ${JSON.stringify(after)}`);
         assert.ok(
             record.text.includes(record.span),
             `${JSON.stringify(record.span)} is not inside ${JSON.stringify(record.text)}`,
         );
         assert.notEqual(record.span, record.text, "a span equal to the whole text is not a narrowing");
     }
+});
+
+test("an insertion at a paragraph boundary does not drag in its neighbour", () => {
+    // Round 2 of #181. The raw diff of an insertion at a sentence boundary
+    // begins or ends *on* the inserted space, and a widening that starts from a
+    // space walks straight through it and swallows the unchanged word beyond.
+    // The first two rows are the same defect the suffix bound was fixed to
+    // avoid, arriving through the other door.
+    assert.equal(
+        changedSpan("Die Architektur ist modular.", "Die Architektur ist modular. Hallo Markus."),
+        "Hallo Markus.",
+        "an append must not carry the sentence it was appended to",
+    );
+    assert.equal(
+        changedSpan("Sie skaliert gut.", "Hallo Markus. Sie skaliert gut."),
+        "Hallo Markus.",
+        "a prepend must not carry the word it was prepended to",
+    );
+
+    // These two are worse than a wide box: widening reached both ends, the span
+    // became the whole paragraph, and the record fell back to `null` -- which is
+    // #166's original whole-paragraph highlight, for an entirely ordinary edit.
+    assert.equal(changedSpan("End.", "End. New."), "New.");
+    assert.equal(changedSpan("world", "hello world"), "hello");
+});
+
+test("a change that moved only the gaps keeps the words either side", () => {
+    // The sixth degenerate case, and the one that decides how far the trim may
+    // go: here the raw span *is* the inserted space, so trimming it inward would
+    // leave nothing. The edit changed no glyph, so no box can name a changed
+    // word -- but the two words the gap sits between are still the narrowest
+    // honest answer to where it happened, and they are a better answer than the
+    // whole paragraph. The trim is therefore skipped when it would empty the
+    // span rather than being allowed to fall through to `null`.
+    assert.equal(changedSpan("onthe mat", "on the mat"), "on the");
+
+    // Where those neighbours are the whole paragraph there is nothing left to
+    // narrow, and the existing whole-text branch catches it.
+    assert.equal(changedSpan("ab", "a b"), null);
 });
 
 test("the span derivation is a pure function of the two strings", () => {
