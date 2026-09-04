@@ -22,6 +22,9 @@ import path from "node:path";
 /** Every cache built, oldest first, so a test can say *which* one was used. */
 export const built = [];
 
+/** The pre-edit paragraph text `editDocument` reports, named so a test can look for it. */
+export const STUB_PREVIOUS_TEXT = "the paragraph as it stood before the edit";
+
 let gate = null;
 
 /**
@@ -131,7 +134,13 @@ export class RenderCache {
     async editDocument(docPath, _intent, _options) {
         this.#live("editDocument");
         this.docPaths.push(docPath);
-        return { document: { path: docPath, name: path.basename(docPath), key: `key-${this.id}`, pageCount: 1 } };
+        // `previousText` is what the real editor returns for the change overlay
+        // to narrow its highlight with (#166). It is here so a test can assert
+        // the handler consumes it rather than passing it on to the agent.
+        return {
+            document: { path: docPath, name: path.basename(docPath), key: `key-${this.id}`, pageCount: 1 },
+            previousText: STUB_PREVIOUS_TEXT,
+        };
     }
 
     async revertDocument(docPath, _options) {

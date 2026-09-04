@@ -122,8 +122,15 @@ export const MIN_PARTIAL_CHARS = 24;
  * map's `occurrence` counts within a heading, not within a page, so there is no
  * sound way to pick between two identical strings here -- and drawing a box on
  * the wrong one asserts a position that was never determined.
+ *
+ * `span`, when given, is the part of `target` that actually changed (#166). It
+ * is a *refinement of the match*, never a second search: it is looked for only
+ * within the characters `target` matched, so it cannot pull the box onto
+ * unrelated text elsewhere on the page, and anything less than exactly one
+ * occurrence inside that window leaves the full match standing. `narrowed` says
+ * which happened, so a caller never has to infer it by comparing ranges.
  */
-export function locateText(items, target, { minPartialChars = MIN_PARTIAL_CHARS } = {}) {
+export function locateText(items, target, { minPartialChars = MIN_PARTIAL_CHARS, span = null } = {}) {
     const needle = normalizeText(target);
     if (!needle) return { status: "empty", range: null };
 
@@ -135,8 +142,26 @@ export function locateText(items, target, { minPartialChars = MIN_PARTIAL_CHARS 
         endItem: owners[start + length - 1],
     });
 
+    // The narrowed range, or the given one unchanged. `matched` keeps naming the
+    // text the *match* was made on, because that is what the status is about;
+    // narrowing only moves the box.
+    const narrow = (found, start, length) => {
+        const wanted = normalizeText(span);
+        if (!wanted || wanted === found.matched) return found;
+        const window = text.slice(start, start + length);
+        const hits = findOccurrences(window, wanted);
+        if (hits.length !== 1) return found;
+        return { ...found, narrowed: true, range: rangeFor(start + hits[0], wanted.length) };
+    };
+
     const hits = findOccurrences(text, needle);
-    if (hits.length === 1) return { status: "located", matched: needle, range: rangeFor(hits[0], needle.length) };
+    if (hits.length === 1) {
+        return narrow(
+            { status: "located", matched: needle, narrowed: false, range: rangeFor(hits[0], needle.length) },
+            hits[0],
+            needle.length,
+        );
+    }
     if (hits.length > 1) return { status: "ambiguous", occurrences: hits.length, range: null };
 
     // Not found whole. The paragraph may straddle a page break, in which case
@@ -146,16 +171,31 @@ export function locateText(items, target, { minPartialChars = MIN_PARTIAL_CHARS 
     for (let length = limit; length >= minPartialChars; length--) {
         // Tail of the target sitting at the start of the page.
         if (text.startsWith(needle.slice(needle.length - length))) {
-            return { status: "partial", where: "start", matched: needle.slice(needle.length - length), range: rangeFor(0, length) };
+            return narrow(
+                {
+                    status: "partial",
+                    where: "start",
+                    matched: needle.slice(needle.length - length),
+                    narrowed: false,
+                    range: rangeFor(0, length),
+                },
+                0,
+                length,
+            );
         }
         // Head of the target sitting at the end of the page.
         if (text.endsWith(needle.slice(0, length))) {
-            return {
-                status: "partial",
-                where: "end",
-                matched: needle.slice(0, length),
-                range: rangeFor(text.length - length, length),
-            };
+            return narrow(
+                {
+                    status: "partial",
+                    where: "end",
+                    matched: needle.slice(0, length),
+                    narrowed: false,
+                    range: rangeFor(text.length - length, length),
+                },
+                text.length - length,
+                length,
+            );
         }
     }
     return { status: "not_found", range: null };

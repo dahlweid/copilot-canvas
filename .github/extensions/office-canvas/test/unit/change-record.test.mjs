@@ -8,7 +8,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { changeRecordFrom } from "../../src/change-record.mjs";
+import { changedSpan, changeRecordFrom } from "../../src/change-record.mjs";
 import { OPERATION_NAMES } from "../../src/word/edit-intent.mjs";
 
 const CLOCK = () => "2024-01-01T00:00:00.000Z";
@@ -39,6 +39,7 @@ test("a replacement carries the post-edit text and the page Word reported", () =
         op: "replace_text",
         page: 3,
         text: "The replacement text.",
+        span: null,
         locatable: true,
         at: "2024-01-01T00:00:00.000Z",
     });
@@ -143,6 +144,138 @@ test("the timestamp comes from the injected clock", () => {
 test("the default clock produces a parseable ISO timestamp", () => {
     const record = changeRecordFrom(result());
     assert.ok(Number.isFinite(Date.parse(record.at)));
+});
+
+// --- the changed span (#166) ------------------------------------------------
+//
+// The record narrows the highlight to the words that changed. Every way of
+// failing to derive a span must land on `null`, which is the whole-paragraph
+// highlight that was there before -- so each of these is a branch with a test,
+// not a fallthrough.
+
+/** A result carrying both sides of the edit, as `document-editor.mjs` returns. */
+const replacement = (previousText, text) =>
+    result({ previousText, paragraph: { text }, applied: { op: "replace_text", description: "replaced" } });
+
+test("a replacement narrows to the words that changed", () => {
+    // The issue's own case: a sentence inserted into a long paragraph. The
+    // record still carries the whole paragraph as the join key.
+    const before = "Die Architektur ist modular. Sie skaliert gut. Das Team ist klein.";
+    const after = "Die Architektur ist modular. Hallo Markus. Sie skaliert gut. Das Team ist klein.";
+    const record = changeRecordFrom(replacement(before, after), { now: CLOCK });
+    assert.equal(record.text, after);
+    assert.equal(record.span, "Hallo Markus.");
+});
+
+test("the span is widened to whole words, never left mid-word", () => {
+    // A raw prefix/suffix diff of "GitHub" -> "GitLab" is "L", which is both
+    // meaningless to a reader and far likelier to occur twice on the page than
+    // the word is -- and occurring twice is what makes it unlocatable.
+    const record = changeRecordFrom(replacement("We use GitHub daily.", "We use GitLab daily."), { now: CLOCK });
+    assert.equal(record.span, "GitLab");
+});
+
+test("the span is derived from normalized text on both sides", () => {
+    // The overlay searches a normalized page. A span carrying a tab could never
+    // be found there, and the failure would be a highlight that silently never
+    // narrows rather than an error.
+    const record = changeRecordFrom(replacement("One\ttwo three.", "One  two   four.  "), { now: CLOCK });
+    assert.equal(record.span, "four.");
+    assert.ok(record.text.includes(record.span), "the span must be findable inside the record's own text");
+});
+
+test("a pure deletion inside a paragraph narrows to nothing", () => {
+    // The words that changed were removed, so there is no text left on the page
+    // to draw a box around. The paragraph is still locatable and still marked.
+    const record = changeRecordFrom(replacement("One two three four.", "One four."), { now: CLOCK });
+    assert.equal(record.span, null);
+    assert.equal(record.locatable, true);
+    assert.equal(record.text, "One four.");
+});
+
+test("a rewrite sharing no prefix or suffix carries no span", () => {
+    // The derived span would be the whole paragraph, so carrying it would put a
+    // second copy of the same string in the record and imply a narrowing that
+    // did not happen.
+    const record = changeRecordFrom(replacement("Alpha beta gamma.", "Delta epsilon zeta."), { now: CLOCK });
+    assert.equal(record.span, null);
+});
+
+test("text equal after normalization carries no span", () => {
+    // Word can rewrite a paragraph into something this normalization cannot
+    // tell apart from the old one. There is no narrower box to draw honestly.
+    const record = changeRecordFrom(replacement("The  same   text.", "The same text."), { now: CLOCK });
+    assert.equal(record.span, null);
+});
+
+test("an edit with no prior text carries no span", () => {
+    // The editor supplies `previousText` only where the paragraph Word touched
+    // is the one the address named. Absence must mean "no narrowing", never
+    // "everything changed".
+    for (const previousText of [null, undefined, "", "   "]) {
+        const record = changeRecordFrom(result({ previousText }), { now: CLOCK });
+        assert.equal(record.span, null, `${JSON.stringify(previousText)} should derive no span`);
+        assert.equal(record.text, "The replacement text.", "the paragraph is still the join key");
+    }
+});
+
+test("an unlocatable record carries no span either", () => {
+    // A deletion has no text on the page, so it cannot have a narrower part of
+    // one. Deriving a span here would be a value nothing could ever use.
+    const record = changeRecordFrom(
+        result({
+            previousText: "One two three four.",
+            applied: { op: "delete_paragraph", description: "deleted" },
+        }),
+        { now: CLOCK },
+    );
+    assert.equal(record.locatable, false);
+    assert.equal(record.span, null);
+});
+
+test("the span is always a substring of the text the record carries", () => {
+    // The span is searched inside the paragraph's own match. A span that is not
+    // part of that text could never be found there, so this is the invariant the
+    // locator's narrowing depends on -- checked over the whole corpus rather
+    // than at one example.
+    const pairs = [
+        ["One two three.", "One two and a half three."],
+        ["One two three.", "One 2 three."],
+        ["Ein Satz über Straßen.", "Ein Satz über Strassen."],
+        ["a b c d e f g", "a b c X e f g"],
+        ["Trailing words here.", "Trailing words here. And more."],
+        ["Leading words here.", "More. Leading words here."],
+    ];
+    for (const [before, after] of pairs) {
+        const record = changeRecordFrom(replacement(before, after), { now: CLOCK });
+        if (record.span === null) continue;
+        assert.ok(
+            record.text.includes(record.span),
+            `${JSON.stringify(record.span)} is not inside ${JSON.stringify(record.text)}`,
+        );
+        assert.notEqual(record.span, record.text, "a span equal to the whole text is not a narrowing");
+    }
+});
+
+test("the span derivation is a pure function of the two strings", () => {
+    // Exported so the branch table can be read without building a result around
+    // each case, and so a caller cannot reach the narrowing without the two
+    // texts it is derived from.
+    assert.equal(changedSpan("", "anything"), null);
+    assert.equal(changedSpan("anything", ""), null);
+    assert.equal(changedSpan("same", "same"), null);
+    assert.equal(changedSpan("One two three.", "One 2 three."), "2");
+});
+
+test("a shared boundary between prefix and suffix does not widen the span", () => {
+    // Inserting a sentence puts ". " both at the end of the common prefix and
+    // inside the common suffix. A diff that refuses that overlap -- as the
+    // host's must, since it decomposes the paragraph to assign a range -- cuts
+    // the suffix short and pulls the following word into the box. This one
+    // names a span rather than a decomposition, so it does not have to.
+    const before = "Die Architektur ist modular. Sie skaliert gut.";
+    const after = "Die Architektur ist modular. Hallo Markus. Sie skaliert gut.";
+    assert.equal(changedSpan(before, after), "Hallo Markus.");
 });
 
 test("every operation the editor can apply has wording of its own", async () => {
