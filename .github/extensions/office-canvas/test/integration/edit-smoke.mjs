@@ -290,6 +290,67 @@ try {
         read = result.document;
     });
 
+    await check("a case-only edit is applied, not silently skipped as a no-op", async () => {
+        // PowerShell's -eq is case-INSENSITIVE, so a diff-based Set-ParagraphText
+        // comparing with -eq treats "github" -> "GitHub" as unchanged and writes
+        // nothing -- the edit is lost with no error. The fix compares with -ceq.
+        // This locks it: without a case-sensitive compare the second edit below is
+        // a no-op and the paragraph still reads all-lowercase. Two edits, because a
+        // case-only replacement needs a known lower-case value to differ from.
+        const seed = await cache.readStructure(fixture);
+        const target = seed.paragraphs.find((p) => p.headingLevel === null);
+        assert.ok(target, "no body paragraph in the fixture");
+
+        const lower = await cache.editDocument(
+            fixture,
+            { op: "replace_text", address: target.address, text: "github and the iphone" },
+            { revisionToken: seed.revisionToken },
+        );
+        assert.equal(lower.paragraph.text, "github and the iphone");
+
+        const cased = await cache.editDocument(
+            fixture,
+            { op: "replace_text", address: lower.paragraph.address, text: "GitHub and the iPhone" },
+            { revisionToken: lower.document.revisionToken },
+        );
+        assert.equal(
+            cased.paragraph.text,
+            "GitHub and the iPhone",
+            "a case-only replace_text was silently skipped -- -eq crept back in for -ceq",
+        );
+        read = cased.document;
+    });
+
+    await check("a German eszett edit is applied, not folded away as a no-op", async () => {
+        // -ceq fixes the case trap but is still CULTURE-sensitive under de-DE:
+        // "strasse" -ceq "stra\u00DFe" is True (the culture folds the eszett to
+        // "ss"), so a -ceq early-return would treat this real edit as unchanged and
+        // write nothing -- #170 again, narrower. The fix compares ordinally. Two
+        // edits, so the eszett spelling differs from a known "ss" starting value.
+        const seed = await cache.readStructure(fixture);
+        const target = seed.paragraphs.find((p) => p.headingLevel === null);
+        assert.ok(target, "no body paragraph in the fixture");
+
+        const ss = await cache.editDocument(
+            fixture,
+            { op: "replace_text", address: target.address, text: "die strasse ist breit" },
+            { revisionToken: seed.revisionToken },
+        );
+        assert.equal(ss.paragraph.text, "die strasse ist breit");
+
+        const eszett = await cache.editDocument(
+            fixture,
+            { op: "replace_text", address: ss.paragraph.address, text: "die stra\u00DFe ist breit" },
+            { revisionToken: ss.document.revisionToken },
+        );
+        assert.equal(
+            eszett.paragraph.text,
+            "die stra\u00DFe ist breit",
+            "a German eszett replace_text was silently skipped -- a culture-folding compare crept in for ordinal",
+        );
+        read = eszett.document;
+    });
+
     await check("a paragraph can be inserted, and inherits a sensible style", async () => {
         const heading = read.paragraphs.find((p) => p.headingLevel === 1);
         assert.ok(heading, "no level 1 heading in the fixture");

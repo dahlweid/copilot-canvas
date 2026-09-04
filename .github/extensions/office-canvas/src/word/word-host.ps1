@@ -1748,7 +1748,20 @@ function Set-ParagraphText($para, [string]$text) {
     $doc = $para.Range.Document
     $range = $doc.Range($chars.Item(1).Start, $chars.Item($last).End)
     $old = [string]$range.Text
-    if ($old -eq $text) { return }
+    # Ordinal comparison here and in the prefix/suffix scans below, because both
+    # weaker comparisons PowerShell offers are wrong for this in the German locale
+    # this repo runs under (measured on PS 5.1, de-DE;
+    # spikes/edit-formatting/probes/probe-comparison-semantics.ps1):
+    #   * -eq is case-INSENSITIVE, so "github" -> "GitHub" compares equal and the
+    #     edit is silently dropped -- the #170 loss again, a regression this diff
+    #     itself first introduced.
+    #   * -ceq is case-sensitive but still CULTURE-sensitive: "strasse" -ceq
+    #     "straße" is True, the culture folding the eszett to "ss", so a real
+    #     German edit strasse<->straße would compare equal here and vanish too.
+    # StringComparison::Ordinal folds nothing; [int] on a char compares its code
+    # unit. (Char-level -ceq happens to be ordinal over Latin, but the scans do
+    # not rely on that -- they compare ordinally and make no locale claim.)
+    if ([string]::Equals($old, $text, [System.StringComparison]::Ordinal)) { return }
 
     # The span is located by Character index, which maps to the string index only
     # while every visible Character is a single string char. That held for all of
@@ -1760,10 +1773,10 @@ function Set-ParagraphText($para, [string]$text) {
 
     $max = [Math]::Min($old.Length, $text.Length)
     $p = 0
-    while ($p -lt $max -and $old[$p] -eq $text[$p]) { $p++ }
+    while ($p -lt $max -and [int]$old[$p] -eq [int]$text[$p]) { $p++ }
     $maxSuffix = $max - $p
     $s = 0
-    while ($s -lt $maxSuffix -and $old[$old.Length - 1 - $s] -eq $text[$text.Length - 1 - $s]) { $s++ }
+    while ($s -lt $maxSuffix -and [int]$old[$old.Length - 1 - $s] -eq [int]$text[$text.Length - 1 - $s]) { $s++ }
     $middle = $text.Substring($p, $text.Length - $p - $s)
 
     # Character indices are 1-based. The changed span is visible characters

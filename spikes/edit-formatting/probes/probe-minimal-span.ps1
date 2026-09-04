@@ -18,10 +18,20 @@
 #
 #   R0  identical text  -- the fix must be a no-op (base arm A, repaired).
 #   R1  one word changed -- the real typo-fix shape (base arm B, repaired).
+#   R2  a case-only change -- "alpha" -> "ALPHA". PowerShell's -eq is
+#       case-INSENSITIVE (measured, PS 5.1: 'a' -eq 'A' is True), so with -eq the
+#       fix would compare old and new equal and silently apply nothing; the
+#       shipping code compares ordinally so the change lands. A regression test.
+#   R3  a German ligature change -- "strasse" -> "straße". -ceq is case-sensitive
+#       but still CULTURE-sensitive under de-DE ("strasse" -ceq "straße" is True,
+#       the eszett folding to "ss"), so even -ceq would drop this edit; ordinal
+#       comparison applies it. The reason the code is ordinal, not merely -ceq.
 #   Q1  a changed span that STARTS inside a run and ends outside it.
 #   Q2  formatting other than bold: italic, a hyperlink, a footnote reference --
 #       the last also a drift test, since its mark is a character in the text.
 #   Q3  new text SHORTER, EQUAL, and LONGER than the span it replaces.
+#   Q4  a comment anchored to text OUTSIDE the changed span -- must survive.
+#   Q5  an existing tracked-change revision OUTSIDE the changed span -- must survive.
 #   T   a table cell, and a hyperlink paragraph, end to end: the fix must land
 #       the edit correctly (no coordinate drift from the field code) and leave
 #       the end-of-cell mark and the hyperlink intact.
@@ -87,15 +97,19 @@ function Set-ParagraphText($para, [string]$text) {
     $doc = $para.Range.Document
     $range = $doc.Range($chars.Item(1).Start, $chars.Item($last).End)
     $old = [string]$range.Text
-    if ($old -eq $text) { return }
+    # Ordinal here and in both scans below: PowerShell -eq is case-INSENSITIVE
+    # (R2) and -ceq is still culture-sensitive (R3: "strasse" -ceq "straße" is
+    # True under de-DE), either of which silently drops a real edit. Matches
+    # shipping Set-ParagraphText.
+    if ([string]::Equals($old, $text, [System.StringComparison]::Ordinal)) { return }
     if ($old.Length -ne $last) { $range.Text = $text; return }
 
     $max = [Math]::Min($old.Length, $text.Length)
     $p = 0
-    while ($p -lt $max -and $old[$p] -eq $text[$p]) { $p++ }
+    while ($p -lt $max -and [int]$old[$p] -eq [int]$text[$p]) { $p++ }
     $maxSuffix = $max - $p
     $s = 0
-    while ($s -lt $maxSuffix -and $old[$old.Length - 1 - $s] -eq $text[$text.Length - 1 - $s]) { $s++ }
+    while ($s -lt $maxSuffix -and [int]$old[$old.Length - 1 - $s] -eq [int]$text[$text.Length - 1 - $s]) { $s++ }
     $middle = $text.Substring($p, $text.Length - $p - $s)
 
     $startPos = if (($p + 1) -le $last) { $chars.Item($p + 1).Start } else { $chars.Item($last).End }
@@ -178,6 +192,42 @@ try {
         } finally { $h.doc.Close(0) }
     }
 
+    # -- R2: a case-only change must apply (it is a no-op under PowerShell -eq) --
+    # "alpha" -> "ALPHA", outside the bold run. The text must change and the bold
+    # on "bravo" must survive. If Set-ParagraphText used -eq this arm would print
+    # an unchanged "alpha bravo charlie".
+    $h = New-Para $app
+    try {
+        Set-CharFormat $h.doc $h.para 'bravo' 'bold'
+        $axes = @{ bold = $boldPred }
+        Write-Host 'R2 case-only change (alpha -> ALPHA), bold on bravo'
+        Report 'before' $h.para $axes
+        Set-ParagraphText $h.para 'ALPHA bravo charlie'
+        Report 'after' $h.para $axes
+        Write-Host '  (text must read ALPHA; a no-op here would mean -eq crept back in)'
+        Write-Host ''
+    } finally { $h.doc.Close(0) }
+
+    # -- R3: a German ligature edit that -ceq would ALSO drop (culture fold) --
+    # "strasse" -> "straße". Under de-DE, "strasse" -ceq "straße" is True (the
+    # eszett folds to "ss"), so even the case-sensitive -ceq early-return would
+    # skip this edit; only an ordinal compare applies it. Bold on "die" (outside
+    # the change) must survive. A no-op here means the compare is not ordinal.
+    $doc = $app.Documents.Add()
+    try {
+        $para = $doc.Paragraphs.Item(1)
+        $para.Range.Text = 'die strasse'
+        $b = $doc.Range($para.Range.Start, $para.Range.Start + 'die'.Length)
+        $b.Font.Bold = $true
+        $axes = @{ bold = $boldPred }
+        Write-Host 'R3 German ligature (strasse -> straße), bold on die'
+        Report 'before' $doc.Paragraphs.Item(1) $axes
+        Set-ParagraphText $doc.Paragraphs.Item(1) ('die stra' + [char]0x00DF + 'e')
+        Report 'after' $doc.Paragraphs.Item(1) $axes
+        Write-Host '  (text must show the eszett; a no-op means the compare is not ordinal)'
+        Write-Host ''
+    } finally { $doc.Close(0) }
+
     # -- Q1: changed span starts inside the bold run and ends outside it --
     # prefix "alpha bra" is shared; the span "vo charlie" -> "in delta" begins 3
     # characters into the bold run.
@@ -239,6 +289,50 @@ try {
         Write-Host ''
     } finally { $h.doc.Close(0) }
 
+    # -- Q4 comment: a comment anchored to text OUTSIDE the changed span --
+    # comment on "alpha"; edit "charlie" -> "delta". The comment must survive with
+    # its anchor text intact.
+    $h = New-Para $app
+    try {
+        $doc = $h.doc; $para = $h.para
+        $aStart = $para.Range.Start
+        $anchor = $doc.Range($aStart, $aStart + 'alpha'.Length)
+        $doc.Comments.Add($anchor, 'a comment') | Out-Null
+        Write-Host 'Q4 comment on "alpha", edit outside (charlie -> delta)'
+        Write-Host ("  before comments={0} anchor='{1}'" -f $doc.Comments.Count, ([string]$doc.Comments.Item(1).Scope.Text))
+        $cur = [string](Get-TextRange $para).Text
+        Set-ParagraphText $para ($cur -creplace 'charlie', 'delta')
+        $after = [string](Get-TextRange $doc.Paragraphs.Item(1)).Text
+        if ($doc.Comments.Count -gt 0) {
+            Write-Host ("  after  comments={0} anchor='{1}' text='{2}'" -f $doc.Comments.Count, ([string]$doc.Comments.Item(1).Scope.Text), $after)
+        } else {
+            Write-Host ("  after  COMMENT DESTROYED text='{0}'" -f $after)
+        }
+        Write-Host ''
+    } finally { $h.doc.Close(0) }
+
+    # -- Q5 tracked change: an existing revision OUTSIDE the changed span --
+    # with revision tracking on, insert "X" after "alpha" (a tracked insertion),
+    # then edit "charlie" -> "delta". The pre-existing revision on "X" must remain.
+    $h = New-Para $app
+    try {
+        $doc = $h.doc; $para = $h.para
+        $doc.TrackRevisions = $true
+        $ins = $doc.Range($para.Range.Start + 'alpha'.Length, $para.Range.Start + 'alpha'.Length)
+        $ins.InsertAfter('X')
+        $before = $doc.Revisions.Count
+        Write-Host 'Q5 tracked insertion "X" after alpha, edit outside (charlie -> delta)'
+        Write-Host ("  before revisions={0}" -f $before)
+        $cur = [string](Get-TextRange $para).Text
+        Set-ParagraphText $para ($cur -creplace 'charlie', 'delta')
+        $p2 = $doc.Paragraphs.Item(1)
+        $survived = $false
+        foreach ($rev in $doc.Revisions) { if (([string]$rev.Range.Text) -match 'X') { $survived = $true } }
+        Write-Host ("  after  revisions={0} original-X-insertion-survived={1} text='{2}'" -f $doc.Revisions.Count, $survived, ([string](Get-TextRange $p2).Text))
+        $doc.TrackRevisions = $false
+        Write-Host ''
+    } finally { $h.doc.Close(0) }
+
     # -- Q3: replacement shorter / equal / longer than the span --
     foreach ($c in @(
         @{ id = 'Q3 shorter (charlie -> hi)'; new = 'alpha bravo hi' },
@@ -280,11 +374,11 @@ try {
     if ($app) { try { $app.Quit() } catch { Write-Host "Quit() FAILED -- $($_.Exception.Message.Split([char]10)[0])" } }
 }
 
-Start-Sleep -Seconds 3
 # Poll for the attributed pid only (Quit returns before the process exits,
-# measured 2.7-6.1 s idle and load-dependent), then decide through the shared
-# helper, which re-establishes identity (handle pin, name, StartTime) rather than
-# trusting $ownPid -- the number could have been reused during the wait.
+# measured 2.7-6.1 s idle and load-dependent, so a fixed sleep here would be a
+# guess against an unbounded tail -- poll instead), then decide through the
+# shared helper, which re-establishes identity (handle pin, name, StartTime)
+# rather than trusting $ownPid -- the number could have been reused during the wait.
 if ($ownPid -gt 0) {
     $deadline = (Get-Date).AddSeconds(60)
     while ((Get-Date) -lt $deadline) {
