@@ -507,8 +507,12 @@ export class WordHost {
         return this.#send("create", { path: docPath, blocks }, budget);
     }
 
-    outline({ docId, limit }) {
-        return this.request("outline", { docId, limit });
+    outlineMarkup({ docId, out }) {
+        return this.request("outline-markup", { docId, out });
+    }
+
+    outlinePositions({ docId, wordIndices }) {
+        return this.request("outline-positions", { docId, wordIndices });
     }
 
     search({ docId, query, limit, matchCase, wholeWord }) {

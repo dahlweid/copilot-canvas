@@ -13,6 +13,7 @@ import path from "node:path";
 import assert from "node:assert/strict";
 
 import { WordHost } from "../../src/word/word-host.mjs";
+import { extractOutlineEntries, resolveOutlineEntries } from "../../src/word/outline-map.mjs";
 import { codepoints } from "./docx-zip.mjs";
 import { assertNoLeakedWord, killOwnedWord, ownedWordLedger, wordPids } from "./word-pids.mjs";
 import { acquireWordSuiteLock } from "./word-suite-lock.mjs";
@@ -205,7 +206,14 @@ try {
     });
 
     await check("outline finds headings with levels and page numbers", async () => {
-        const res = await host.outline({ docId });
+        const out = path.join(workRoot, "outline.xml");
+        await host.outlineMarkup({ docId, out });
+        const entries = extractOutlineEntries(await readFile(out, "utf8"));
+        const { positions } = await host.outlinePositions({
+            docId,
+            wordIndices: entries.map((entry) => entry.wordIndex),
+        });
+        const res = resolveOutlineEntries(entries, positions);
         process.stderr.write(`       ${res.count} headings, first: ${JSON.stringify(res.headings[0])}\n`);
         assert.ok(res.count >= 10, `expected >= 10 headings, got ${res.count}`);
         assert.ok(Array.isArray(res.headings), "headings must be an array");

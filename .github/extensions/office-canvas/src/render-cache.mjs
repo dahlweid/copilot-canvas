@@ -8,14 +8,15 @@
 // The cache key is path + mtime + size. That makes reopening an unchanged
 // document instant and makes an edited document re-render exactly once.
 
-import { createHash } from "node:crypto";
-import { mkdir, readdir, rm, stat } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdir, readFile, readdir, rm, stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { WordHost } from "./word/word-host.mjs";
 import { DocumentReader } from "./word/document-reader.mjs";
 import { DocumentEditor } from "./word/document-editor.mjs";
 import { DocumentAuthor } from "./word/document-author.mjs";
+import { extractOutlineEntries, resolveOutlineEntries } from "./word/outline-map.mjs";
 
 export class DocumentError extends Error {
     constructor(code, message) {
@@ -68,7 +69,7 @@ export function requireSupported(rawPath) {
 }
 
 export class RenderCache {
-    /** identity -> { docPath, docId, workDir, pdfDir, key, meta, pdfFile, pending } */
+    /** identity -> { docPath, docId, workDir, pdfDir, key, meta, pdfFile, pending, documentPending, closing } */
     #docs = new Map();
     #reader = null;
     #editor = null;
@@ -103,6 +104,8 @@ export class RenderCache {
             meta: null,
             pdfFile: null,
             pending: null,
+            documentPending: Promise.resolve(),
+            closing: false,
         };
         this.#docs.set(identity, state);
         return state;
@@ -132,31 +135,41 @@ export class RenderCache {
 
         // Validate the file *before* registering any state, so a bad path never
         // leaves a half-open document behind.
-        const { key } = await this.#fingerprint(docPath);
         const state = this.#stateFor(docPath);
-        if (state.key === key && state.meta) return this.#describe(state);
-
-        // A changed file needs a fresh working copy, so drop the old one first.
-        if (state.key && state.key !== key) {
-            await this.host.closeDocument({ docId: state.docId }).catch(() => {});
-            state.pdfFile = null;
+        if (state.closing) {
+            // `close()` is the sole queue entry accepted after this flag is set.
+            // Other document operations must refuse it, or they can append after
+            // this await and act on a state that has already been removed.
+            await state.documentPending;
+            return this.open(docPath);
         }
 
-        try {
-            await mkdir(state.workDir, { recursive: true });
-            const meta = await this.host.openDocument({
-                docId: state.docId,
-                path: docPath,
-                workDir: state.workDir,
-            });
-            state.key = key;
-            state.meta = meta;
-            state.pdfFile = null;
-        } catch (err) {
-            if (!state.meta) this.#docs.delete(identityOf(docPath));
-            throw err;
-        }
-        return this.#describe(state);
+        return this.#enqueueDocumentOperation(state, async () => {
+            const { key } = await this.#fingerprint(docPath);
+            if (state.key === key && state.meta) return this.#describe(state);
+
+            // A changed file needs a fresh working copy, so drop the old one first.
+            if (state.key && state.key !== key) {
+                await this.host.closeDocument({ docId: state.docId }).catch(() => {});
+                state.pdfFile = null;
+            }
+
+            try {
+                await mkdir(state.workDir, { recursive: true });
+                const meta = await this.host.openDocument({
+                    docId: state.docId,
+                    path: docPath,
+                    workDir: state.workDir,
+                });
+                state.key = key;
+                state.meta = meta;
+                state.pdfFile = null;
+            } catch (err) {
+                if (!state.meta) this.#docs.delete(identityOf(docPath));
+                throw err;
+            }
+            return this.#describe(state);
+        });
     }
 
     /**
@@ -229,17 +242,31 @@ export class RenderCache {
      */
     async editDocument(rawPath, intent, options = {}) {
         const docPath = requireSupported(rawPath);
-        const result = await this.#editorFor().edit(docPath, intent, options);
-        await this.#invalidate(docPath);
-        return result;
+        const state = this.#docs.get(identityOf(docPath));
+        if (!state) return this.#editorFor().edit(docPath, intent, options);
+        if (state.closing) {
+            throw new DocumentError("not_open", "That document is not open in this canvas.");
+        }
+        return this.#enqueueDocumentOperation(state, async () => {
+            const result = await this.#editorFor().edit(docPath, intent, options);
+            await this.#invalidateState(state);
+            return result;
+        });
     }
 
     /** Restores the newest snapshot of a document and discards it. */
     async revertDocument(rawPath, options = {}) {
         const docPath = requireSupported(rawPath);
-        const result = await this.#editorFor().revert(docPath, options);
-        await this.#invalidate(docPath);
-        return result;
+        const state = this.#docs.get(identityOf(docPath));
+        if (!state) return this.#editorFor().revert(docPath, options);
+        if (state.closing) {
+            throw new DocumentError("not_open", "That document is not open in this canvas.");
+        }
+        return this.#enqueueDocumentOperation(state, async () => {
+            const result = await this.#editorFor().revert(docPath, options);
+            await this.#invalidateState(state);
+            return result;
+        });
     }
 
     editHistory(rawPath) {
@@ -253,9 +280,7 @@ export class RenderCache {
      * be served — but the Word-side document handle for an open canvas would
      * still be the pre-edit one, and the canvas would keep showing it.
      */
-    async #invalidate(docPath) {
-        const state = this.#docs.get(identityOf(docPath));
-        if (!state) return;
+    async #invalidateState(state) {
         state.key = null;
         state.pdfFile = null;
         try {
@@ -282,10 +307,19 @@ export class RenderCache {
 
     #require(docPath) {
         const state = this.#docs.get(identityOf(normalizeDocPath(docPath)));
-        if (!state || !state.meta) {
+        if (!state || !state.meta || state.closing) {
             throw new DocumentError("not_open", "That document is not open in this canvas.");
         }
         return state;
+    }
+
+    #enqueueDocumentOperation(state, operation) {
+        const run = state.documentPending.then(operation);
+        state.documentPending = run.then(
+            () => undefined,
+            () => undefined,
+        );
+        return run;
     }
 
     /**
@@ -351,7 +385,21 @@ export class RenderCache {
 
     async outline(rawPath, { limit } = {}) {
         const state = this.#require(rawPath);
-        return this.host.outline({ docId: state.docId, limit });
+        return this.#enqueueDocumentOperation(state, async () => {
+            const out = path.join(state.workDir, `outline-${randomUUID()}.xml`);
+            try {
+                await this.host.outlineMarkup({ docId: state.docId, out });
+                const entries = extractOutlineEntries(await readFile(out, "utf8"), { limit: limit ?? 2000 });
+                if (!entries.length) return { headings: [], count: 0 };
+                const { positions } = await this.host.outlinePositions({
+                    docId: state.docId,
+                    wordIndices: entries.map((entry) => entry.wordIndex),
+                });
+                return resolveOutlineEntries(entries, positions);
+            } finally {
+                await rm(out, { force: true }).catch(() => {});
+            }
+        });
     }
 
     async search(rawPath, query, { limit, matchCase, wholeWord } = {}) {
@@ -380,9 +428,13 @@ export class RenderCache {
         const identity = identityOf(docPath);
         const state = this.#docs.get(identity);
         if (!state) return;
-        this.#docs.delete(identity);
-        await this.host.closeDocument({ docId: state.docId }).catch(() => {});
-        await rm(state.workDir, { recursive: true, force: true }).catch(() => {});
+        if (state.closing) return state.documentPending;
+        state.closing = true;
+        return this.#enqueueDocumentOperation(state, async () => {
+            this.#docs.delete(identity);
+            await this.host.closeDocument({ docId: state.docId }).catch(() => {});
+            await rm(state.workDir, { recursive: true, force: true }).catch(() => {});
+        });
     }
 
     /** Number of documents actually open in Word -- used to decide when to quit it. */
