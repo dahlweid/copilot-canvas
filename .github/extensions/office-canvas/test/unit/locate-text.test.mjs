@@ -281,6 +281,38 @@ test("a span narrows a page-straddling partial match too", () => {
     assert.equal(elsewhere.narrowed, false);
 });
 
+test("a straddling page whose own text repeats the span is not narrowed onto it", () => {
+    // Round 1 of #181, reproduced. The paragraph crosses a break; the change is
+    // in the tail, on the *next* page; and the head on this page happens to
+    // contain the same words. Deciding uniqueness inside the fragment this page
+    // holds says "exactly one occurrence, narrow to it" -- and boxes the
+    // unchanged copy, confidently, on the page before the edit. Measured before
+    // the fix: `narrowed: true`, range item 1.
+    //
+    // Uniqueness has to be decided in the whole paragraph, which holds two
+    // copies, so nothing is claimed and the honest fragment box stands.
+    const head = "Zwischenbericht zum Quartal. Hallo Markus. Danach folgt";
+    const target = `${head} der Rest. Hallo Markus. Und Schluss.`;
+    const items = lines("Zwischenbericht zum Quartal.", "Hallo Markus.", "Danach folgt");
+
+    const found = locateText(items, target, { span: "Hallo Markus." });
+    assert.equal(found.status, "partial");
+    assert.equal(found.narrowed, false, "the box was narrowed onto an unchanged copy of the span");
+    assert.deepEqual(found.range, { startItem: 0, endItem: 2 }, "the whole-fragment box must stand");
+});
+
+test("a span occurring twice in the paragraph is refused even on a fully located match", () => {
+    // The same rule, on the branch where the fragment *is* the paragraph. It
+    // cannot regress independently, but it is the reason the fixed rule is one
+    // rule and not two: uniqueness is always asked of the paragraph.
+    const target = "Alpha beta. Gamma delta. Alpha beta. Epsilon.";
+    const items = lines("Alpha beta. Gamma delta.", "Alpha beta. Epsilon.");
+    const found = locateText(items, target, { span: "Alpha beta." });
+    assert.equal(found.status, "located");
+    assert.equal(found.narrowed, false);
+    assert.deepEqual(found.range, { startItem: 0, endItem: 1 });
+});
+
 test("an empty target is reported as empty rather than matching everything", () => {
     // "" is a substring of every string, so a locator that did not special-case
     // it would report a confident match at offset 0 on every page.

@@ -75,11 +75,19 @@
 //     in text that has nothing to do with the edit -- a box asserting a
 //     position nothing determined.
 //
-// So the paragraph is located exactly as before, and the span is searched only
-// inside the character window that match occupies (`locateText`'s `span`
-// option). A wrong-place box is then impossible, ambiguity is bounded to "these
-// words occur twice inside this one paragraph", and every way of failing to
-// narrow lands on the whole-paragraph box that was there before.
+// So the paragraph is located exactly as before, and the span never becomes a
+// search of its own: `locateText` moves the box only when the span occurs
+// exactly once in the whole paragraph *and* that occurrence is on the page it is
+// drawing. Every other outcome lands on the whole-paragraph box that was there
+// before.
+//
+// The second condition is not belt-and-braces. Round 1 of #181 found that
+// deciding uniqueness inside the *fragment* a page holds is not the same
+// question: a paragraph straddling a break, whose head repeats the words that
+// changed in its tail, has one occurrence in the fragment and two in the
+// paragraph -- and the box landed confidently on the unchanged copy, on the page
+// before the edit. The narrower question has to be asked of the paragraph, which
+// is the same string the join key is, or the guarantee is not there.
 
 import { normalizeText } from "./ui/locate-text.mjs";
 

@@ -124,11 +124,20 @@ export const MIN_PARTIAL_CHARS = 24;
  * the wrong one asserts a position that was never determined.
  *
  * `span`, when given, is the part of `target` that actually changed (#166). It
- * is a *refinement of the match*, never a second search: it is looked for only
- * within the characters `target` matched, so it cannot pull the box onto
- * unrelated text elsewhere on the page, and anything less than exactly one
- * occurrence inside that window leaves the full match standing. `narrowed` says
- * which happened, so a caller never has to infer it by comparing ranges.
+ * is a *refinement of the match*, never a second search: the page text is never
+ * searched for it. It moves the box only when the span occurs exactly once in
+ * the whole of `target` **and** that occurrence lies inside the part of `target`
+ * this page holds -- so a `located` match narrows on uniqueness across the
+ * paragraph, and a `partial` one narrows only when the changed words are on this
+ * side of the page break. Anything else leaves the full match standing, which is
+ * the whole-paragraph box that was drawn before #166. `narrowed` says which
+ * happened, so a caller never has to infer it by comparing ranges.
+ *
+ * Deciding uniqueness in the fragment rather than the paragraph is what round 1
+ * of #181 caught, and the failure is worth naming because it is not obvious: a
+ * paragraph straddling a break, whose head repeats the words that changed in its
+ * tail, gave a *confident* box on the unchanged copy -- on the page before the
+ * edit -- where before it had drawn an honest box around the whole fragment.
  */
 export function locateText(items, target, { minPartialChars = MIN_PARTIAL_CHARS, span = null } = {}) {
     const needle = normalizeText(target);
@@ -145,13 +154,24 @@ export function locateText(items, target, { minPartialChars = MIN_PARTIAL_CHARS,
     // The narrowed range, or the given one unchanged. `matched` keeps naming the
     // text the *match* was made on, because that is what the status is about;
     // narrowing only moves the box.
-    const narrow = (found, start, length) => {
+    //
+    // `fragmentStart` and `length` say which slice of `needle` this page holds,
+    // and `pageStart` where that slice sits in the page text. The two differ for
+    // a `partial`, and keeping them apart is the point: uniqueness is decided in
+    // the **whole paragraph**, never in the fragment. Round 1 of #181 built the
+    // case -- a paragraph straddling a break whose head repeats the span that
+    // changed in its tail. Unique *within the fragment* held there while the
+    // paragraph held two copies, and the box landed confidently on the unchanged
+    // one, on the page before the edit.
+    const narrow = (found, pageStart, fragmentStart, length) => {
         const wanted = normalizeText(span);
         if (!wanted || wanted === found.matched) return found;
-        const window = text.slice(start, start + length);
-        const hits = findOccurrences(window, wanted);
+        const hits = findOccurrences(needle, wanted);
         if (hits.length !== 1) return found;
-        return { ...found, narrowed: true, range: rangeFor(start + hits[0], wanted.length) };
+        // Unique in the paragraph, but this page may hold the other end of it.
+        const at = hits[0];
+        if (at < fragmentStart || at + wanted.length > fragmentStart + length) return found;
+        return { ...found, narrowed: true, range: rangeFor(pageStart + (at - fragmentStart), wanted.length) };
     };
 
     const hits = findOccurrences(text, needle);
@@ -159,6 +179,7 @@ export function locateText(items, target, { minPartialChars = MIN_PARTIAL_CHARS,
         return narrow(
             { status: "located", matched: needle, narrowed: false, range: rangeFor(hits[0], needle.length) },
             hits[0],
+            0,
             needle.length,
         );
     }
@@ -180,6 +201,7 @@ export function locateText(items, target, { minPartialChars = MIN_PARTIAL_CHARS,
                     range: rangeFor(0, length),
                 },
                 0,
+                needle.length - length,
                 length,
             );
         }
@@ -194,6 +216,7 @@ export function locateText(items, target, { minPartialChars = MIN_PARTIAL_CHARS,
                     range: rangeFor(text.length - length, length),
                 },
                 text.length - length,
+                0,
                 length,
             );
         }
