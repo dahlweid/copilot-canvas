@@ -131,6 +131,41 @@ test("CATCHES: a line past the end of the cited file is out of range", () => {
   assert.equal(straddle.outOfRange.length, 1, "a range straddling EOF was not reported");
 });
 
+test("CATCHES: a low bound that names no line — `:0`, and a reversed range whose lo is past EOF", () => {
+  // Round 2 found this: the checker destructured `{ file, hi }` and tested only
+  // `hi > lineCount`, so `lo` was computed by parseCitation and thrown away.
+  // Two recognised-but-invalid coordinates slipped through as a result, and both
+  // are silent — they name no line, yet the gate reported the file clean.
+  //
+  // These fail OPEN, which is the dangerous direction: the tool's whole claim is
+  // that a coordinate it recognises resolves. Against the pre-fix condition both
+  // assertions below go red (outOfRange would be 0 in each).
+  const src = "one\ntwo\nthree\n"; // 3 lines
+
+  // `:0` — below the first line. hi is 0 too, so `hi > 3` is false and it passed.
+  const zero = analyze({ "src/a.mjs": src, "doc.md": "see `src/a.mjs:0`.\n" });
+  assert.equal(zero.outOfRange.length, 1, "a citation to line 0 was not flagged");
+  assert.equal(zero.outOfRange[0].written, "src/a.mjs:0");
+
+  // `:99-1` — reversed. hi is 1, which is a real line, so `hi > 3` is false and
+  // it passed while its low bound sat 96 lines past the end of the file.
+  const reversed = analyze({ "src/a.mjs": src, "doc.md": "see `src/a.mjs:99-1`.\n" });
+  assert.equal(reversed.outOfRange.length, 1, "a reversed range was not flagged");
+  assert.equal(reversed.outOfRange[0].written, "src/a.mjs:99-1");
+
+  // The complement, so the new lo checks cannot pass by rejecting everything:
+  // ordinary in-range coordinates, including a degenerate lo === hi range and a
+  // range covering the whole file, must still be accepted.
+  for (const ok of ["src/a.mjs:1", "src/a.mjs:1-3", "src/a.mjs:2-2", "src/a.mjs:3"]) {
+    const r = analyze({ "src/a.mjs": src, "doc.md": `see \`${ok}\`.\n` });
+    assert.equal(
+      r.outOfRange.length + r.missing.length + r.ambiguous.length,
+      0,
+      `${ok} is a valid coordinate and must not be flagged`,
+    );
+  }
+});
+
 test("EOF boundary: a citation at lineCount+1 on a newline-terminated file is out of range, one at lineCount is not", () => {
   // The off-by-one round 1 found: `"one\ntwo\n".split(/\r?\n/)` is
   // ["one","two",""] with length 3, so a naive count believes a 2-line file has

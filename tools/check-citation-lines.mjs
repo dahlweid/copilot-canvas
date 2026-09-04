@@ -188,7 +188,7 @@ export function analyzeCitations(tracked, readFile) {
       if (inFence) continue;
 
       for (const written of lines[i].match(CITATION) ?? []) {
-        const { file, hi } = parseCitation(written);
+        const { file, lo, hi } = parseCitation(written);
         const where = { path: norm, line: i + 1, written, text: lines[i].trim() };
 
         const candidates = candidatesFor(file, trackedNorm);
@@ -210,7 +210,14 @@ export function analyzeCitations(tracked, readFile) {
           continue;
         }
         const lineCount = countLines(target);
-        if (hi > lineCount) {
+        // A citation is in range only if 1 <= lo <= hi <= lineCount. Checking
+        // `hi` alone passes two kinds of coordinate that name no line at all:
+        // `:0`, where the low bound is below the first line, and a reversed
+        // range like `:99-1`, whose low bound is past the end while its high
+        // bound is not. Both are recognised by the matcher, so both would
+        // otherwise be silently accepted by the gate that claims to resolve
+        // every coordinate it recognises.
+        if (lo < 1 || lo > hi || hi > lineCount) {
           outOfRange.push({ ...where, resolved, lineCount });
         }
       }

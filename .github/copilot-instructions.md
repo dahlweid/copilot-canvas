@@ -102,7 +102,8 @@ welcome and has repeatedly found genuine defects.
   #141; ADR 0009). Quote the line, or the claim the line stands for; a coordinate
   may sit *beside* the quote but never replace it. This targets tracker text
   only — positional citations in committed comments and docs are fine and are
-  gated by `check-citations.mjs` / `check-citation-lines.mjs`. It is a
+  partly gated by `check-citations.mjs` / `check-citation-lines.mjs` (the
+  latter only for the file types its matcher recognises). It is a
   convention, not a gate: nothing mechanically checks issue or PR bodies.
 
 ## If you are coordinating work rather than doing it
