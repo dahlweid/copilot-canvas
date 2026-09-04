@@ -62,10 +62,42 @@
 # Cleanup kills only WINWORD PIDs absent before the probe started. A WINWORD
 # belonging to the user is routinely alive on this machine and must survive.
 
+# Attribution and cleanup
+# -----------------------
+# The Word this probe creates is attributed through `ActiveWindow.Hwnd` plus
+# GetWindowThreadProcessId, never by differencing a WINWORD census. Census
+# differencing is measured unsound on this machine (#136): probe-init-
+# attribution.ps1 differenced two new pids for one instance, and a census
+# control saw two strangers' WINWORDs appear in a 40 s window with nothing
+# launched. A pid that is merely new attributes to nothing, so force-killing
+# the difference can kill a Word this probe never started -- and a variable
+# named `$leaked` would be claiming an attribution the code never had.
+#
+# `Application.Hwnd` does not exist on Word, only `Application.ActiveWindow.Hwnd`,
+# and only once a document is open -- so the pid is taken after the first
+# document is added, not at creation.
+#
+# The wait after Quit() polls rather than sleeping a fixed interval:
+# Application.Quit() returns long before its process exits (measured 2.7-6.1 s
+# idle), and that tail is load-dependent and expressly not bounded by a
+# measurement taken on an idle machine. A fixed sleep shorter than the tail
+# turns a normal exit into a force-kill and reports it as a leak.
+
 $ErrorActionPreference = 'Stop'
+
+Add-Type -Namespace Win32 -Name Wnd -MemberDefinition @'
+[DllImport("user32.dll", SetLastError = true)]
+public static extern uint GetWindowThreadProcessId(System.IntPtr hWnd, out uint lpdwProcessId);
+'@
 
 function Get-WordPids {
     @(Get-Process -Name WINWORD -ErrorAction SilentlyContinue | ForEach-Object { $_.Id }) | Sort-Object
+}
+
+function Get-PidFromHwnd([IntPtr]$hwnd) {
+    [uint32]$procId = 0
+    [void][Win32.Wnd]::GetWindowThreadProcessId($hwnd, [ref]$procId)
+    return [int]$procId
 }
 
 $pidsBefore = Get-WordPids
@@ -101,6 +133,7 @@ function Report($label, $range) {
 }
 
 $app = $null
+$ownPid = 0
 try {
     $app = New-Object -ComObject Word.Application
     $app.Visible = $false
@@ -108,6 +141,21 @@ try {
     foreach ($arm in @('A', 'B', 'C', 'D')) {
         $doc = $app.Documents.Add()
         try {
+            # Attribute this instance the first time a document exists, which is
+            # the earliest ActiveWindow.Hwnd resolves. If it never resolves the
+            # probe reports that and kills nothing.
+            if ($ownPid -eq 0) {
+                try {
+                    $ownPid = Get-PidFromHwnd ([IntPtr][int64]$app.ActiveWindow.Hwnd)
+                    Write-Host "attributed this probe's WINWORD: pid $ownPid"
+                    Write-Host ''
+                } catch {
+                    Write-Host "attribution FAILED -- $($_.Exception.Message.Split([char]10)[0])"
+                    Write-Host 'nothing will be killed; any survivor is reported instead.'
+                    Write-Host ''
+                }
+            }
+
             $para = $doc.Paragraphs.Item(1)
             $r = $para.Range
             $r.Text = 'alpha bravo charlie'
@@ -163,12 +211,31 @@ try {
     }
 }
 
-Start-Sleep -Seconds 2
-$leaked = @(Get-WordPids | Where-Object { $pidsBefore -notcontains $_ })
-if ($leaked.Count -gt 0) {
-    Write-Host "cleanup: killing WINWORD started by this probe: $($leaked -join ', ')"
-    foreach ($p in $leaked) { try { Stop-Process -Id $p -Force } catch { } }
+# Poll for the attributed pid only. Nothing else is touched, and no census
+# difference is ever killed.
+if ($ownPid -gt 0) {
+    $deadline = (Get-Date).AddSeconds(60)
+    while ((Get-Date) -lt $deadline) {
+        if (-not (Get-Process -Id $ownPid -ErrorAction SilentlyContinue)) { break }
+        Start-Sleep -Milliseconds 250
+    }
+    if (Get-Process -Id $ownPid -ErrorAction SilentlyContinue) {
+        # Attributed, so this kill is sound: the pid came from this probe's own
+        # window handle, not from a census difference.
+        Write-Host "cleanup: attributed WINWORD $ownPid still up after 60 s; killing it"
+        try { Stop-Process -Id $ownPid -Force } catch { }
+    } else {
+        Write-Host "cleanup: attributed WINWORD $ownPid exited on its own"
+    }
 } else {
-    Write-Host 'cleanup: no WINWORD left by this probe'
+    Write-Host 'cleanup: no pid was attributed, so nothing is killed'
+}
+
+# Reported, never acted on. A WINWORD that is new since the baseline is not
+# thereby this probe's -- that inference is what #136 measured unsound.
+$strangers = @(Get-WordPids | Where-Object { $pidsBefore -notcontains $_ -and $_ -ne $ownPid })
+if ($strangers.Count -gt 0) {
+    Write-Host "note: WINWORD pids new since baseline and NOT attributed to this probe: $($strangers -join ', ')"
+    Write-Host '      left alone deliberately -- they may belong to anyone.'
 }
 Write-Host "WINWORD after: $(if (Get-WordPids) { (Get-WordPids) -join ', ' } else { '(none)' })"
