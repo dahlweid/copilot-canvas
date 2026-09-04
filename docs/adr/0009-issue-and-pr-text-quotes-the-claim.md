@@ -94,10 +94,12 @@ It does **not** forbid positional citations in committed code comments and docs.
 Those are legitimate, they are this repo's own style, and they are gated by
 #160(a): `tools/check-citations.mjs` guards `probe-*` filenames, and
 `tools/check-citation-lines.mjs` guards positional `:NN` coordinates for the
-failures a machine can decide without knowing what the citation meant. A rule
-that banned coordinates everywhere would contradict the tooling this repo just
-added. Where a coordinate genuinely helps in issue text, the convention is that
-it *accompanies* a quote, never stands in for one.
+failures a machine can decide without knowing what the citation meant — in
+files whose extension its matcher recognises (`.mjs`, `.ps1`, `.js`, `.ts`,
+`.md`), which is narrower than "positional coordinates" and deliberately so. A
+rule that banned coordinates everywhere would contradict the tooling this repo
+just added. Where a coordinate genuinely helps in issue text, the convention is
+that it *accompanies* a quote, never stands in for one.
 
 ## Two limits, stated so this is not oversold
 
@@ -113,7 +115,8 @@ writer writes; it is not mechanically checked.
 **The #160(a) gates would not have caught #141, and this convention is the only
 part of #160 that would have.** `check-citations.mjs` gates *committed files* and
 is *filename-only*; `check-citation-lines.mjs` gates *committed* positional
-coordinates. #141 is issue-tracker text, which neither reaches. The two gates
+coordinates in the file types its matcher recognises. #141 is issue-tracker
+text, which neither reaches. The two gates
 catch the in-tree class — the rotted `CONTEXT.md` coordinates #160 was filed
 over — and nothing on the tracker. Conversely this convention reaches the
 tracker and is unenforced. Each part covers exactly what the other cannot, and

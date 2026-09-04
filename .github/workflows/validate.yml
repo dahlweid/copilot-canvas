@@ -50,10 +50,18 @@ jobs:
       # local to this file so nothing another worktree owns is touched" — which
       # proves the checker works, not that the tree is clean.
       #
-      # Read a green run as the tool itself defines it: no citation names a
-      # missing file, an ambiguous file, or an out-of-range line. It is not a
-      # claim that every citation is correct, because a coordinate landing on
-      # real but unrelated code passes here and cannot be caught mechanically.
+      # Read a green run as the tool itself defines it, and no wider: no
+      # citation **that this checker recognises** names a missing file, an
+      # ambiguous file, or an out-of-range line. Its matcher recognises a
+      # filename ending `.mjs`, `.ps1`, `.js`, `.ts` or `.md` followed by `:NN`
+      # or `:NN-NN`, so a coordinate into any other file type — `validate.yml:99`,
+      # a `.json`, a `.txt` — is not checked at all. That whitelist is
+      # deliberate, not an oversight: matching any extension would start
+      # matching things that are not filenames.
+      #
+      # It is also not a claim that every citation is correct. A coordinate
+      # landing on real but unrelated code passes here and cannot be caught
+      # mechanically.
       - name: Check every positional citation resolves
         run: node tools/check-citation-lines.mjs
 
