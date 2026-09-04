@@ -104,11 +104,13 @@ welcome and has repeatedly found genuine defects.
   file**, do not write a coordinate at all — reference code by name and file,
   `Set-ParagraphText (word-host.ps1)`, and note this covers a bare `:NN` into the
   file's own body. Two exceptions: a coordinate pinned to a commit (`… as of
-  4abf952`), which cannot rot, and one quoted as the subject under discussion.
-  Only the in-tree half is gated: nothing reads tracker text, so that half stays
-  convention, while `check-citation-lines.mjs` now **rejects** a coordinate in
-  any tracked file rather than validating it, allowing only an "as of `<sha>`"
-  pin and a short exempt list of files carrying rot-shaped fixtures.
+  4abf952`), which cannot rot; one inside a verbatim probe transcript, because a
+  recorded run is evidence and evidence is not edited to satisfy a gate; and one
+  quoted as the subject under discussion. Only the in-tree half is gated: nothing
+  reads tracker text, so that half stays convention, while
+  `check-citation-lines.mjs` now **rejects** a coordinate in any tracked line it
+  reads rather than validating it. Read its green message as it states itself —
+  it counts out the fenced, exempt and vendored lines it never read.
 
 ## If you are coordinating work rather than doing it
 

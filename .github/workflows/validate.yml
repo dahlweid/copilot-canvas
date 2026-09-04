@@ -59,19 +59,32 @@ jobs:
       # repository, while ADR 0009 and `.github/copilot-instructions.md` both
       # stated that it gated committed coordinates (#169).
       #
-      # Read a green run as the tool defines it, and no wider: no tracked file
-      # outside the exempt list carries a coordinate **the matcher recognises**,
-      # except where one is pinned to a commit. The matcher recognises a filename
-      # ending `.mjs`, `.ps1`, `.js`, `.ts`, `.md`, `.yml` or `.yaml` followed by
-      # a line number, plus a bare self-reference introduced by a paren, a
-      # backtick, or the words "at"/"line"/"lines". That whitelist is deliberate:
-      # a colon and digits with no introducer is a clock time, a ratio and a JSON
-      # value far more often than it is a citation, and a matcher that flagged
-      # those would be turned off rather than obeyed.
+      # Read a green run as the tool defines it, and no wider — it prints this
+      # itself. It certifies that no line the gate **read** carries a coordinate
+      # the matcher recognises, except where one is pinned to a commit, and it
+      # reports what it did not read: fenced blocks, exempt files, vendored and
+      # binary files. The step shipped claiming "no positional coordinate in any
+      # tracked file" while two sat unread inside a fenced transcript; an
+      # overstatement is worse than a narrow claim, because it is what stops the
+      # next person looking.
+      #
+      # The matcher recognises a filename ending `.mjs`, `.ps1`, `.js`, `.ts`,
+      # `.md`, `.yml` or `.yaml` followed by a line number, plus a bare
+      # self-reference introduced by a paren, a backtick, or the words
+      # "at"/"line"/"lines". That whitelist is deliberate: a colon and digits with
+      # no introducer is a clock time, a ratio and a JSON value far more often
+      # than it is a citation, and a matcher that flagged those would be turned
+      # off rather than obeyed.
+      #
+      # Fenced blocks are skipped because a verbatim probe transcript is
+      # evidence, and evidence is not edited to satisfy a linter. That is ADR
+      # 0009's transcript exception, and the skip is wider than its own
+      # justification — it drops every fenced line, not only pinned ones — which
+      # is why the gate counts them out loud instead of implying it read them.
       #
       # It is still not a claim that every reference is correct: a renamed
       # function or a moved file breaks a name too. It is the narrower claim that
-      # no reference is a bare position — the rot this tree actually measured.
+      # no reference it read is a bare position — the rot this tree measured.
       - name: Check no committed file carries a positional coordinate
         run: node tools/check-citation-lines.mjs
 

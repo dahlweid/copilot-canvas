@@ -21,10 +21,17 @@
 //
 // ## What a green run means now
 //
-// No tracked file outside the exempt list carries a positional coordinate,
-// except where one is pinned to a commit. That is a real property of the tree,
-// unlike the old message, which promised only that a coordinate named a file
-// that existed at a line that existed.
+// No tracked *line this gate read* carries a positional coordinate, except where
+// one is pinned to a commit. It reads every tracked text file outside the exempt
+// list, minus fenced blocks and vendored code. That is a real property of the
+// tree, unlike the old message, which promised only that a coordinate named a
+// file that existed at a line that existed.
+//
+// The qualifier is load-bearing and was learned the hard way: this said "no
+// tracked file carries a positional coordinate" while two sat unread inside a
+// fenced transcript. A gate that overstates its coverage is worse than a
+// narrower honest one, because the overstatement is what stops the next person
+// looking. The success message now prints what it skipped, with counts.
 //
 // It is still not a claim that every *reference* is correct. ADR 0009 says why:
 // dropping the number does not make a reference right, because a renamed
@@ -49,27 +56,44 @@
 // file, the most frequent edit a file receives) and the least checkable (a
 // matcher needs a filename to recognise a citation at all).
 //
-// Fenced code blocks are skipped, because ```...``` in Markdown routinely holds
-// captured tool output (a grep result printing `file:line`) that is a recording,
-// not an authored reference. Measured on this tree at `9c81f9b`: turning fence
-// tracking off and changing nothing else takes the count from 43 to 45, and both
-// extra hits are the same pair of captured grep results in
-// `spikes/word-icon/FINDINGS.md`. So the effect is small and entirely
-// transcripts — which is the point. It is worth stating the size, because a
-// scanner that lacked fence tracking *and* used a wider matcher read 88 on this
-// tree, and it would be easy to credit the fence with a gap that was almost all
-// matcher width. Vendored third-party code under `src/ui/vendor/` is skipped for
-// a related reason: it is not authored here, and nothing in it is a reference
-// into this tree.
+// Fenced code blocks are skipped, and this is an **exception to ADR 0009, named
+// there** — a verbatim record of a probe run is evidence, and evidence is not
+// edited to satisfy a linter. This repo's standard is that a claim about
+// platform behaviour is backed by a probe that was actually run; rewriting a
+// coordinate inside that probe's printed output destroys exactly the thing the
+// standard rests on. The worked case is the transcript in
+// `spikes/word-icon/FINDINGS.md`, which prints `"icon" appears in
+// [generated\rpc.d.ts:18, generated\session-events.d.ts:13]` — two coordinates
+// into **Copilot CLI 1.0.80's generated typings**, an external artifact, not
+// into this tree, which has no `generated/` at all.
 //
-// Two allowances, both from ADR 0009:
+// Note the limit, because the skip is wider than that justification: it drops
+// every fenced line, including one holding an unpinned coordinate into this
+// repo. So the skip protects the recording; it is emphatically **not** a claim
+// that a coordinate inside a fence still resolves. The success message names
+// this, and says how many lines went unread, rather than reporting a clean tree.
+//
+// Vendored third-party code under `src/ui/vendor/` is skipped for a related
+// reason: it is not authored here, and nothing in it is a reference into this
+// tree.
+//
+// The size of the fence skip, measured at `9c81f9b` rather than assumed: turning
+// fence tracking off and changing nothing else takes the count from 43 to 45,
+// and both extra hits are that one FINDINGS.md pair. Worth stating, because a
+// scanner that lacked fence tracking *and* matched far more widely read 88 here,
+// and it would be easy to credit the fence with a gap that was almost all
+// matcher width.
+//
+// Three allowances, all from ADR 0009:
 //
 //   1. **A commit pin.** A coordinate followed *immediately* by "as of `<sha>`"
 //      cannot rot — the SHA fixes the tree the number indexes. Pinned
 //      coordinates are counted and reported on a green run, so the allowance is
 //      visible rather than silent. This is the allowance an author who hits the
 //      gate should reach for, and the failure message says so.
-//   2. **An exempt list**, for the files that carry rot-shaped *fixtures*: this
+//   2. **A verbatim transcript**, inside a fenced block, per the paragraph
+//      above. Reported as a line count on a green run, never as a clean bill.
+//   3. **An exempt list**, for the files that carry rot-shaped *fixtures*: this
 //      checker, its unit test, and ADR 0009 itself, which analyses rotted
 //      coordinates and must quote them. Naming a string is not pointing at a
 //      line. This is that short list and nothing else. It is deliberately not
@@ -126,18 +150,35 @@ const EXEMPT = new Set([
  * error carrying `.code` (as `fs.readFileSync` does). Nothing here touches git,
  * the filesystem, the process exit code, or stdout — the CLI below owns those.
  *
- * Returns { coordinates, pinned, unreadable }. `coordinates` is the rejection
- * list and an empty one is a pass; `pinned` records what the commit-pin
- * allowance let through, so a green run can say how much it allowed.
+ * Returns { coordinates, pinned, unreadable, skipped }. `coordinates` is the
+ * rejection list and an empty one is a pass; `pinned` records what the commit-pin
+ * allowance let through; `skipped` counts what was never looked at, so the
+ * success message can state its own coverage instead of overstating it. That
+ * last one is not bookkeeping: a green run previously claimed "no positional
+ * coordinate in any tracked file" while two sat unread inside a fenced
+ * transcript, which is precisely the overstatement that stops the next person
+ * looking.
  */
 export function findCoordinates(tracked, readFile) {
   const coordinates = [];
   const pinned = [];
   const unreadable = [];
+  const skipped = { exemptFiles: 0, vendoredFiles: 0, binaryFiles: 0, fencedLines: 0, fencedFiles: 0 };
 
   for (const path of tracked) {
     const norm = path.replace(/\\/g, "/");
-    if (EXEMPT.has(norm) || SKIP.test(norm) || VENDORED.test(norm)) continue;
+    if (EXEMPT.has(norm)) {
+      skipped.exemptFiles++;
+      continue;
+    }
+    if (VENDORED.test(norm)) {
+      skipped.vendoredFiles++;
+      continue;
+    }
+    if (SKIP.test(norm)) {
+      skipped.binaryFiles++;
+      continue;
+    }
 
     let text;
     try {
@@ -149,10 +190,14 @@ export function findCoordinates(tracked, readFile) {
       unreadable.push({ path: norm, why: err.code ?? String(err) });
       continue;
     }
-    if (text.includes("\0")) continue;
+    if (text.includes("\0")) {
+      skipped.binaryFiles++;
+      continue;
+    }
 
     const lines = text.split(/\r?\n/);
     let inFence = false;
+    let fencedHere = 0;
 
     for (let i = 0; i < lines.length; i++) {
       // Skip fenced code blocks: they carry captured output, not authored
@@ -162,7 +207,10 @@ export function findCoordinates(tracked, readFile) {
         inFence = !inFence;
         continue;
       }
-      if (inFence) continue;
+      if (inFence) {
+        fencedHere++;
+        continue;
+      }
 
       const line = lines[i];
 
@@ -192,13 +240,15 @@ export function findCoordinates(tracked, readFile) {
         else coordinates.push(where);
       }
     }
+    skipped.fencedLines += fencedHere;
+    if (fencedHere > 0) skipped.fencedFiles++;
   }
 
-  return { coordinates, pinned, unreadable };
+  return { coordinates, pinned, unreadable, skipped };
 }
 
 /** Prints the report and returns the intended exit code (0 pass, 1 fail). */
-export function report({ coordinates, pinned, unreadable }) {
+export function report({ coordinates, pinned, unreadable, skipped }) {
   if (unreadable.length > 0) {
     console.error(`WARN — ${unreadable.length} file(s) could not be read and were not checked:`);
     for (const u of unreadable) console.error(`  ${u.path}  (${u.why})`);
@@ -217,29 +267,45 @@ export function report({ coordinates, pinned, unreadable }) {
         "no name — `the census helper in _common.ps1`. A coordinate hides the claim\n" +
         "it stands for, and an insertion above it relocates that claim without\n" +
         "touching it.\n\n" +
-        "If the number is genuinely needed as evidence, pin it to a commit:\n" +
-        "`structure-map.mjs:266` as of `4abf952`. A pinned coordinate cannot rot,\n" +
-        "and this gate accepts it — that is the one exception you can apply here.\n\n" +
-        "There is a second, which is not for you to apply: a short exempt list for\n" +
-        "the files whose subject matter IS a rotted coordinate (this gate, its unit\n" +
-        "test, ADR 0009). If you believe a file belongs on it, argue that in ADR\n" +
-        "0009 rather than editing the list — an exemption granted in passing is how\n" +
-        "this gate stops meaning anything.\n\n" +
-        "Both exceptions, and why the syntax is banned at all, are in\n" +
+        "ADR 0009 allows three exceptions. One is yours to apply:\n\n" +
+        "  * A COMMIT PIN. If the number is genuinely needed as evidence, pin it:\n" +
+        "    `structure-map.mjs:266` as of `4abf952`. The SHA fixes the tree the\n" +
+        "    number indexes, so it cannot rot, and this gate accepts it.\n\n" +
+        "The other two are not, and neither is a way round this message:\n\n" +
+        "  * A VERBATIM TRANSCRIPT, inside a fenced block. A recorded probe run is\n" +
+        "    evidence; evidence is not edited to satisfy a linter. This gate skips\n" +
+        "    fenced blocks wholesale, so it will not have sent you here for one —\n" +
+        "    and it does not check that a coordinate inside one still resolves.\n" +
+        "  * THE EXEMPT LIST, for files whose subject matter IS a rotted coordinate\n" +
+        "    (this gate, its unit test, ADR 0009). If you believe a file belongs on\n" +
+        "    it, argue that in ADR 0009 rather than editing the list — an exemption\n" +
+        "    granted in passing is how this gate stops meaning anything.\n\n" +
+        "All three, and why the syntax is banned at all, are in\n" +
         "docs/adr/0009-issue-and-pr-text-quotes-the-claim.md.\n",
-    )
+    );
     return 1;
   }
 
+  // State the coverage, not a claim wider than it. The earlier wording here —
+  // "no positional coordinate in any tracked file" — was false while two sat
+  // unread inside a fenced transcript in spikes/word-icon/FINDINGS.md. A gate
+  // that overstates what it verified is worse than a narrower honest one,
+  // because the overstatement is what stops the next person looking.
+  const s = skipped ?? {};
   const pinNote =
     pinned.length === 0
-      ? "no commit-pinned coordinate"
-      : `${pinned.length} commit-pinned coordinate(s), which cannot rot`;
+      ? "no commit-pinned coordinate was allowed through"
+      : `${pinned.length} commit-pinned coordinate(s) were allowed through, which cannot rot`;
   console.log(
-    `OK — no positional coordinate in any tracked file; ${pinNote}.\n` +
-      "(This does not certify that every reference is correct: a renamed function\n" +
-      "or a moved file breaks a name too. It certifies that no reference is a bare\n" +
-      "position, which is the rot this tree actually measured.)",
+    `OK — no positional coordinate in any tracked line this gate read; ${pinNote}.\n\n` +
+      "Not read, and therefore not certified:\n" +
+      `  ${s.fencedLines ?? 0} line(s) inside fenced blocks, across ${s.fencedFiles ?? 0} file(s) — verbatim\n` +
+      "    transcripts, which are evidence and are not edited to satisfy a gate.\n" +
+      `  ${s.exemptFiles ?? 0} exempt file(s), whose subject matter is a rotted coordinate.\n` +
+      `  ${s.vendoredFiles ?? 0} vendored and ${s.binaryFiles ?? 0} binary file(s), not authored here.\n\n` +
+      "Nor does a pass certify that every reference is correct: a renamed function\n" +
+      "or a moved file breaks a name too. It certifies that no reference this gate\n" +
+      "read is a bare position, which is the rot this tree actually measured.",
   );
   return 0;
 }

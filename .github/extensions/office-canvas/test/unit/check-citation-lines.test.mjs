@@ -35,7 +35,7 @@ import { fileURLToPath } from "node:url";
 
 const UNIT = path.dirname(fileURLToPath(import.meta.url));
 const CHECKER = path.resolve(UNIT, "..", "..", "..", "..", "..", "tools", "check-citation-lines.mjs");
-const { findCoordinates } = await import(`file://${CHECKER.split(path.sep).join("/")}`);
+const { findCoordinates, report } = await import(`file://${CHECKER.split(path.sep).join("/")}`);
 
 /**
  * Build a reader over an in-memory { path: text } map. A path not in the map
@@ -210,18 +210,27 @@ test("ALLOWANCE: the three fixture-carrying files are exempt, and the exemption 
   );
 });
 
-test("a coordinate inside a fenced code block is skipped — captured output, not an authored reference", () => {
-  // The FINDINGS.md shape: a `file:line` inside ```...``` is a transcript of a
-  // grep result. Rewriting it would falsify the recording.
+test("a coordinate inside a fenced code block is skipped — and is COUNTED, not silently dropped", () => {
+  // ADR 0009's transcript exception: a `file:line` inside ```...``` is the
+  // captured output of a probe run. Rewriting it would falsify evidence.
+  //
+  // The counting half is the part that was missing and that a review caught. The
+  // gate reported "no positional coordinate in any tracked file" while two
+  // coordinates sat unread inside a fenced transcript in
+  // spikes/word-icon/FINDINGS.md, which made the success message false as
+  // written. Skipping is right; claiming to have read them is not.
   const fenced = analyze({
     "spikes/FINDINGS.md": "prose\n```\n\"icon\" appears in [generated/rpc.d.ts:18]\n```\nmore prose\n",
   });
   assert.equal(fenced.coordinates.length, 0, "a coordinate inside a fenced block was rejected");
+  assert.equal(fenced.skipped.fencedLines, 1, "the skipped fenced line was not counted");
+  assert.equal(fenced.skipped.fencedFiles, 1, "the file containing a skipped fence was not counted");
 
   // Control: the same coordinate outside a fence must be caught, or the test
   // above passes simply because nothing is ever caught in this file.
   const outside = analyze({ "spikes/FINDINGS.md": "prose naming generated/rpc.d.ts:18 directly\n" });
   assert.equal(outside.coordinates.length, 1, "the fence-skip test is vacuous: the coordinate is not caught outside one either");
+  assert.equal(outside.skipped.fencedLines, 0, "a file with no fence reported skipped fenced lines");
 
   // A fence that opens and closes must not swallow the rest of the file. If the
   // toggle were a one-way latch, everything after the first fence would go
@@ -230,6 +239,40 @@ test("a coordinate inside a fenced code block is skipped — captured output, no
     "spikes/FINDINGS.md": "```\na.mjs:1\n```\nprose citing b.mjs:2 outside\n```\nc.mjs:3\n```\n",
   });
   assert.deepEqual(written(reopened), ["b.mjs:2"], "fence tracking is not toggling; part of the file went unscanned");
+  assert.equal(reopened.skipped.fencedLines, 2, "both fenced lines should be counted as unread");
+});
+
+test("the success message states what it read, and never claims a clean tree", () => {
+  // The regression guard for the overstatement above. A gate that reports more
+  // coverage than it has is worse than a narrower honest one, because the
+  // overstatement is what stops the next person looking. So the passing output
+  // must (a) qualify its claim to what it read and (b) name the skipped volume.
+  const result = analyze({
+    "spikes/FINDINGS.md": "prose\n```\ncaptured generated/rpc.d.ts:18 here\n```\n",
+    "tools/check-citation-lines.mjs": "// `a.mjs:1`\n",
+  });
+  assert.equal(result.coordinates.length, 0, "fixture should pass; otherwise this tests the failure path");
+
+  const lines = [];
+  const realLog = console.log;
+  console.log = (s) => lines.push(s);
+  let code;
+  try {
+    code = report(result);
+  } finally {
+    console.log = realLog;
+  }
+  const out = lines.join("\n");
+
+  assert.equal(code, 0);
+  assert.match(out, /this gate read/, "the success message does not qualify its claim to what it read");
+  assert.doesNotMatch(
+    out,
+    /no positional coordinate in any tracked file/,
+    "the success message makes the unqualified claim that shipped false",
+  );
+  assert.match(out, /1 line\(s\) inside fenced blocks/, "the skipped fenced volume is not reported");
+  assert.match(out, /1 exempt file\(s\)/, "the skipped exempt files are not reported");
 });
 
 test("vendored third-party code is skipped, and only under the vendor path", () => {

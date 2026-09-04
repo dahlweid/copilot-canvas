@@ -108,12 +108,34 @@ census helper in _common.ps1`. This covers every tracked file — source,
 comments, docs, probes, tests, workflows — and it covers a bare `:NN` into the
 file's own body exactly as it covers a cross-file coordinate.
 
-Two exceptions, both narrow, both because the objection above does not apply:
+Three exceptions, all narrow, all because the objection above does not apply:
 
 - **A coordinate pinned to a commit.** `structure-map.mjs:266` *as of*
   `4abf952` cannot rot — the SHA fixes the tree the number indexes. This is why
   the evidence section above can name `probe-single-instance.ps1:167-170` at
   `fed5270`: without this exception, this ADR could not state its own evidence.
+- **A coordinate inside a verbatim transcript** — the captured output of a probe
+  run, in a fenced block. The reasoning is different from the two around it and
+  is the reason this exception cannot be dropped: **a recorded run is evidence,
+  and evidence is not edited to satisfy a gate.** This repo's standard is that a
+  claim about platform behaviour is backed by a probe that was actually run;
+  rewriting a coordinate inside that probe's printed output destroys the thing
+  the standard rests on, and leaves a transcript that no longer matches what the
+  probe would print if re-run.
+
+  The worked case is `spikes/word-icon/FINDINGS.md`, whose arm-3 output reads
+  `"icon" appears in [generated\rpc.d.ts:18, generated\session-events.d.ts:13]`.
+  Those two coordinates index **Copilot CLI 1.0.80's generated typings** — an
+  external artifact, named at its version on the line above — not this tree,
+  which contains no `generated/` directory at all.
+
+  It is tempting to fold this into the pin exception, since `1.0.80` fixes the
+  artifact as surely as a SHA fixes a tree. Resist it: `check-citation-lines.mjs`
+  skips fenced blocks *wholesale* and does not look for a version, so a fence
+  holding an unpinned coordinate into this repo is skipped too. The exception
+  protects the recording. It is not a claim that a coordinate inside a fence
+  still resolves, and the gate's success message says so and counts the lines it
+  skipped rather than reporting a clean tree.
 - **A coordinate that is the subject under discussion,** rather than a
   reference being followed — this document analysing a rotted citation, and
   `check-citation-lines.mjs` and its unit test carrying rot-shaped fixtures to
@@ -190,12 +212,20 @@ where a check on whether a coordinate still *means* what it claimed is not, and
 it is now gated: `check-citation-lines.mjs` was inverted from *validate* to
 *reject*. It no longer asks whether a coordinate resolves — the analysis above is
 why that question was worth nothing — it asks whether one is present, and fails
-the build when one is. The two exceptions above are the gate's two allowances: a
-coordinate followed on the same line by an "as of `<sha>`" pin passes and is
-counted, and a short exempt list covers the files that carry rot-shaped fixtures
-as their subject matter — the checker, its unit test, and this document. A green
-run is therefore evidence of compliance with the in-tree half, and only that
-half.
+the build when one is. The three exceptions above are the gate's three
+allowances: a coordinate followed *immediately* by an "as of `<sha>`" pin passes
+and is counted, fenced transcripts are skipped, and a short exempt list covers
+the files that carry rot-shaped fixtures as their subject matter — the checker,
+its unit test, and this document.
+
+Read a green run as the gate itself states it, which is narrower than "this tree
+complies". It certifies that no line **it read** carries a coordinate, and it
+prints what it did not read: the fenced lines, the exempt files, the vendored
+and binary ones. That wording is not caution for its own sake. The gate shipped
+saying "no positional coordinate in any tracked file" while two sat unread in
+`spikes/word-icon/FINDINGS.md`, and a review caught it — an overstatement is
+worse than a narrow claim precisely because it is what stops the next person
+looking.
 
 **Dropping the number does not make a reference correct.** A name survives
 insertion, which a coordinate does not, and `check-citations.mjs` still guards
