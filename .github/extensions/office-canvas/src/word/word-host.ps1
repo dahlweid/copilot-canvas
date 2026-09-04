@@ -1336,7 +1336,7 @@ function Cmd-Structure($a) {
 
     $outDir = Split-Path -Parent $out
     if (-not [string]::IsNullOrWhiteSpace($outDir) -and -not (Test-Path -LiteralPath $outDir)) {
-        New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+        New-Item -ItemType Directory -Force -LiteralPath $outDir | Out-Null
     }
     # No BOM: the caller parses this as XML, and a BOM ahead of the declaration
     # is a parse error in stricter readers.
