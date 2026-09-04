@@ -58,10 +58,147 @@
 // (`src/ui/change-wording.mjs`), so the field is not carried at all rather than
 // carried and trusted not to be shown.
 
+// ## The span narrows the box; it never becomes the join key
+//
+// The record also carries `span` -- the words that changed, when they can be
+// derived -- because a whole-paragraph highlight tells a reader nothing when a
+// paragraph is ten lines and three words moved (#166). What it must not do is
+// *replace* `text` as the thing the overlay searches for, and the reason is
+// measured in the locator's own contract rather than guessed:
+//
+//   * `locateText` refuses a needle that occurs twice on a page (`ambiguous`),
+//     and `planChangeMarks` then draws a page-level marker with no box at all.
+//     A whole paragraph is nearly unique; three words are not. So a span used
+//     as the key would sometimes produce *less* than the paragraph it replaced.
+//   * `candidatePages` searches the page before the reported one, for the
+//     paragraph that straddles a break. A short span can match there, uniquely,
+//     in text that has nothing to do with the edit -- a box asserting a
+//     position nothing determined.
+//
+// So the paragraph is located exactly as before, and the span never becomes a
+// search of its own: `locateText` moves the box only when the span occurs
+// exactly once in the whole paragraph *and* that occurrence is on the page it is
+// drawing. Every other outcome lands on the whole-paragraph box that was there
+// before.
+//
+// The second condition is not belt-and-braces. Round 1 of #181 found that
+// deciding uniqueness inside the *fragment* a page holds is not the same
+// question: a paragraph straddling a break, whose head repeats the words that
+// changed in its tail, has one occurrence in the fragment and two in the
+// paragraph -- and the box landed confidently on the unchanged copy, on the page
+// before the edit. The narrower question has to be asked of the paragraph, which
+// is the same string the join key is, or the guarantee is not there.
+
 import { normalizeText } from "./ui/locate-text.mjs";
 
 /** Operations that leave no text on the page to anchor to. */
 const UNLOCATABLE_OPS = new Set(["delete_paragraph"]);
+
+/**
+ * The words that changed, or `null` when there is no honest narrower answer.
+ *
+ * Both arguments are already-normalized paragraph text -- the same
+ * `normalizeText` the page join runs on, so a span derived here is a substring
+ * of the string the overlay searches for. Nothing here touches a Word range, so
+ * the `\r` + `chr(7)` / `End - Start` trap that character arithmetic on a COM
+ * range hits is out of reach by construction.
+ *
+ * `null` is returned wherever a narrower box would assert something this
+ * function did not establish. Each case is a branch rather than a fallthrough,
+ * because "there is nothing to narrow to" and "the narrowing came out empty"
+ * are different facts that happen to want the same behaviour:
+ *
+ *   * either side empty -- nothing to diff against;
+ *   * the two are equal -- the edit changed nothing this normalization can see;
+ *   * the prefix and the suffix meet or cross in `next` -- there is no text
+ *     between them to draw a box around. A pure deletion reaches here, and so
+ *     does an insertion of text that duplicates what it sits beside ("one two"
+ *     -> "one two two"), where *which* copy is the new one is not determined by
+ *     the strings;
+ *   * the span covers the whole paragraph -- no prefix and no suffix survived,
+ *     so narrowing would carry a second copy of the text already in the record.
+ *
+ * The span is widened outward to whitespace boundaries. A mid-word fragment
+ * ("ello Markus") is both meaningless to a reader and *more* likely to occur
+ * twice than the whole word is, and occurring twice is what makes it
+ * unlocatable -- so widening helps on both counts and costs a line of code.
+ * Spaces on the edge of the raw span are dropped before that widening runs,
+ * for the reason given at the trim itself.
+ *
+ * What the result guarantees is therefore: everything outside the span is
+ * unchanged text *apart from whitespace*. The span holds every changed
+ * character that is not a space, and `prefix + span + suffix` reconstructs
+ * `next`. It is not the stronger claim that the text before the span is a
+ * prefix of `previous` verbatim -- an inserted separator can now sit outside
+ * the box, and that is deliberate, because the only word-aligned window
+ * containing that space also contains the unchanged word in front of it. A
+ * space carries no glyph to box; the word does.
+ */
+export function changedSpan(previous, next) {
+    if (!previous || !next || previous === next) return null;
+
+    const max = Math.min(previous.length, next.length);
+    let prefix = 0;
+    while (prefix < max && previous[prefix] === next[prefix]) prefix += 1;
+    // The suffix is bounded so that the span it leaves in `next` cannot be
+    // negative, and so the scan cannot walk off the front of `previous`. It is
+    // deliberately *not* bounded to keep prefix and suffix from overlapping in
+    // `previous`, which is what `Set-ParagraphText` (`word-host.ps1`) does --
+    // and the difference is the issue's own case rather than an exotic one.
+    // Inserting "Hallo Markus." after "... modular. " makes ". " both the tail
+    // of the prefix and part of the suffix, so a non-overlap bound cuts the
+    // suffix short and drags the next word into the highlight.
+    //
+    // The two are allowed to differ because they answer different questions.
+    // The host must produce a *decomposition* it can assign a Word range from,
+    // so its prefix and suffix must not claim the same characters twice. This
+    // only has to name a span of the post-edit text, and
+    // prefix + span + suffix reconstructs `next` exactly either way. Where they
+    // disagree the consequence is a box one word wider, never wrong text.
+    const maxSuffix = Math.min(previous.length, next.length - prefix);
+    let suffix = 0;
+    while (suffix < maxSuffix && previous[previous.length - 1 - suffix] === next[next.length - 1 - suffix]) {
+        suffix += 1;
+    }
+
+    let start = prefix;
+    let end = next.length - suffix;
+    // The prefix and the suffix account for all of `next` between them, so
+    // nothing distinguishable was added. A deletion is the obvious way here, but
+    // not the only one -- an insertion duplicating its neighbour lands here too,
+    // and the strings do not say which copy is new. Naming a cause the scan did
+    // not establish would be the wrong claim, so this branch only says what it
+    // observed.
+    if (start >= end) return null;
+
+    // Spaces at the edge of the raw span come off before the widening does
+    // anything, because an insertion at a sentence boundary starts or ends *on*
+    // the inserted separator -- and a widening that starts from a space steps
+    // straight through it into the unchanged word beyond. Round 2 of #181
+    // measured five instances: appending to "... modular." highlighted
+    // "modular. Hallo Markus.", and appending to a short paragraph widened all
+    // the way out to the whole text and so narrowed nothing at all.
+    //
+    // A span consisting only of spaces is left alone rather than trimmed to
+    // nothing: the edit changed the gaps and not the glyphs ("onthe mat" ->
+    // "on the mat"), there is no character in it to keep, and the words either
+    // side are the narrowest honest answer to where it happened. Trimming that
+    // to empty would throw away a good box for the whole-paragraph one.
+    const rawStart = start;
+    const rawEnd = end;
+    while (start < end && next[start] === " ") start += 1;
+    while (end > start && next[end - 1] === " ") end -= 1;
+    if (start === end) {
+        start = rawStart;
+        end = rawEnd;
+    }
+
+    while (start > 0 && next[start - 1] !== " ") start -= 1;
+    while (end < next.length && next[end] !== " ") end += 1;
+
+    const span = next.slice(start, end);
+    return span.length > 0 && span !== next ? span : null;
+}
 
 /**
  * Builds a change record from an `edit_document` result.
@@ -80,11 +217,13 @@ export function changeRecordFrom(result, { now = () => new Date().toISOString() 
     // is handed a verdict, not the inputs to re-derive one, so the two cannot
     // come to different conclusions about the same edit.
     const locatable = !UNLOCATABLE_OPS.has(op) && text.length > 0;
+    const span = locatable ? changedSpan(normalizeText(result.previousText ?? ""), text) : null;
 
     return {
         op,
         page,
         text: locatable ? text : null,
+        span,
         locatable,
         at: now(),
     };

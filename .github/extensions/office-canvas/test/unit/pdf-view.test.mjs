@@ -234,6 +234,49 @@ test("a page named by the plan but with the text nowhere on it is marked without
     assert.equal(badge(overlay).textContent, "Text replaced — on this page");
 });
 
+test("a record's span boxes only the lines that changed", async (t) => {
+    // #166: the paragraph is the join key, so it is what gets located; the span
+    // then narrows *inside* that match. Three lines of one paragraph, a change
+    // in the middle one -- the reader should see the middle line boxed, not the
+    // paragraph. The span is never searched on its own, so it cannot pull a box
+    // onto text the paragraph does not cover.
+    const harness = await loadPdfView();
+    t.after(harness.restore);
+    const { PdfView, pdfjs, container } = harness;
+
+    const lines = ["The quick brown fox ", "jumps over the lazy ", "dog by the river."];
+    pdfjs.serve("/pdf/a.pdf", {
+        pageItems: [
+            [pdfjs.textItem("Something else entirely.")],
+            lines.map((line, i) => pdfjs.textItem(line, { x: 40, y: 700 - i * 20 })),
+        ],
+    });
+
+    const view = new PdfView(container);
+    await view.load("/pdf/a.pdf");
+    harness.observers[0].enter(container.children[1]);
+    await harness.settle();
+
+    const paragraph = lines.join("");
+    const overlay = partsOf(container.children[1]).overlay;
+
+    view.setChange(change({ text: paragraph }));
+    assert.equal(boxes(overlay).length, 3, "the whole paragraph should box every line it occupies");
+
+    view.setChange(change({ text: paragraph, span: "over the lazy" }));
+    assert.equal(boxes(overlay).length, 1, "the span did not narrow the box");
+    assert.equal(badge(overlay).textContent, "Text replaced");
+
+    // A span the paragraph holds twice is not locatable inside the match, and a
+    // span absent from it never was. Both keep the paragraph's own box rather
+    // than drawing a box the code cannot place.
+    view.setChange(change({ text: paragraph, span: "the" }));
+    assert.equal(boxes(overlay).length, 3, "an ambiguous span narrowed anyway");
+
+    view.setChange(change({ text: paragraph, span: "not in this paragraph" }));
+    assert.equal(boxes(overlay).length, 3, "a span that is not there narrowed anyway");
+});
+
 test("clearing the change removes every marker", async (t) => {
     const harness = await loadPdfView();
     t.after(harness.restore);

@@ -187,6 +187,158 @@ test("a partial match must sit at a page edge, not float in the middle", () => {
     assert.equal(locateText(lines("Earlier text.", suffix, "Later text."), target).status, "not_found");
 });
 
+// --- narrowing to the changed span (#166) -----------------------------------
+
+test("a span narrows the box to the items holding the words that changed", () => {
+    const items = lines("Chapter One", "The quick brown fox", "jumps over the lazy dog.", "Another paragraph.");
+    const target = "The quick brown fox jumps over the lazy dog.";
+    const wide = locateText(items, target);
+    assert.deepEqual(wide.range, { startItem: 1, endItem: 2 }, "the unnarrowed match must span both lines");
+
+    const found = locateText(items, target, { span: "lazy dog." });
+    assert.equal(found.status, "located", "narrowing must not change what was matched");
+    assert.equal(found.matched, target, "`matched` names the match, not the narrowing");
+    assert.equal(found.narrowed, true);
+    assert.deepEqual(found.range, { startItem: 2, endItem: 2 });
+});
+
+test("a span is searched only inside the match, never across the page", () => {
+    // The discriminating case, and the reason the span is passed into the
+    // locator rather than searched for on its own: "brown fox" also sits in an
+    // unrelated paragraph earlier on the page. Searching the page for it would
+    // be ambiguous at best and would box the wrong paragraph at worst.
+    const items = lines("A brown fox appeared.", "The quick brown fox", "jumps over the lazy dog.");
+    const found = locateText(items, "The quick brown fox jumps over the lazy dog.", { span: "brown fox" });
+    assert.equal(found.status, "located");
+    assert.equal(found.narrowed, true);
+    assert.deepEqual(found.range, { startItem: 1, endItem: 1 }, "the box must be inside the located paragraph");
+});
+
+test("a span occurring twice inside the paragraph leaves the whole paragraph boxed", () => {
+    // Ambiguity inside the match is the one case narrowing cannot resolve, and
+    // the answer is the box that was there before -- never a first-match guess.
+    const items = lines("Total: 12 and", "again Total: 12 here.");
+    const target = "Total: 12 and again Total: 12 here.";
+    const found = locateText(items, target, { span: "Total: 12" });
+    assert.equal(found.status, "located");
+    assert.equal(found.narrowed, false);
+    assert.deepEqual(found.range, { startItem: 0, endItem: 1 });
+});
+
+test("a span that is not in the match at all leaves the match standing", () => {
+    // Reachable whenever the page and the record disagree about the text --
+    // a ligature, a smart quote, a glyph the export renders differently. The
+    // paragraph still matched, so the reader still gets a box.
+    const items = lines("The quick brown fox.");
+    const found = locateText(items, "The quick brown fox.", { span: "silver badger" });
+    assert.equal(found.status, "located");
+    assert.equal(found.narrowed, false);
+    assert.deepEqual(found.range, { startItem: 0, endItem: 0 });
+});
+
+test("a span equal to the whole match is not treated as a narrowing", () => {
+    const items = lines("The quick brown fox.");
+    const found = locateText(items, "The quick brown fox.", { span: "The quick brown fox." });
+    assert.equal(found.narrowed, false);
+});
+
+test("no span leaves every result exactly as it was", () => {
+    // The feature is additive. A record built before spans existed, or one whose
+    // span could not be derived, must produce the pre-#166 answer.
+    const items = lines("Chapter One", "The quick brown fox.");
+    for (const span of [null, undefined, "", "   "]) {
+        const found = locateText(items, "The quick brown fox.", { span });
+        assert.equal(found.status, "located");
+        assert.equal(found.narrowed, false, `${JSON.stringify(span)} should narrow nothing`);
+        assert.deepEqual(found.range, { startItem: 1, endItem: 1 });
+    }
+});
+
+test("a span is normalized before it is searched for", () => {
+    const items = lines("The quick brown fox", "jumps over the lazy dog.");
+    const found = locateText(items, "The quick brown fox jumps over the lazy dog.", { span: "  lazy   dog.  " });
+    assert.equal(found.narrowed, true);
+    assert.deepEqual(found.range, { startItem: 1, endItem: 1 });
+});
+
+test("a span narrows a page-straddling partial match too", () => {
+    // A paragraph that crosses a page break still deserves the narrower box on
+    // whichever page holds the changed words -- and must not claim one on the
+    // page that does not.
+    const target = "This paragraph is long enough to cross a page break cleanly and then some.";
+    const head = "This paragraph is long enough to cross";
+    const items = lines("Earlier text.", head);
+
+    const inside = locateText(items, target, { span: "long enough" });
+    assert.equal(inside.status, "partial");
+    assert.equal(inside.narrowed, true);
+    assert.deepEqual(inside.range, { startItem: 1, endItem: 1 });
+
+    // The changed words are on the *other* page, so this page keeps the fragment
+    // it matched rather than being narrowed to something it does not hold.
+    const elsewhere = locateText(items, target, { span: "and then some." });
+    assert.equal(elsewhere.status, "partial");
+    assert.equal(elsewhere.narrowed, false);
+});
+
+test("a span narrows on the continuation page too, and only for text that page holds", () => {
+    // The twin of the test above, on the other partial branch: here the
+    // paragraph's *tail* sits at the start of the page, which is what a reader
+    // sees on the page after a break. Round 2 of #181 pointed out that this
+    // direction had no positive test and had to be probed by hand -- the two
+    // branches map the needle onto the page through different offsets, so one
+    // passing says nothing about the other.
+    const head = "Ein langer Absatz beginnt auf der ersten Seite und";
+    const tail = "läuft auf der zweiten Seite weiter. Hallo Markus. Und Schluss.";
+    const target = `${head} ${tail}`;
+    const items = lines("läuft auf der zweiten Seite weiter.", "Hallo Markus. Und Schluss.", "Später mehr.");
+
+    const inside = locateText(items, target, { span: "Hallo Markus." });
+    assert.equal(inside.status, "partial");
+    assert.equal(inside.where, "start");
+    assert.equal(inside.narrowed, true);
+    assert.deepEqual(inside.range, { startItem: 1, endItem: 1 });
+
+    // Unique in the paragraph, but it lives in the head -- which is on the page
+    // before this one. The fragment box stands rather than a box being invented
+    // for text this page does not carry.
+    const elsewhere = locateText(items, target, { span: "ersten Seite" });
+    assert.equal(elsewhere.status, "partial");
+    assert.equal(elsewhere.narrowed, false);
+});
+
+test("a straddling page whose own text repeats the span is not narrowed onto it", () => {
+    // Round 1 of #181, reproduced. The paragraph crosses a break; the change is
+    // in the tail, on the *next* page; and the head on this page happens to
+    // contain the same words. Deciding uniqueness inside the fragment this page
+    // holds says "exactly one occurrence, narrow to it" -- and boxes the
+    // unchanged copy, confidently, on the page before the edit. Measured before
+    // the fix: `narrowed: true`, range item 1.
+    //
+    // Uniqueness has to be decided in the whole paragraph, which holds two
+    // copies, so nothing is claimed and the honest fragment box stands.
+    const head = "Zwischenbericht zum Quartal. Hallo Markus. Danach folgt";
+    const target = `${head} der Rest. Hallo Markus. Und Schluss.`;
+    const items = lines("Zwischenbericht zum Quartal.", "Hallo Markus.", "Danach folgt");
+
+    const found = locateText(items, target, { span: "Hallo Markus." });
+    assert.equal(found.status, "partial");
+    assert.equal(found.narrowed, false, "the box was narrowed onto an unchanged copy of the span");
+    assert.deepEqual(found.range, { startItem: 0, endItem: 2 }, "the whole-fragment box must stand");
+});
+
+test("a span occurring twice in the paragraph is refused even on a fully located match", () => {
+    // The same rule, on the branch where the fragment *is* the paragraph. It
+    // cannot regress independently, but it is the reason the fixed rule is one
+    // rule and not two: uniqueness is always asked of the paragraph.
+    const target = "Alpha beta. Gamma delta. Alpha beta. Epsilon.";
+    const items = lines("Alpha beta. Gamma delta.", "Alpha beta. Epsilon.");
+    const found = locateText(items, target, { span: "Alpha beta." });
+    assert.equal(found.status, "located");
+    assert.equal(found.narrowed, false);
+    assert.deepEqual(found.range, { startItem: 0, endItem: 1 });
+});
+
 test("an empty target is reported as empty rather than matching everything", () => {
     // "" is a substring of every string, so a locator that did not special-case
     // it would report a confident match at offset 0 on every page.
