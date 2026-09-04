@@ -47,14 +47,21 @@
 // line, and a bare filename with no coordinate is exactly what ADR 0009 wants
 // written. The two gates are complementary and stay separate.
 //
-// ## Scope and the two allowances
+// ## Scope: what is matched, and what is skipped
 //
-// Matched: a filename ending .mjs/.ps1/.js/.ts/.md/.yml/.yaml immediately
+// Matched: a filename whose extension is in `QUALIFIED` — a wide set of text
+// file extensions, not just this repo's own .mjs/.ps1/.md — immediately
 // followed by :NN or :NN-NN, and a bare :NN / :NN-NN introduced by `(`, a
-// backtick, or the words "at" / "line" / "lines" — the self-reference form, which ADR 0009 records as
-// simultaneously the most fragile (it rots on any insertion above it in its own
-// file, the most frequent edit a file receives) and the least checkable (a
-// matcher needs a filename to recognise a citation at all).
+// backtick, or the words "at" / "line" / "lines" — the self-reference form,
+// which ADR 0009 records as simultaneously the most fragile (it rots on any
+// insertion above it in its own file, the most frequent edit a file receives)
+// and the least checkable (a matcher needs a filename to recognise a citation
+// at all).
+//
+// The extension set is wide because a coordinate into `data.json` rots exactly
+// as one into `data.mjs` does, and there is no principle separating them. It is
+// deliberately not "any extension": `word.number` is also the shape of a
+// version string and of ordinary prose.
 //
 // Fenced code blocks are skipped, and this is an **exception to ADR 0009, named
 // there** — a verbatim record of a probe run is evidence, and evidence is not

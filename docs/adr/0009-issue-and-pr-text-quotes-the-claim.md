@@ -10,7 +10,8 @@ it. Two rules follow, one per surface:
   replace one. This is #160(b).
 - **Committed files carry no positional coordinate at all.** Reference code
   indirectly, by name and file: `Set-ParagraphText (word-host.ps1)`. See
-  *The rule in the tree* below for the exact form and the two exceptions.
+  *The rule in the tree* below for the exact form, the three exceptions, and the
+  one limit of scope the gate adds.
 
 The convention exists because a coordinate **hides the content of the claim it
 stands for**. A reader who follows a number lands on whatever is at that offset;
@@ -301,3 +302,40 @@ citation, and a gate that flagged those would be turned off rather than obeyed.
 A coordinate into a file whose extension is outside the whitelist is invisible
 for the same reason — the whitelist is wide, and deliberately not "anything",
 since "word.number" is also how version strings and ordinary prose look.
+
+### The invisible tail is permanent, and must be enumerated by occurrence
+
+Those gaps are not merely theoretical: this tree carries a **tail of coordinates
+no matcher here can see**, and the gate this ADR introduced can never turn red on
+one. Writing that down is the point — a limit that is recorded gets rechecked,
+and one that was handled once does not.
+
+Three shapes make up the tail, measured over the whole tree at `9c81f9b`:
+
+1. **An extensionless stem**, `read-smoke:157`. The matcher needs a known
+   extension to tell a citation from a ratio, and this repo names its suites
+   without one.
+2. **Prose carrying the number in words**, "at line 60", with no colon for any
+   matcher to anchor on.
+3. **A bare `:NN` with no introducer**, `probe-second-process.ps1`'s `:178`,
+   which the introducer requirement above deliberately lets past.
+
+**Enumerate by occurrence, never by site.** That distinction is not pedantry; it
+is the whole finding. The migration reported three *sites* handled — one per
+shape — and there were **seven occurrences**: the extensionless stem alone
+appeared five times, twice in `CONTEXT.md` and three times in one probe. Three
+were migrated, four survived, and they survived *inside the pull request that
+bans them*, where a hand check had already declared the shape done. A third
+review round found them.
+
+The lesson generalises past this tree. A shape the tooling cannot see is
+migrated by hand, and hand work is counted by *decision* — "I dealt with
+`read-smoke:157`" — while the tree contains *instances*. The two nouns come
+apart silently and nothing downstream notices, because the gate that would have
+noticed is precisely the one that cannot see this shape. So when one of these
+turns up, grep the whole tree for the literal string, fix every hit, and grep
+again; do not reason from the site.
+
+One of those four was also rotted, which is the ordinary reason to care: the
+line it named held a mid-sentence fragment of a comment, while the assertion the
+prose described sat further down the same check.

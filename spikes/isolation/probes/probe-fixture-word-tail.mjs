@@ -14,8 +14,9 @@
 //
 // This reproduces exactly that prefix and nothing else: census, generate the
 // fixture, then census again as fast as read-smoke would. It reports what
-// read-smoke's missing-file check would have concluded, then polls until the pid is gone so the
-// tail past `execFile` resolving is a number rather than a guess.
+// read-smoke's missing-file check would have concluded, then polls until the
+// pid is gone so the tail past `execFile` resolving is a number rather than a
+// guess.
 //
 // It kills nothing. Every pid it names is one make-fixture.ps1 created and
 // asked to quit; the point is how long that takes, not to hurry it.
@@ -82,8 +83,9 @@ for (let rep = 1; rep <= reps; rep++) {
     ]);
     const returnedAt = Date.now();
 
-    // The observation read-smoke:157 makes, at the same distance from the
-    // fixture returning: one census, no settle, no retry.
+    // The observation read-smoke's missing-file check makes with its
+    // `newWordPids` census, at the same distance from the fixture returning:
+    // one census, no settle, no retry.
     const appeared = (await wordPids()).filter((pid) => !before.includes(pid));
     const observedAt = Date.now();
 
@@ -116,4 +118,7 @@ for (let rep = 1; rep <= reps; rep++) {
 await rm(workRoot, { recursive: true, force: true }).catch(() => {});
 
 const failed = rows.filter((r) => r.verdict === "would FAIL").length;
-console.log(`\nread-smoke:157 would have failed ${failed}/${reps} time(s) on the fixture's own Word alone.`);
+console.log(
+    `\nread-smoke's missing-file check would have failed ${failed}/${reps} time(s) ` +
+        "on the fixture's own Word alone.",
+);

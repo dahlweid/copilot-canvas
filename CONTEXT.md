@@ -1288,10 +1288,10 @@ The operational consequence, given a two-round cap: **on an unchanged tree a
 second identical pass re-reads the same diff.** Round 2 must change the angle —
 a different model, aimed at what round 1's framing structurally could not see —
 or it is a formality. On #46, round 1 proved `[Console]::InputEncoding` is set
-in `word-host.ps1`'s preamble and precedes first use; it never asked whether that assignment can
-*throw*, which on Windows it can when stdin is a redirected pipe, which is
-exactly how this host is spawned. Same assignment, same diff, question round 1 was
-never pointed at.
+in `word-host.ps1`'s preamble and precedes first use; it never asked whether
+that assignment can *throw*, which on Windows it can when stdin is a redirected
+pipe, which is exactly how this host is spawned. Same assignment, same diff,
+question round 1 was never pointed at.
 
 **Do not ask for a WINWORD census delta. It is below this machine's noise
 floor.** The gate was specified here and was wrong. Asked for it on #26, L3 got
@@ -1364,15 +1364,15 @@ absorbing, and the answer reallocates the blame. Eighteen runs of `read-smoke`
 on the pre-lock tree, against a neighbour process looping `make-fixture.ps1`
 (a real `Word.Application` … `Quit()`, which is what a sibling suite does),
 went green **1 time in 18** (`probe-suite-contention.mjs`). All 17 reds failed
-`read-smoke:157` — *"a missing file is reported without starting Word"* — and
+`read-smoke`'s *"a missing file is reported without starting Word"* check — and
 exactly **one** of those 17 *also* failed `assertNoLeakedWord`. So the poll
-above is doing its job; what had nothing was the bare `newWordPids` census two
-lines away. Read that as a rule rather than a statistic: `assertNoLeakedWord`
-asserts a **state at a deadline**, which a poll can wait out, while
-`read-smoke:157` asserts an **absence over an interval**, for which there is no
-later moment at which "no Word appeared" becomes true. A deadline cannot rescue
-the second kind, and adding one there would only make the check take longer to
-be wrong.
+above is doing its job; what had nothing was the bare `newWordPids` census in
+the same check. Read that as a rule rather than a statistic:
+`assertNoLeakedWord` asserts a **state at a deadline**, which a poll can wait
+out, while that `newWordPids` census asserts an **absence over an interval**,
+for which there is no later moment at which "no Word appeared" becomes true. A
+deadline cannot rescue the second kind, and adding one there would only make the
+check take longer to be wrong.
 
 The fix is therefore not a better deadline but exclusion:
 `test/integration/word-suite-lock.mjs` is a machine-wide lock every Word suite
