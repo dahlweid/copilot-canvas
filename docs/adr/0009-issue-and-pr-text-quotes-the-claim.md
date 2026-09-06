@@ -142,6 +142,13 @@ Three exceptions, all narrow, all because the objection above does not apply:
   `check-citation-lines.mjs` and its unit test carrying rot-shaped fixtures to
   assert on. Naming a string is not pointing at a line.
 
+Those three are the exceptions, and they are the whole of what the *rule*
+permits. The gate that enforces it lets a fourth class through — vendored and
+binary files, which it never opens — but that is a **limit of its scope, not an
+exception anyone may invoke**, and it is stated with the other limits under *Two
+limits, stated so this is not oversold* below. The distinction is the point: an
+author may reach for a pin, and may not reach for "it was not scanned".
+
 ### Why the tree was never the safe half
 
 `word-host.ps1` argues that Word's autocorrect cannot fire because the host

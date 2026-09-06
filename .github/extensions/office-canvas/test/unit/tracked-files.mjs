@@ -84,8 +84,9 @@ export async function trackedFiles(pathspec) {
  *   run there at all, with or without git.
  * - **Repo-folder.** `install_extension` "copies a folder, not a repository"
  *   (the `vcs` exclusion rule in `tools/package-extension.mjs`) and its own skip
- *   list is `dist` /
- *   `build` / `out` (the `output` rule there) -- **`test` is not in it**. The packager excludes
+ *   list includes `dist` and
+ *   `build` (the `output` rule there records both as matching it) -- **`test` is
+ *   not in it**. The packager excludes
  *   `test` precisely because this path will not. So the installed directory
  *   contains `test/unit/*.test.mjs` and has no `.git`, which is this mode
  *   exactly.

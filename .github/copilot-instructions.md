@@ -112,10 +112,12 @@ welcome and has repeatedly found genuine defects.
   reads tracker text, so that half stays convention, while
   `check-citation-lines.mjs` now **rejects** a coordinate in any tracked line it
   reads rather than validating it. Read its green message as it states itself —
-  for the fenced and exempt files it read past, it counts the lines and says how
-  many were coordinate-shaped; vendored and binary files it never opens, so
-  there it can only count files. A pin is resolved against git, so a
-  SHA-shaped string naming no commit is rejected rather than waved past.
+  for fenced blocks it counts the lines it read past and how many were
+  coordinate-shaped; for exempt files it counts the files and the
+  coordinate-shaped lines inside them; vendored and extension-skipped binary
+  files it never opens, so there it can only count files. A pin is resolved
+  against git, so a SHA-shaped string naming no commit is rejected rather than
+  waved past.
 
 ## If you are coordinating work rather than doing it
 

@@ -120,9 +120,12 @@
 //      grant themselves at an inconvenient moment is how a gate gets worked
 //      around rather than obeyed. Growing it is an ADR-0009 question.
 //   4. **Vendored and binary files**, skipped as out of scope rather than
-//      excused — see VENDORED and SKIP below. Listed here because the gate does
-//      it: documenting three allowances while applying four is the same
-//      overstatement this header was corrected for once already.
+//      excused — see VENDORED and SKIP below, and the NUL-byte branch in
+//      `findCoordinates`, which catches a binary whose extension SKIP does not
+//      list. That third path reads the file before discarding it, so it is
+//      counted apart from the two that never open one. Listed here because the
+//      gate does it: documenting three allowances while applying four is the
+//      same overstatement this header was corrected for once already.
 
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -229,6 +232,12 @@ export function findCoordinates(tracked, readFile) {
     exemptFiles: 0,
     vendoredFiles: 0,
     binaryFiles: 0,
+    // Split from binaryFiles on purpose. A file skipped by extension is never
+    // opened; one caught by a NUL byte was read in full first and its contents
+    // discarded. Summing them under "not scanned at all" would make the message
+    // false the first time the second branch fires — which is when an unlisted
+    // binary format is committed, exactly the moment nobody re-reads this text.
+    binaryByContentFiles: 0,
     fencedLines: 0,
     fencedFiles: 0,
     // The measured size of the two skips that hide *authored* text. Not a defect
@@ -276,7 +285,7 @@ export function findCoordinates(tracked, readFile) {
       continue;
     }
     if (text.includes("\0")) {
-      skipped.binaryFiles++;
+      skipped.binaryByContentFiles++;
       continue;
     }
 
@@ -456,6 +465,14 @@ export function report({ coordinates, pinned, unreadable, skipped, pins }) {
         "    left undone: a coordinate inside a recorded run is protected on\n" +
         "    purpose, and driving this number to zero would mean editing\n" +
         "    transcripts, which is the harm the exception exists to prevent.\n";
+  // Reported separately from binaryFiles, and only when non-zero: these files
+  // *were* opened and read, then discarded unexamined. Folding them into "never
+  // opened" is the kind of small false claim this gate exists to stop.
+  const binaryByContent =
+    (s.binaryByContentFiles ?? 0) === 0
+      ? "\n"
+      : `  ${s.binaryByContentFiles} further file(s) were read, found to contain a NUL byte,\n` +
+        "    and discarded unexamined — opened, but not checked.\n\n";
   console.log(
     `OK — no positional coordinate in any tracked line this gate read; ${pinNote}.\n\n` +
       "Not read, and therefore not certified:\n" +
@@ -465,7 +482,8 @@ export function report({ coordinates, pinned, unreadable, skipped, pins }) {
       `  ${s.exemptFiles ?? 0} exempt file(s), whose subject matter is a rotted coordinate;\n` +
       `    ${s.exemptCoordinateLines ?? 0} coordinate-shaped line(s) in them, which is what being a\n` +
       "    fixture for this rule looks like.\n" +
-      `  ${s.vendoredFiles ?? 0} vendored and ${s.binaryFiles ?? 0} binary file(s), not scanned at all.\n\n` +
+      `  ${s.vendoredFiles ?? 0} vendored and ${s.binaryFiles ?? 0} binary file(s), never opened.\n` +
+      binaryByContent +
       "Two gaps are in the matcher itself, and no count can size them: a bare\n" +
       "`:NN` with no `(`, backtick or \"at\"/\"line\" in front is not recognised as a\n" +
       "citation, because unintroduced `:\\d+` is a clock, a port or a JSON value far\n" +

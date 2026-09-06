@@ -375,6 +375,37 @@ test("vendored third-party code is skipped, and only under the vendor path", () 
   assert.equal(notVendor.coordinates.length, 1, "the vendor skip is matching a substring, not the path");
 });
 
+test("a binary skipped by extension and one caught by a NUL byte are counted apart", () => {
+  // Both end the same way — the file is not checked — but only one of them is
+  // never opened, and the success message says "never opened" of the pair. The
+  // NUL-byte branch runs *after* the read, so summing them makes that phrase
+  // false. Unreachable in this tree today: every binary here is caught by
+  // extension. It fires the first time an unlisted binary format is committed,
+  // which is precisely when nobody re-reads the message.
+  const files = {
+    "spikes/frames/shot.jpg": "irrelevant, never read\n",
+    "assets/blob.dat": "header\u0000payload\n",
+  };
+  const opened = [];
+  const { skipped } = findCoordinates(Object.keys(files), (p) => {
+    opened.push(p);
+    return files[p];
+  });
+
+  assert.equal(skipped.binaryFiles, 1, "the extension-skipped binary is not counted on its own");
+  assert.equal(skipped.binaryByContentFiles, 1, "an opened-and-discarded binary is counted as never opened");
+  assert.deepEqual(opened, ["assets/blob.dat"], "the extension skip opened a file, or the NUL branch did not");
+
+  // And the message keeps the two apart rather than restating the sum.
+  const text = capture(() => report({ coordinates: [], pinned: [], unreadable: [], skipped, pins: null })).text;
+  assert.match(text, /1 binary file\(s\), never opened/, "the never-opened count absorbed the opened one");
+  assert.match(text, /1 further file\(s\) were read/, "the opened-and-discarded file is not disclosed");
+
+  // Control: with none of them, the message does not invent an empty category.
+  const none = capture(() => report(analyze({ "doc.md": "no coordinate here\n" }))).text;
+  assert.doesNotMatch(none, /further file\(s\) were read/, "an empty category is reported as if it happened");
+});
+
 test("every coordinate on a line is reported — count guard against a silent-empty scan", () => {
   // A scanner that finds nothing also exits 0. These equalities are what refuse
   // that: the emitted count equals the authored count, across one line and
