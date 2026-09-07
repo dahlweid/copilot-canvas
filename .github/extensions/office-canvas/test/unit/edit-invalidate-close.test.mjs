@@ -47,7 +47,20 @@ const fakeHost = ({ docPath, calls, gates = {} }) => ({
         return { docId, pageCount: 1, wordCount: 7, sizeBytes: 32, modifiedIso: "2026-01-01T00:00:00.000Z" };
     },
     async closeDocument() {
-        calls.push("closeDocument");
+        // Two markers, not one, and the distinction is the point. An async
+        // function body runs synchronously up to its first `await`, and the
+        // awaited *expression* is evaluated before the suspension -- so a single
+        // marker pushed here is recorded even by a caller that never waits for
+        // the returned promise. Dropping the `await` in front of
+        // `#invalidateState (render-cache.mjs)`, or the one in front of
+        // `host.closeDocument` inside it, was measured leaving a one-marker
+        // version of this test green. Releasing the document queue while a close
+        // is still in flight against Word is this repo's named failure class, so
+        // a test that cannot see it is the wrong test.
+        calls.push("closeDocument:entered");
+        if (gates.closeEntered) gates.closeEntered.resolve();
+        if (gates.releaseClose) await gates.releaseClose.promise;
+        calls.push("closeDocument:returned");
         return { closed: true };
     },
     async structure({ workDir, out }) {
@@ -119,14 +132,31 @@ test("an edit holds the document queue until its invalidation has closed the doc
     // the test likes, so a competing operation that is not queued has unbounded
     // opportunity to run, and "it did not run" stops being a statement about
     // timing.
+    //
+    // The title says *has closed*, and the assertions have to mean it. An
+    // earlier version of this test recorded a single `closeDocument` marker,
+    // which an async fake pushes synchronously -- before its first `await` --
+    // so it was recorded even by a caller that never waited for the close to
+    // finish. Measured: with `await this.#invalidateState(state)` in
+    // `editDocument (render-cache.mjs)` reduced to a bare call, that version
+    // stayed green. It observed when the teardown *started* while its title
+    // claimed it had *finished*, which is the defect #178 is about, reproduced
+    // in the test written to close it. The gate inside `closeDocument` and the
+    // `closeDocument:returned` marker are what fix that.
     await withFixture("queued.docx", async ({ cache, docPath }) => {
         const calls = [];
         const editEntered = deferred();
         const releaseEdit = deferred();
+        const closeEntered = deferred();
+        const releaseClose = deferred();
         let edit;
         let outline;
 
-        cache.host = fakeHost({ docPath, calls, gates: { editEntered, releaseEdit } });
+        cache.host = fakeHost({
+            docPath,
+            calls,
+            gates: { editEntered, releaseEdit, closeEntered, releaseClose },
+        });
 
         try {
             const { address, revisionToken } = await openAndAddress(cache, docPath);
@@ -145,23 +175,40 @@ test("an edit holds the document queue until its invalidation has closed the doc
                 "an outline ran against the document while an edit was mid-flight inside Word",
             );
 
+            // Let the edit finish and pin the invalidation instead, inside the
+            // close. This is the window the queue must still be holding: the
+            // bytes on disk have already changed and Word's copy is mid-teardown.
             releaseEdit.resolve();
+            await closeEntered.promise;
+            await turns(20);
+
+            assert.ok(
+                !calls.includes("outlineMarkup"),
+                "an outline ran while the invalidation's closeDocument was still in flight against Word",
+            );
+
+            releaseClose.resolve();
             const result = await edit;
             await outline;
 
             assert.equal(result.applied.op, "replace_text", "the edit did not run to completion");
 
-            // The claim is the ordering of the units of work, not how many reads
-            // the editor needs, so the reads are filtered out rather than
-            // asserted -- a read count is `document-editor.mjs`'s business and
-            // would make this test red for something it is not about.
+            // The load-bearing assertion: a settled order, with nothing timing-
+            // bounded about it. `closeDocument:returned` must precede
+            // `outlineMarkup`, which is what distinguishes a queue released after
+            // the teardown *finished* from one released when it merely started.
+            //
+            // The reads are filtered out rather than asserted -- a read count is
+            // `document-editor.mjs`'s business and would make this test red for
+            // something it is not about.
             assert.deepEqual(
                 calls.filter((call) => call !== "structure" && call !== "openDocument"),
-                ["edit", "closeDocument", "outlineMarkup", "outlinePositions"],
+                ["edit", "closeDocument:entered", "closeDocument:returned", "outlineMarkup", "outlinePositions"],
                 "the outline handshake interleaved with the edit or its invalidation",
             );
         } finally {
             releaseEdit.resolve();
+            releaseClose.resolve();
             await Promise.allSettled([edit, outline].filter(Boolean));
         }
     });
@@ -179,10 +226,16 @@ test("a reopen cannot land between an edit and the invalidation that closes it",
         const calls = [];
         const editEntered = deferred();
         const releaseEdit = deferred();
+        const closeEntered = deferred();
+        const releaseClose = deferred();
         let edit;
         let refresh;
 
-        cache.host = fakeHost({ docPath, calls, gates: { editEntered, releaseEdit } });
+        cache.host = fakeHost({
+            docPath,
+            calls,
+            gates: { editEntered, releaseEdit, closeEntered, releaseClose },
+        });
 
         try {
             const { address, revisionToken } = await openAndAddress(cache, docPath);
@@ -200,19 +253,42 @@ test("a reopen cannot land between an edit and the invalidation that closes it",
                 "a refresh reopened the document while an edit was still in flight",
             );
 
+            // The close is gated for the same reason it is in the test above,
+            // and not merely for symmetry: ungated, this fake's two markers are
+            // pushed with no suspension between them, so the settled order below
+            // would hold whatever the caller did with the close's promise. The
+            // gate is what makes the reopen have to *wait* for a teardown that is
+            // genuinely still running.
             releaseEdit.resolve();
+            await closeEntered.promise;
+            await turns(20);
+
+            assert.equal(
+                calls.filter((call) => call === "openDocument").length,
+                opensBefore,
+                "a refresh reopened the document while its close was still in flight against Word",
+            );
+
+            releaseClose.resolve();
             await edit;
             const refreshed = await refresh;
 
-            const lifecycle = calls.filter((call) => call === "edit" || call === "closeDocument" || call === "openDocument");
+            const lifecycle = calls.filter((call) => call !== "structure");
             assert.deepEqual(
                 lifecycle,
-                ["openDocument", "edit", "closeDocument", "openDocument"],
+                [
+                    "openDocument",
+                    "edit",
+                    "closeDocument:entered",
+                    "closeDocument:returned",
+                    "openDocument",
+                ],
                 "the reopen landed inside the edit's invalidation instead of queueing behind it",
             );
             assert.equal(refreshed.changed, true, "the refresh did not observe the edited bytes");
         } finally {
             releaseEdit.resolve();
+            releaseClose.resolve();
             await Promise.allSettled([edit, refresh].filter(Boolean));
         }
     });
