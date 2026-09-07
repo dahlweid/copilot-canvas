@@ -27,9 +27,24 @@
 #
 # Run from the extension root:
 #   powershell -File test/unit/mutate-webview.ps1
+#
+# `-ListMutants` prints the array below as JSON and exits without running
+# anything. It is what the anchor gate consumes; see the block after the array.
+param([switch]$ListMutants)
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+$repo = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $root))
+
+# One place decides which root a mutant's `file` is relative to, because the
+# mutation loop and `-ListMutants` have to agree: a gate that resolved against
+# the other root would report every entry of the convention it guessed wrong as
+# a missing file. `at = 'repo'` means the repository root -- no mutant here uses
+# it, but `mutate-pdfjs.ps1`'s do, and the two harnesses answering the same
+# question differently is what makes the key easy to miss.
+function Resolve-MutantPath($m) {
+    Join-Path $(if ($m.at -eq 'repo') { $repo } else { $root }) $m.file
+}
 
 # An em dash is one character decoded as UTF-8 and three decoded as ANSI. This
 # has to come before any mutant runs: a mangled anchor still produces a green
@@ -306,6 +321,37 @@ $mutants = @(
        to   = '            t[4],' }
 )
 
+# --- what the anchor gate reads -----------------------------------------------
+#
+# `tools/check-mutation-anchors.mjs` asks this harness for its own array rather
+# than reading this file, so the mutants and the root each `file` resolves
+# against stay in one place. A gate that re-derived either would be a second
+# parser of the same data, and the first attempt at one silently dropped a third
+# of `mutate-pdfjs.ps1`'s corpus while reporting a total that looked
+# authoritative. It is also the gate that would have caught the two anchors
+# against `pdf-view.mjs` that sat dead here on main until #181.
+#
+# This has to come before the baseline run below: listing anchors runs no suite.
+if ($ListMutants) {
+    # Windows PowerShell writes stdout in the console code page, which would
+    # mangle a non-ASCII anchor on the way to the gate; there it would look like
+    # a broken anchor rather than a broken pipe. Two anchors here carry a
+    # literal em dash.
+    [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+    $listed = @($mutants | ForEach-Object {
+        [pscustomobject]@{
+       harness = $MyInvocation.MyCommand.Name
+       name    = $_.name
+       file    = $_.file
+       path    = Resolve-MutantPath $_
+       from    = $_.from
+       to      = $_.to
+        }
+    })
+    ConvertTo-Json -InputObject $listed -Depth 4
+    exit 0
+}
+
 $survived = @()
 $missing = @()
 
@@ -320,7 +366,7 @@ try {
     }
 
     foreach ($m in $mutants) {
-        $file = Join-Path $root $m.file
+        $file = Resolve-MutantPath $m
         $original = [IO.File]::ReadAllText($file)
         if (-not $original.Contains($m.from)) {
             # A stale anchor is its own failure, not a survivor. Reported as one

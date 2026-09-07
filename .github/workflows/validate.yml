@@ -107,6 +107,33 @@ jobs:
       - name: Check no committed file carries a positional coordinate
         run: node tools/check-citation-lines.mjs
 
+      # The mutation harnesses under test/unit/ are the liveness check on the
+      # unit suite, and they have one silent failure mode: an anchor that no
+      # longer occurs in the file it names is never applied, so the mutant is
+      # counted while measuring nothing. Three sat dead on `main` -- two against
+      # `pdf-view.mjs` in `mutate-webview.ps1`, and one in `mutate-create.ps1`
+      # retired by a rewording, dead from `fc50f98` until it was re-anchored.
+      #
+      # The harnesses themselves report that state and exit non-zero, so this is
+      # not a gap in them; it is that nothing runs them. Running them needs
+      # Windows, PowerShell 5.1 and one full suite pass per mutant -- 143 of
+      # them. Resolving the anchors needs none of that. It is pure text, it
+      # finishes in about a second here, and it is the half of the corpus's
+      # rot that is invisible.
+      #
+      # Read a green run exactly as narrowly as it states itself: every anchor
+      # occurs once in the file it names, so every mutation *would be applied*.
+      # It says nothing about whether any mutant is killed. That still needs the
+      # harnesses run, which stays open on #182.
+      #
+      # It asks each harness for its own array via `-ListMutants` rather than
+      # parsing the `.ps1`. A parser was tried and reported 29 of
+      # `mutate-pdfjs.ps1`'s 62 mutants, a bogus ambiguity on an anchor built by
+      # concatenation, and 33 missing files from resolving one path convention
+      # against the other harnesses' root. `pwsh` is preinstalled on this runner.
+      - name: Check every mutation anchor still resolves
+        run: node tools/check-mutation-anchors.mjs
+
       # `node --test <dir>` fails to resolve modules on some Node versions, so the
       # file set is expanded by the shell and handed to Node as discrete
       # arguments. That is deliberate: passing a *pattern* means two different
