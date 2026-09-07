@@ -781,7 +781,15 @@ const editDocumentTool = {
                 revisionToken: args?.revisionToken,
             });
             await refreshCanvasesFor(result.document.path, changeRecordFrom(result));
-            return result;
+            // `previousText` exists for the change overlay, which has already
+            // consumed it above. It is dropped here rather than returned: the
+            // caller supplied the text it replaced and holds the read it came
+            // from, so echoing a second copy of a paragraph back adds size to
+            // every edit result and one more field a reader has to decide to
+            // ignore.
+            const { previousText, ...forCaller } = result;
+            void previousText;
+            return forCaller;
         }),
 };
 

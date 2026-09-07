@@ -170,6 +170,52 @@ test("a deletion on an unpainted page is still marked", () => {
     ]);
 });
 
+// --- the narrowed box (#166) ---------------------------------------------------
+
+test("a record's span narrows the mark to the line that changed", () => {
+    // End to end through the plan: the record still joins on the paragraph, and
+    // the box lands on the part of it that changed.
+    const marks = planChangeMarks(
+        record({ text: "the replacement paragraph that changed here", span: "changed here" }),
+        [painted(2, "nothing here"), painted(3, "the replacement paragraph that ", "changed here")],
+    );
+    assert.deepEqual(
+        marks.map((m) => m.number),
+        [3],
+    );
+    assert.equal(marks[0].found.narrowed, true);
+    assert.deepEqual(marks[0].found.range, { startItem: 1, endItem: 1 });
+});
+
+test("a span that cannot be narrowed leaves the paragraph's own box", () => {
+    // Every failure to narrow -- ambiguous inside the paragraph, absent from the
+    // page, or no span at all -- must land on the pre-#166 behaviour rather than
+    // on no box.
+    for (const span of [null, "not on this page", "the"]) {
+        const marks = planChangeMarks(
+            record({ text: "the replacement paragraph the end", span }),
+            [painted(3, "the replacement paragraph ", "the end")],
+        );
+        assert.equal(marks.length, 1, `${JSON.stringify(span)} should still mark the page`);
+        assert.equal(marks[0].found.narrowed, false);
+        assert.deepEqual(marks[0].found.range, { startItem: 0, endItem: 1 });
+    }
+});
+
+test("a span never pulls the mark onto a page the paragraph is not on", () => {
+    // The straddle page is searched for the *paragraph*. A span that also occurs
+    // there, in unrelated text, must not put a box on it -- that is the box
+    // asserting a position nothing determined.
+    const marks = planChangeMarks(
+        record({ text: "the replacement paragraph that changed here", span: "changed here" }),
+        [painted(2, "something else changed here entirely"), painted(3, "the replacement paragraph that changed here")],
+    );
+    assert.deepEqual(
+        marks.map((m) => m.number),
+        [3],
+    );
+});
+
 test("a reported page outside the document marks nothing", () => {
     assert.deepEqual(planChangeMarks(record({ page: 9 }), [painted(1, "a"), painted(2, "b")]), []);
     assert.deepEqual(planChangeMarks(record({ page: 9, locatable: false, text: null }), [painted(1, "a")]), []);

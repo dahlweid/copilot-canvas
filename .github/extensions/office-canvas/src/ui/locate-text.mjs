@@ -122,8 +122,24 @@ export const MIN_PARTIAL_CHARS = 24;
  * map's `occurrence` counts within a heading, not within a page, so there is no
  * sound way to pick between two identical strings here -- and drawing a box on
  * the wrong one asserts a position that was never determined.
+ *
+ * `span`, when given, is the part of `target` that actually changed (#166). It
+ * is a *refinement of the match*, never a second search: the page text is never
+ * searched for it. It moves the box only when the span occurs exactly once in
+ * the whole of `target` **and** that occurrence lies inside the part of `target`
+ * this page holds -- so a `located` match narrows on uniqueness across the
+ * paragraph, and a `partial` one narrows only when the changed words are on this
+ * side of the page break. Anything else leaves the full match standing, which is
+ * the whole-paragraph box that was drawn before #166. `narrowed` says which
+ * happened, so a caller never has to infer it by comparing ranges.
+ *
+ * Deciding uniqueness in the fragment rather than the paragraph is what round 1
+ * of #181 caught, and the failure is worth naming because it is not obvious: a
+ * paragraph straddling a break, whose head repeats the words that changed in its
+ * tail, gave a *confident* box on the unchanged copy -- on the page before the
+ * edit -- where before it had drawn an honest box around the whole fragment.
  */
-export function locateText(items, target, { minPartialChars = MIN_PARTIAL_CHARS } = {}) {
+export function locateText(items, target, { minPartialChars = MIN_PARTIAL_CHARS, span = null } = {}) {
     const needle = normalizeText(target);
     if (!needle) return { status: "empty", range: null };
 
@@ -135,8 +151,38 @@ export function locateText(items, target, { minPartialChars = MIN_PARTIAL_CHARS 
         endItem: owners[start + length - 1],
     });
 
+    // The narrowed range, or the given one unchanged. `matched` keeps naming the
+    // text the *match* was made on, because that is what the status is about;
+    // narrowing only moves the box.
+    //
+    // `fragmentStart` and `length` say which slice of `needle` this page holds,
+    // and `pageStart` where that slice sits in the page text. The two differ for
+    // a `partial`, and keeping them apart is the point: uniqueness is decided in
+    // the **whole paragraph**, never in the fragment. Round 1 of #181 built the
+    // case -- a paragraph straddling a break whose head repeats the span that
+    // changed in its tail. Unique *within the fragment* held there while the
+    // paragraph held two copies, and the box landed confidently on the unchanged
+    // one, on the page before the edit.
+    const narrow = (found, pageStart, fragmentStart, length) => {
+        const wanted = normalizeText(span);
+        if (!wanted || wanted === found.matched) return found;
+        const hits = findOccurrences(needle, wanted);
+        if (hits.length !== 1) return found;
+        // Unique in the paragraph, but this page may hold the other end of it.
+        const at = hits[0];
+        if (at < fragmentStart || at + wanted.length > fragmentStart + length) return found;
+        return { ...found, narrowed: true, range: rangeFor(pageStart + (at - fragmentStart), wanted.length) };
+    };
+
     const hits = findOccurrences(text, needle);
-    if (hits.length === 1) return { status: "located", matched: needle, range: rangeFor(hits[0], needle.length) };
+    if (hits.length === 1) {
+        return narrow(
+            { status: "located", matched: needle, narrowed: false, range: rangeFor(hits[0], needle.length) },
+            hits[0],
+            0,
+            needle.length,
+        );
+    }
     if (hits.length > 1) return { status: "ambiguous", occurrences: hits.length, range: null };
 
     // Not found whole. The paragraph may straddle a page break, in which case
@@ -146,16 +192,33 @@ export function locateText(items, target, { minPartialChars = MIN_PARTIAL_CHARS 
     for (let length = limit; length >= minPartialChars; length--) {
         // Tail of the target sitting at the start of the page.
         if (text.startsWith(needle.slice(needle.length - length))) {
-            return { status: "partial", where: "start", matched: needle.slice(needle.length - length), range: rangeFor(0, length) };
+            return narrow(
+                {
+                    status: "partial",
+                    where: "start",
+                    matched: needle.slice(needle.length - length),
+                    narrowed: false,
+                    range: rangeFor(0, length),
+                },
+                0,
+                needle.length - length,
+                length,
+            );
         }
         // Head of the target sitting at the end of the page.
         if (text.endsWith(needle.slice(0, length))) {
-            return {
-                status: "partial",
-                where: "end",
-                matched: needle.slice(0, length),
-                range: rangeFor(text.length - length, length),
-            };
+            return narrow(
+                {
+                    status: "partial",
+                    where: "end",
+                    matched: needle.slice(0, length),
+                    narrowed: false,
+                    range: rangeFor(text.length - length, length),
+                },
+                text.length - length,
+                0,
+                length,
+            );
         }
     }
     return { status: "not_found", range: null };

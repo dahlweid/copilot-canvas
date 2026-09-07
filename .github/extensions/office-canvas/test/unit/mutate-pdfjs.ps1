@@ -179,9 +179,23 @@ $mutants = @(
     # still returning `ambiguous`, and the test would pass on a broken locator.
     @{ name = 'the first of several matches is picked'
        file = '.github/extensions/office-canvas/src/ui/locate-text.mjs'; at = 'repo'
-       from = '    if (hits.length === 1) return { status: "located", matched: needle, range: rangeFor(hits[0], needle.length) };
+       from = '    if (hits.length === 1) {
+        return narrow(
+            { status: "located", matched: needle, narrowed: false, range: rangeFor(hits[0], needle.length) },
+            hits[0],
+            0,
+            needle.length,
+        );
+    }
     if (hits.length > 1) return { status: "ambiguous", occurrences: hits.length, range: null };'
-       to   = '    if (hits.length >= 1) return { status: "located", matched: needle, range: rangeFor(hits[0], needle.length) };' }
+       to   = '    if (hits.length >= 1) {
+        return narrow(
+            { status: "located", matched: needle, narrowed: false, range: rangeFor(hits[0], needle.length) },
+            hits[0],
+            0,
+            needle.length,
+        );
+    }' }
 
     @{ name = 'the partial-match confidence floor is removed'
        file = '.github/extensions/office-canvas/src/ui/locate-text.mjs'; at = 'repo'

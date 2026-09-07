@@ -41,6 +41,19 @@ import { describeIntent, validateIntent } from "./edit-intent.mjs";
 import { listSnapshots, revertToLatest, SnapshotError, takeSnapshot } from "./snapshots.mjs";
 
 /**
+ * Operations after which the paragraph Word touched is the one the address
+ * named, so the pre-edit text read a moment earlier still describes it.
+ *
+ * The inserts are deliberately absent, and an index comparison would not catch
+ * them: `insert_paragraph_before` pushes the anchor down and Word reports the
+ * *same* `wordIndex` for the new paragraph, so the indices match while the
+ * paragraphs do not. The addressed paragraph's text is the anchor's, and
+ * diffing a new paragraph against its neighbour would derive a changed span
+ * from two unrelated strings.
+ */
+const OPS_THAT_TOUCH_THE_ADDRESSED_PARAGRAPH = new Set(["replace_text", "set_heading_level"]);
+
+/**
  * A typed edit failure.
  *
  * `details` is copied onto `data` as well as onto the error itself, and the
@@ -427,9 +440,30 @@ export class DocumentEditor {
                 `release ${result.releaseMs}ms, lock held ${result.lockHeldMs}ms, total ${result.totalMs}ms)`,
         );
 
+        // What the touched paragraph said before the edit, so the change overlay
+        // can narrow its highlight to the words that actually changed (#166).
+        //
+        // It is free: the read above happens anyway, to resolve the address, and
+        // this same string is already sent to the host as `expectedText` for its
+        // pre-mutation check. Nothing extra is read, and no coordinate is
+        // carried across the edit -- this is text, which is what ADR 0006 leaves
+        // available. The diff itself belongs to `changeRecordFrom`
+        // (`change-record.mjs`), which works on the same normalization the page
+        // join uses; the host's own prefix/suffix diff in `Set-ParagraphText`
+        // (`word-host.ps1`) answers a different question -- which COM characters
+        // to leave untouched so their run formatting survives -- over Word's
+        // raw range text, and the two share no invariant.
+        //
+        // `null` rather than the anchor's text where the op does not touch the
+        // addressed paragraph, because a wrong prior text is worse than none:
+        // absent means "no narrowing", wrong means a confident narrow box in
+        // the wrong place.
+        const previousText = OPS_THAT_TOUCH_THE_ADDRESSED_PARAGRAPH.has(intent.op) ? (target.text ?? null) : null;
+
         return {
             applied: { ...intent, description: describeIntent(intent) },
             paragraph: touched,
+            previousText,
             page: result.page || null,
             protectedView: Boolean(result.protectedView),
             markOfTheWeb: Boolean(result.markOfTheWeb),

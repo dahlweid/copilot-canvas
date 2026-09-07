@@ -309,6 +309,98 @@ test("edits to different documents are not serialized against each other", async
     });
 });
 
+// --- the pre-edit text the change overlay narrows with (#166) -----------------
+
+/**
+ * A reader whose text changes once the file on disk does, so the pre-edit read
+ * and the post-edit read disagree the way they do against a real Word.
+ */
+const changingReader = (docPath, before, after) => ({
+    read: async () => ({
+        path: docPath,
+        name: path.basename(docPath),
+        revisionToken: await fileRevisionToken(docPath),
+        writable: true,
+        paragraphCount: 2,
+        paragraphs: [
+            {
+                address: "p:0123456789ab",
+                text: (await readFile(docPath, "utf8")) === "ORIGINAL" ? before : after,
+                wordIndex: 1,
+                index: 0,
+                headingLevel: null,
+                styleId: null,
+                inTable: false,
+            },
+            {
+                address: "p:ffffffffffff",
+                text: after,
+                wordIndex: 2,
+                index: 1,
+                headingLevel: null,
+                styleId: null,
+                inTable: false,
+            },
+        ],
+    }),
+});
+
+const writingHost = (docPath, wordIndex = 1) => ({
+    edit: async () => {
+        await writeFile(docPath, "EDITED");
+        return { status: "edited", wordIndex, page: 2, released: true };
+    },
+});
+
+test("a replacement returns the text the paragraph had before it", async () => {
+    // The change overlay narrows its highlight by diffing this against the
+    // post-edit text (`change-record.mjs`). It costs nothing to produce: the
+    // read that resolves the address happens anyway, and this same string is
+    // already sent to the host as `expectedText`.
+    await withTemp(async (dir) => {
+        const doc = path.join(dir, "report.docx");
+        await writeFile(doc, "ORIGINAL");
+
+        const editor = new DocumentEditor({
+            reader: changingReader(doc, "One two three.", "One two and a half three."),
+            host: writingHost(doc),
+            snapshotRoot: path.join(dir, "artifacts"),
+        });
+
+        const result = await editor.edit(doc, intent, { revisionToken: await fileRevisionToken(doc) });
+        assert.equal(result.previousText, "One two three.");
+        assert.equal(result.paragraph.text, "One two and a half three.");
+    });
+});
+
+test("an insert returns no previous text, because the paragraph had none", async () => {
+    // The addressed paragraph is the *anchor*; the paragraph Word touched is
+    // new. An index comparison would not catch it either --
+    // `insert_paragraph_before` reports the same `wordIndex` for the new
+    // paragraph as the anchor had. Diffing the new paragraph against its
+    // neighbour would narrow the highlight from two unrelated strings, which is
+    // a confident box in the wrong place; absent is the honest answer.
+    await withTemp(async (dir) => {
+        for (const op of ["insert_paragraph_after", "insert_paragraph_before"]) {
+            const doc = path.join(dir, `${op}.docx`);
+            await writeFile(doc, "ORIGINAL");
+
+            const editor = new DocumentEditor({
+                reader: changingReader(doc, "The anchor paragraph.", "The inserted paragraph."),
+                host: writingHost(doc, 2),
+                snapshotRoot: path.join(dir, "artifacts"),
+            });
+
+            const result = await editor.edit(
+                doc,
+                { op, address: "p:0123456789ab", text: "The inserted paragraph." },
+                { revisionToken: await fileRevisionToken(doc) },
+            );
+            assert.equal(result.previousText, null, `${op} must carry no previous text`);
+        }
+    });
+});
+
 test("revert refuses without a token, and refuses a stale one", async () => {
     await withTemp(async (dir) => {
         const doc = path.join(dir, "report.docx");

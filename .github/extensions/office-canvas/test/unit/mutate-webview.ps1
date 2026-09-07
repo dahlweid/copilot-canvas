@@ -57,8 +57,8 @@ $mutants = @(
     # records by identity un-dismisses the change the reader just dismissed.
     @{ name = 'a dismissed change is remembered by object identity'
        file = 'src/ui/app.js'
-       from = '    record ? `${record.at}\u0000${record.op}\u0000${record.page}\u0000${record.text ?? ""}` : null;'
-       to   = '    record;' }
+       from = '        ? `${record.at}\u0000${record.op}\u0000${record.page}\u0000${record.text ?? ""}\u0000${record.span ?? ""}`'
+       to   = '        ? record' }
 
     @{ name = '"Show me" is offered for a change with nowhere to go'
        file = 'src/ui/app.js'
@@ -212,7 +212,7 @@ $mutants = @(
 
     @{ name = 'pages are drawn at 1:1 regardless of the container width'
        file = 'src/ui/pdf-view.mjs'
-       from = '        return Math.max(0.2, Math.min(4, available / unscaled.width));'
+       from = '        return clampScale(available / (mode === "height" ? unscaled.height : unscaled.width));'
        to   = '        return 1;' }
 
     @{ name = 'goToPage does not clamp to the document'
@@ -239,8 +239,8 @@ $mutants = @(
 
     @{ name = 'the visible page is never reported'
        file = 'src/ui/pdf-view.mjs'
-       from = '        this.#onPageChange(best);'
-       to   = '        void best;' }
+       from = '        this.#onPageChange(this.#visiblePage());'
+       to   = '        void this.#visiblePage();' }
 
     @{ name = 'the visible-page tolerance is dropped'
        file = 'src/ui/pdf-view.mjs'

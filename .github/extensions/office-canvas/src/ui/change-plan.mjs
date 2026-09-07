@@ -27,6 +27,12 @@
 // Measured: before that condition existed, an edit located correctly on page 3
 // also put a "changed" badge on page 2, on the strength of adjacency alone.
 
+// The page the change is on is found by searching for the paragraph's text, and
+// the box is then narrowed to the words that changed where the record names
+// them (`record.span`, #166). The narrowing is passed *into* the locator rather
+// than applied to its answer, because it is only sound inside the match: see
+// `change-record.mjs` on why the span is never a join key of its own.
+
 import { locateText } from "./locate-text.mjs";
 
 /**
@@ -81,7 +87,7 @@ export function planChangeMarks(record, pages) {
             searchable = false;
             continue;
         }
-        const found = locateText(page.items, record.text);
+        const found = locateText(page.items, record.text, { span: record.span ?? null });
         if (found.status === "located" || found.status === "partial") {
             marks.push({ number: page.number, found });
         }

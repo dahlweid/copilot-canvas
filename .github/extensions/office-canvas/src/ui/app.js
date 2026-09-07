@@ -79,7 +79,9 @@ let loadedPdfUrl = null;
 let dismissedChange = null;
 
 const changeKey = (record) =>
-    record ? `${record.at}\u0000${record.op}\u0000${record.page}\u0000${record.text ?? ""}` : null;
+    record
+        ? `${record.at}\u0000${record.op}\u0000${record.page}\u0000${record.text ?? ""}\u0000${record.span ?? ""}`
+        : null;
 
 /**
  * Puts the current change -- or nothing -- in front of the reader.
