@@ -1,14 +1,15 @@
 # Measures the gap between Application.Quit() returning and WINWORD actually
 # exiting, under whichever interpreter runs this. Written when the repo carried
-# two mutually inconsistent measured figures for that gap:
-#   word-host.ps1  "~120 ms"
-#   document-editor.mjs:411  "seconds"
+# two mutually inconsistent measured figures for that gap: `word-host.ps1` said
+# "~120 ms", while the `.Quit()` comment in `document-editor.mjs` said it
+# "returns seconds before the process actually exits",
 # and a full-suite A/B showed a fixed 300 ms wait was NOT enough (the fallback
 # kill still fired), which falsifies ~120 ms on this machine.
 #
 # That conflict has since been resolved in the tree, in the direction this A/B
-# predicted: the "~120 ms" figure was retracted at word-host.ps1:1926 (measured
-# wrong by ~25-30x; the real figure is 3.0-3.7 s) and no longer appears as a
+# predicted: the "~120 ms" figure was retracted in the release-poll comment in
+# `Cmd-Edit` (word-host.ps1), which now records it as measured
+# wrong by ~25-30x; the real figure is 3.0-3.7 s -- and no longer appears as a
 # claim anywhere. So `word-host.ps1` no longer disagrees with the "seconds"
 # figure -- do not repoint the retracted number to its retraction and re-present
 # it as live. This probe is kept as the re-runnable check behind that

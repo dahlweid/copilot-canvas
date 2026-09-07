@@ -55,7 +55,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const OBSERVE_MS = DEADLINE_MS + 8_000;
 
 /**
- * The handler as it shipped before #66, verbatim from `app.js:420`.
+ * The handler as it shipped before #66: the `source.onerror` handler in
+ * `app.js`, verbatim.
  *
  * Kept as the counterfactual arm. Without it this probe would show the fixed
  * build terminating and could not show that the old one does not, which is the

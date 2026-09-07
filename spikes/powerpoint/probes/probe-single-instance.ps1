@@ -104,7 +104,7 @@ try {
     if ($done) { Say ("  " + (Receive-Job $job)) } else { Say "  job timed out"; Stop-Job $job -ErrorAction SilentlyContinue }
     Remove-Job $job -Force -ErrorAction SilentlyContinue
     if (Test-Path $pidFile) {
-        # The job above (:98-100) correctly declines to Quit these, on the
+        # The job above correctly declines to Quit these, on the
         # grounds that it may have attached to an instance it did not create.
         # This block used to force-kill the very same pids, which discarded that
         # reasoning at the point it mattered most. Report only (issue #139).

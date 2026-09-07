@@ -7,8 +7,8 @@
 //
 // It did not, and the reason is that disposal takes real time while the slot
 // holding the cache was cleared only afterwards. `WordHost.dispose` sends `quit`
-// under a 20 s timeout (`word-host.mjs:473`) and then waits up to a further 5 s
-// for the child to exit (`:486`), so the window is up to ~25 s wide -- a ceiling
+// under a 20 s timeout and then waits up to a further 5 s
+// for the child to exit, so the window is up to ~25 s wide -- a ceiling
 // derived from those two constants, not measured. For that whole window the slot
 // still pointed at a cache that was on its way out, and every caller arriving
 // inside it was handed that cache.
@@ -18,7 +18,8 @@
 //
 //   - In the ~5 s tail, `#disposed` is set, so `#ensureStarted` answers with
 //     `The Word host has been shut down.`
-//   - In the ~20 s before that, `#disposed` is still false -- it is set at `:483`
+//   - In the ~20 s before that, `#disposed` is still false -- `dispose()`
+//     (word-host.mjs) sets it
 //     between the quit and the exit wait, and cannot be set earlier because
 //     `#send` refuses to run against a disposed host and would reject the very
 //     quit being sent. The caller's command is written to a host that is inside

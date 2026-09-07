@@ -254,8 +254,9 @@ test("close() ends the backoff rather than waiting it out, and refuses the chang
 
 test("a change delivered during teardown is refused, and refused for being closed", async () => {
     // The delivery-path half of the invariant. `#autoRefresh` is the watcher's
-    // `onChange`, and `#deliver` marks the change seen *before* awaiting it
-    // (watcher.mjs:153-154), rolling back only if it throws. So a disposal guard
+    // `onChange`, and `#deliver` (watcher.mjs) marks the change seen *before*
+    // awaiting `onChange` -- it captures `seenBefore` and calls `#markSeen` on
+    // the new fingerprint first, rolling back only if it throws. So a disposal guard
     // that returns cleanly here does not merely skip a render -- it leaves the
     // change recorded as consumed, with nothing left to re-fire on. That is not
     // #67-like; reached through close() instead of through a lock, it is #67.
@@ -279,8 +280,10 @@ test("a change delivered during teardown is refused, and refused for being close
 });
 
 test("a delivery refused during teardown still rolls the change back, though the watcher is closed", async () => {
-    // The other half, and the one the log line above cannot establish: that log
-    // sits *outside* the `if` that rolls back (watcher.mjs:158-161), so a
+    // The other half, and the one the log line above cannot establish: in
+    // `#deliver`'s `catch` (watcher.mjs) the `change was not consumed ... it
+    // stays pending` log sits *outside* the `if` that rolls back, while the
+    // `#markSeen(seenBefore)` restore sits *inside* it -- so a
     // refusal being logged does not by itself mean `lastSeen` was restored. The
     // rollback is conditional on `filePath` and on the seen-generation, and
     // teardown closes the watcher while the delivery is still in flight -- a
