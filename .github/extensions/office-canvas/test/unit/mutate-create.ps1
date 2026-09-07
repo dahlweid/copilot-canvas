@@ -9,9 +9,24 @@
 #
 # Run from the extension root:
 #   powershell -File test/unit/mutate-create.ps1
+#
+# `-ListMutants` prints the array below as JSON and exits without running
+# anything. It is what the anchor gate consumes; see the block after the array.
+param([switch]$ListMutants)
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+$repo = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $root))
+
+# One place decides which root a mutant's `file` is relative to, because the
+# mutation loop and `-ListMutants` have to agree: a gate that resolved against
+# the other root would report every entry of the convention it guessed wrong as
+# a missing file. `at = 'repo'` means the repository root -- no mutant here uses
+# it, but `mutate-pdfjs.ps1`'s do, and the two harnesses answering the same
+# question differently is what makes the key easy to miss.
+function Resolve-MutantPath($m) {
+    Join-Path $(if ($m.at -eq 'repo') { $repo } else { $root }) $m.file
+}
 
 # Built from a code point rather than typed. Windows PowerShell reads a BOM-less
 # UTF-8 script as ANSI, so an en dash written literally here would not match the
@@ -58,10 +73,22 @@ $mutants = @(
        from  = '            enum: BLOCK_KINDS,'
        to    = '            enum: ["heading", "paragraph", "list", "table"],' }
 
+    # Re-anchored: #165 reworded this description ("Absolute or
+    # workspace-relative path to create" became "Path to create", with the path
+    # resolution note moved into its own constant), which left the anchor
+    # matching nothing and the mutant silently measuring nothing from fc50f98
+    # onwards. The intent is unchanged and is not about the wording: the
+    # creatable extensions must be *interpolated from* `creatableList()`, not
+    # spelled out. `creatableList()` returns ".docx" today, so the mutation
+    # renders identically -- it is killed by the source-level assertion in
+    # create-intent.test.mjs that the description interpolates the list, which
+    # is the only thing that can see the difference, and re-anchoring on any
+    # part of the reworded prose instead would test the prose rather than the
+    # derivation.
     @{ name = 'creatable extensions spelled out'
        file = 'extension.mjs'
-       from  = 'description: `Absolute or workspace-relative path to create (${creatableList()}).'
-       to    = 'description: `Absolute or workspace-relative path to create (.docx).' }
+       from  = 'description: `Path to create (${creatableList()}).'
+       to    = 'description: `Path to create (.docx).' }
 
     # Round 3 of review found this message opened with the bare extension --
     # ".rtf cannot be created" -- which reads as though the extension were the
@@ -224,6 +251,37 @@ export function paragraphsIn(spec) { return spec.blocks.length; }
        to    = '        const spec = { blocks: args?.blocks };' }
 )
 
+# --- what the anchor gate reads -----------------------------------------------
+#
+# `tools/check-mutation-anchors.mjs` asks this harness for its own array rather
+# than reading this file, so the mutants and the root each `file` resolves
+# against stay in one place. A gate that re-derived either would be a second
+# parser of the same data, and the first attempt at one silently dropped a third
+# of `mutate-pdfjs.ps1`'s corpus while reporting a total that looked
+# authoritative. Some anchors here are expressions rather than literals -- the
+# BLOCK_HELP one is built with `$dash` and `[char]0x60` -- so only PowerShell
+# knows what they say.
+#
+# This has to come before the baseline run below: listing anchors runs no suite.
+if ($ListMutants) {
+    # Windows PowerShell writes stdout in the console code page, which would
+    # mangle a non-ASCII anchor on the way to the gate; there it would look like
+    # a broken anchor rather than a broken pipe.
+    [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+    $listed = @($mutants | ForEach-Object {
+        [pscustomobject]@{
+            harness = $MyInvocation.MyCommand.Name
+            name    = $_.name
+            file    = $_.file
+            path    = Resolve-MutantPath $_
+            from    = $_.from
+            to      = $_.to
+        }
+    })
+    ConvertTo-Json -InputObject $listed -Depth 4
+    exit 0
+}
+
 # Three ways a mutant can fail to be evidence, and they need different fixes, so
 # they are counted separately. Folding them together is how "26/26" starts
 # reading as strength while coverage falls:
@@ -256,7 +314,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 foreach ($m in $mutants) {
-    $file = Join-Path $root $m.file
+    $file = Resolve-MutantPath $m
     $original = [IO.File]::ReadAllText($file)
 
     # Counted, not just tested for presence. `String.Replace` replaces every
