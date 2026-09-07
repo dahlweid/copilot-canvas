@@ -20,11 +20,12 @@
 // rather than a stand-in whose duration is the only thing it models.
 //
 // A note on the failure this file kept walking into, because it is a class and
-// not an incident. Both tests here once carried a title asserting that a close
-// had *finished* over an assertion that could only see it *start* -- the prose a
-// human reads and the thing the machine checks had come apart, and nothing in
-// between complains when they do. The same shape bit the pull request that
-// added the mutation-anchor gate from the other side: its body said in plain
+// not an incident. The seam test here once carried a title asserting that a
+// close had *finished* over an assertion that could only see it *start* -- the
+// prose a human reads and the thing the machine checks had come apart, and
+// nothing in between complains when they do. The same shape bit the pull
+// request that added the mutation-anchor gate from the other side: its body
+// said in plain
 // English that it did *not* close its tracking issue, while GitHub's
 // linked-issue parser, which does not read negation, matched the keyword beside
 // the reference and registered it as closing that issue. Prose was the part
@@ -34,6 +35,19 @@
 // assertion name the mechanism -- `closeDocument:returned`, not `closeDocument`
 // -- so that a title claiming completion has something underneath it that can
 // only be satisfied by completion.
+//
+// What this file does *not* cover, recorded because its absence used to be
+// hidden by a test that implied otherwise. Nothing here pairs a `refresh` with
+// an in-flight edit. A second test once did, and was removed rather than
+// repaired: `open (render-cache.mjs)` drops a stale working copy itself when the
+// fingerprint has changed, and an edit changes it, so the reopen brought its own
+// `closeDocument` and filled the same slot in the asserted order. Measured:
+// removing the invalidation from `editDocument (render-cache.mjs)` entirely left
+// that test green. It could not attribute the close it observed, so the
+// assertion under the name was doing less work than the name implied -- the same
+// shape as the two cases above. The pairing is tracked in #186; the choke point
+// that serialises it is exercised by the edit-versus-outline test below, so what
+// is missing is an assertion, not a guard.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -182,10 +196,27 @@ test("the read-before-teardown assertion fails separately for each of its three 
         "with no read recorded, the bare comparison would have passed on -1 and claimed the ordering was checked",
     );
 
-    assert.throws(
-        () => assertReadsPrecedeTeardown(["openDocument", "structure"]),
+    // Captured rather than matched, because a regex matcher fails the wrong way
+    // here. Remove the teardown-present guard and the helper falls through to
+    // the ordering comparison, where -1 loses to any real index -- so it still
+    // throws, and `assert.throws` re-raises what it caught when the pattern does
+    // not match. The reader would then be shown "a structure read ran against a
+    // document whose teardown had already started" for a run in which nothing
+    // tore down at all: a true-looking message naming a cause that did not
+    // occur. That is this file's own subject pointed at its own diagnostics, so
+    // the failure output has to name the cause as exactly as the assertion does.
+    let missingTeardown = null;
+    try {
+        assertReadsPrecedeTeardown(["openDocument", "structure"]);
+    } catch (error) {
+        missingTeardown = error;
+    }
+
+    assert.ok(missingTeardown, "with no teardown recorded, the helper must refuse rather than pass vacuously");
+    assert.match(
+        missingTeardown.message,
         /never exercised/,
-        "with no teardown recorded, the failure must not be reported as a read-ordering defect",
+        `no teardown was recorded, so read-versus-teardown order was never exercised; the failure must say that rather than report a read-ordering defect (received: ${missingTeardown.message})`,
     );
 
     assert.throws(
@@ -296,120 +327,6 @@ test("an edit holds the document queue until its invalidation has closed the doc
             releaseEdit.resolve();
             releaseClose.resolve();
             await Promise.allSettled([edit, outline].filter(Boolean));
-        }
-    });
-});
-
-test("a reopen cannot land between an edit and the invalidation that closes it", async () => {
-    // The failure this excludes is the repo's named one: tearing down Word while
-    // work is in flight, seen from the other side. Between `host.edit` returning
-    // and `#invalidateState` closing the document there is a window in which the
-    // file on disk has already changed. A `refresh` admitted into that window
-    // reopens the document from the new bytes and *then* the invalidation closes
-    // what it just opened -- leaving the canvas holding a closed docId, with no
-    // error anywhere to say so.
-    //
-    // Do not delete the close gate below on the grounds that this test is not
-    // the detector for it. Both halves of that sentence are true and neither
-    // implies the other, so take them in order.
-    //
-    // It is not the detector. Dropping the `await` in front of
-    // `#invalidateState (render-cache.mjs)`, or the one in front of
-    // `host.closeDocument` inside it, leaves *this* test green; the test above
-    // is what turns those red. The asymmetry is not a quality difference, it is
-    // which competing operation each test uses. That test's `outline` reaches
-    // `host.outlineMarkup` with no awaited I/O in front of it, so a released
-    // queue is observed every time. This test's `refresh` goes through `open`,
-    // whose first marker sits behind a `stat` and a `mkdir` -- a released queue
-    // here is a race, and a test that detects a mutation only sometimes is worse
-    // than one that never claims to, because it fails on other people's commits.
-    //
-    // It also cannot attribute the close it sees, which is worth knowing before
-    // reading the lifecycle below as proof that the edit tore anything down.
-    // `open (render-cache.mjs)` drops a stale working copy itself when the
-    // fingerprint has changed, and the edit changes it -- so the reopen brings
-    // its own `closeDocument`. Measured: removing the invalidation from
-    // `editDocument (render-cache.mjs)` entirely leaves this test green, because
-    // the reopen's own close fills the same slot in the order. The claim this
-    // test does carry is the one in its name: no reopen lands in the window.
-    //
-    // The gate still is not redundant, and the reason is not symmetry with the
-    // test above. Ungated, this fake's two close markers push with no suspension
-    // between them, so the settled-order assertion at the end would hold
-    // whatever the caller did with the close's promise -- and an assertion that
-    // holds regardless of the behaviour it names is the defect this whole file
-    // exists to stop shipping. The gate is what makes the ordering it asserts an
-    // ordering the code has to produce, which it must be even where it is not
-    // the thing catching a specific mutation.
-    await withFixture("reopen.docx", async ({ cache, docPath }) => {
-        const calls = [];
-        const editEntered = deferred();
-        const releaseEdit = deferred();
-        const closeEntered = deferred();
-        const releaseClose = deferred();
-        let edit;
-        let refresh;
-
-        cache.host = fakeHost({
-            docPath,
-            calls,
-            gates: { editEntered, releaseEdit, closeEntered, releaseClose },
-        });
-
-        try {
-            const { address, revisionToken } = await openAndAddress(cache, docPath);
-
-            edit = cache.editDocument(docPath, { op: "replace_text", address, text: "rewritten" }, { revisionToken });
-            await editEntered.promise;
-
-            const opensBefore = calls.filter((call) => call === "openDocument").length;
-            refresh = cache.refresh(docPath);
-            await turns(20);
-
-            assert.equal(
-                calls.filter((call) => call === "openDocument").length,
-                opensBefore,
-                "a refresh reopened the document while an edit was still in flight",
-            );
-
-            // The close is gated for the same reason it is in the test above,
-            // and not merely for symmetry: ungated, this fake's two markers are
-            // pushed with no suspension between them, so the settled order below
-            // would hold whatever the caller did with the close's promise. The
-            // gate is what makes the reopen have to *wait* for a teardown that is
-            // genuinely still running.
-            releaseEdit.resolve();
-            await closeEntered.promise;
-            await turns(20);
-
-            assert.equal(
-                calls.filter((call) => call === "openDocument").length,
-                opensBefore,
-                "a refresh reopened the document while its close was still in flight against Word",
-            );
-
-            releaseClose.resolve();
-            await edit;
-            const refreshed = await refresh;
-
-            const lifecycle = calls.filter((call) => call !== "structure");
-            assertReadsPrecedeTeardown(calls);
-            assert.deepEqual(
-                lifecycle,
-                [
-                    "openDocument",
-                    "edit",
-                    "closeDocument:entered",
-                    "closeDocument:returned",
-                    "openDocument",
-                ],
-                "the reopen landed inside the edit's invalidation instead of queueing behind it",
-            );
-            assert.equal(refreshed.changed, true, "the refresh did not observe the edited bytes");
-        } finally {
-            releaseEdit.resolve();
-            releaseClose.resolve();
-            await Promise.allSettled([edit, refresh].filter(Boolean));
         }
     });
 });
