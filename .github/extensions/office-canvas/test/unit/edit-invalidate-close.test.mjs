@@ -18,6 +18,22 @@
 // `DocumentEditor` and `DocumentReader` run on top of it, so the queued unit of
 // work here is the one the product runs -- read, edit, re-read, invalidate --
 // rather than a stand-in whose duration is the only thing it models.
+//
+// A note on the failure this file kept walking into, because it is a class and
+// not an incident. Both tests here once carried a title asserting that a close
+// had *finished* over an assertion that could only see it *start* -- the prose a
+// human reads and the thing the machine checks had come apart, and nothing in
+// between complains when they do. The same shape bit the pull request that
+// added the mutation-anchor gate from the other side: its body said in plain
+// English that it did *not* close its tracking issue, while GitHub's
+// linked-issue parser, which does not read negation, matched the keyword beside
+// the reference and registered it as closing that issue. Prose was the part
+// everybody read; the metadata was the part that would have acted. Neither case
+// is catchable by reading the diff, because in both the sentence is true of the
+// intent and false of the mechanism. The defence used here is to make the
+// assertion name the mechanism -- `closeDocument:returned`, not `closeDocument`
+// -- so that a title claiming completion has something underneath it that can
+// only be satisfied by completion.
 
 import test from "node:test";
 import assert from "node:assert/strict";
