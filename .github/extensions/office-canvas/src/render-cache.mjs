@@ -311,9 +311,16 @@ export class RenderCache {
     #require(docPath) {
         const state = this.#docs.get(identityOf(normalizeDocPath(docPath)));
         // The `closing` arm stays here rather than deferring to the queue's own
-        // refusal: `search`, `text` and `info` go through `#require` and then
-        // straight to the host without enqueuing anything, so for them this is
-        // the only refusal there is.
+        // refusal. Every `#require` caller except `outline` reaches the host
+        // without enqueuing anything, so for all of them this is the only
+        // refusal there is.
+        //
+        // Stated as "every caller except `outline`" on purpose. An explicit list
+        // would be a second copy of a fact the code already holds, and the next
+        // caller added silently makes it an undercount -- which is the direction
+        // that does harm, since a reader auditing the named ones would conclude
+        // anyone unnamed is covered by the choke point when they never pass
+        // through it. This form cannot rot that way.
         if (!state || !state.meta || state.closing) {
             throw new DocumentError("not_open", "That document is not open in this canvas.");
         }

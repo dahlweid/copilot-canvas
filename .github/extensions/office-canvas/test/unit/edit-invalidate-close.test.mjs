@@ -48,6 +48,35 @@ import { deferred, turns } from "./queue-probe.mjs";
 const BODY = "The paragraph as it stood before the edit.";
 
 /**
+ * Asserts that every structure read landed before the teardown began.
+ *
+ * `DocumentReader` is the only thing in `src/` that calls `host.structure`, and
+ * `edit (document-editor.mjs)` re-reads the document after saving it, so a
+ * `structure` marker recorded after `closeDocument:entered` would be a read
+ * issued against a document Word has already been told to close.
+ *
+ * The two preconditions are not ceremony. `lastIndexOf` and `indexOf` both
+ * return -1 for an absent marker, and -1 loses to any real index, so the bare
+ * comparison would pass green on a run where no read happened at all -- an
+ * assertion whose message claims a read was correctly ordered, satisfied by
+ * there being no read. The missing-teardown case fails the other way: it would
+ * report a read-ordering defect when the real defect is that nothing tore down.
+ * Each of the three failures has to name its own cause, so each is asserted
+ * separately.
+ */
+const assertReadsPrecedeTeardown = (calls) => {
+    const lastRead = calls.lastIndexOf("structure");
+    const teardownStart = calls.indexOf("closeDocument:entered");
+
+    assert.notEqual(lastRead, -1, "no structure read was recorded at all, so the ordering below would pass vacuously");
+    assert.notEqual(teardownStart, -1, "no teardown was recorded at all, so read-versus-teardown order was never exercised");
+    assert.ok(
+        teardownStart > lastRead,
+        "a structure read ran against a document whose teardown had already started",
+    );
+};
+
+/**
  * A Word host that serves a two-paragraph document and writes to the file when
  * asked to edit it.
  *
@@ -133,6 +162,44 @@ const withFixture = async (name, run) => {
     }
 };
 
+test("the read-before-teardown assertion fails separately for each of its three causes", () => {
+    // This exists because the assertion it covers cannot be driven red from
+    // production code. Three mutations were tried and all three are preempted:
+    // dropping the `await` on the post-edit re-read in
+    // `edit (document-editor.mjs)` makes `after` a promise and dies on a
+    // `TypeError` first; dropping the `await` on the editor call in
+    // `editDocument (render-cache.mjs)` trips the settled-order assertion; and
+    // reordering the invalidation before the edit deadlocks against the gates
+    // and reports only `test timed out`. A timeout is a red test, but it names
+    // no cause, so none of those runs demonstrates that this assertion works.
+    //
+    // So the assertion is verified here instead, directly. If someone later
+    // "simplifies" the helper to the bare index comparison, the first case below
+    // goes red -- which is the whole point of it not being the bare comparison.
+    assert.throws(
+        () => assertReadsPrecedeTeardown(["openDocument", "closeDocument:entered"]),
+        /pass vacuously/,
+        "with no read recorded, the bare comparison would have passed on -1 and claimed the ordering was checked",
+    );
+
+    assert.throws(
+        () => assertReadsPrecedeTeardown(["openDocument", "structure"]),
+        /never exercised/,
+        "with no teardown recorded, the failure must not be reported as a read-ordering defect",
+    );
+
+    assert.throws(
+        () => assertReadsPrecedeTeardown(["closeDocument:entered", "structure"]),
+        /teardown had already started/,
+        "a read after the teardown began is the defect this assertion is for",
+    );
+
+    assert.doesNotThrow(
+        () => assertReadsPrecedeTeardown(["structure", "closeDocument:entered", "closeDocument:returned"]),
+        "the correct order must not be reported as a defect",
+    );
+});
+
 test("an edit holds the document queue until its invalidation has closed the document", async () => {
     // The hold is inside `host.edit`, not on a timer, and that is the whole
     // design of this test. The obvious shape -- start an edit behind a held
@@ -214,9 +281,12 @@ test("an edit holds the document queue until its invalidation has closed the doc
             // `outlineMarkup`, which is what distinguishes a queue released after
             // the teardown *finished* from one released when it merely started.
             //
-            // The reads are filtered out rather than asserted -- a read count is
-            // `document-editor.mjs`'s business and would make this test red for
-            // something it is not about.
+            // The reads are filtered out of the comparison because a read *count*
+            // is `document-editor.mjs`'s business and would make this test red for
+            // something it is not about. Filtering drops their *position* too,
+            // though, and position here is real information -- so it is asserted
+            // just above rather than discarded with the count.
+            assertReadsPrecedeTeardown(calls);
             assert.deepEqual(
                 calls.filter((call) => call !== "structure" && call !== "openDocument"),
                 ["edit", "closeDocument:entered", "closeDocument:returned", "outlineMarkup", "outlinePositions"],
@@ -238,6 +308,39 @@ test("a reopen cannot land between an edit and the invalidation that closes it",
     // reopens the document from the new bytes and *then* the invalidation closes
     // what it just opened -- leaving the canvas holding a closed docId, with no
     // error anywhere to say so.
+    //
+    // Do not delete the close gate below on the grounds that this test is not
+    // the detector for it. Both halves of that sentence are true and neither
+    // implies the other, so take them in order.
+    //
+    // It is not the detector. Dropping the `await` in front of
+    // `#invalidateState (render-cache.mjs)`, or the one in front of
+    // `host.closeDocument` inside it, leaves *this* test green; the test above
+    // is what turns those red. The asymmetry is not a quality difference, it is
+    // which competing operation each test uses. That test's `outline` reaches
+    // `host.outlineMarkup` with no awaited I/O in front of it, so a released
+    // queue is observed every time. This test's `refresh` goes through `open`,
+    // whose first marker sits behind a `stat` and a `mkdir` -- a released queue
+    // here is a race, and a test that detects a mutation only sometimes is worse
+    // than one that never claims to, because it fails on other people's commits.
+    //
+    // It also cannot attribute the close it sees, which is worth knowing before
+    // reading the lifecycle below as proof that the edit tore anything down.
+    // `open (render-cache.mjs)` drops a stale working copy itself when the
+    // fingerprint has changed, and the edit changes it -- so the reopen brings
+    // its own `closeDocument`. Measured: removing the invalidation from
+    // `editDocument (render-cache.mjs)` entirely leaves this test green, because
+    // the reopen's own close fills the same slot in the order. The claim this
+    // test does carry is the one in its name: no reopen lands in the window.
+    //
+    // The gate still is not redundant, and the reason is not symmetry with the
+    // test above. Ungated, this fake's two close markers push with no suspension
+    // between them, so the settled-order assertion at the end would hold
+    // whatever the caller did with the close's promise -- and an assertion that
+    // holds regardless of the behaviour it names is the defect this whole file
+    // exists to stop shipping. The gate is what makes the ordering it asserts an
+    // ordering the code has to produce, which it must be even where it is not
+    // the thing catching a specific mutation.
     await withFixture("reopen.docx", async ({ cache, docPath }) => {
         const calls = [];
         const editEntered = deferred();
@@ -290,6 +393,7 @@ test("a reopen cannot land between an edit and the invalidation that closes it",
             const refreshed = await refresh;
 
             const lifecycle = calls.filter((call) => call !== "structure");
+            assertReadsPrecedeTeardown(calls);
             assert.deepEqual(
                 lifecycle,
                 [
