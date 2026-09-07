@@ -126,7 +126,7 @@ async function check(name, fn) {
  * (r), (e) or (tm). Adding a bait whose anchor does not match is a hard failure.
  *
  * This is a convention rather than an invention, and the precedent is stricter
- * than what is done here. edit-smoke.mjs:601 locates by MARKbr, MARKnbh, MARKtab
+ * than what is done here. edit-smoke.mjs's layout-mark check locates by MARKbr, MARKnbh, MARKtab
  * and MARKsoft -- markers deliberately free of the character each case is about,
  * so "MARKnbh e-mail" carries the hyphen under test in the payload and none in
  * the locator. read-smoke.mjs does the same with "DUPLICATE LINE:". This file

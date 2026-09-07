@@ -267,7 +267,8 @@ function Stop-IsolatedPowerPoint {
         # Routed through the one sanctioned kill. The pid came from CreateProcess,
         # which is a fact from the kernel rather than an inference over a census --
         # but a pid alone is not identity, and both files here treat this process
-        # as expected to exit (:201 'process exited'), so a recycled pid is a real
+        # as expected to exit -- the wait loop above records `Diag = 'process exited'`
+        # when the pid disappears -- so a recycled pid is a real
         # exposure. Stop-VerifiedPpt re-checks the name and the recorded StartTime
         # and declines rather than guessing.
         $r = Stop-VerifiedPpt $Ctx.Pid $Ctx.StartTime

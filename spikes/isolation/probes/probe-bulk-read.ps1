@@ -31,8 +31,10 @@ function Get-WordPids { @(Get-Process -Name WINWORD -ErrorAction SilentlyContinu
 # refuses to name a pid at all rather than picking a plausible one. Differencing
 # the WINWORD set around `New-Object` is measured unsound here -- with one
 # concurrent Word from a separate process it reported 2 new pids for the 1
-# instance created, and agreed only by luck
-# (probe-init-attribution.ps1:250-251, test/integration/word-pids.mjs:29-38).
+# instance created, and agreed only by luck -- see the "ambiguous condition was
+# reached" branch of probe-init-attribution.ps1, which reports that `$new[0]` was
+# ours "by luck", and the "Attribution is now sound at its source" note in
+# test/integration/word-pids.mjs.
 function Get-AttributedWordPid($app) {
     try {
         $hwnd = [IntPtr][int64]$app.ActiveWindow.Hwnd
@@ -101,8 +103,9 @@ try {
     # one) but AHEAD of the warm-up, so the warm-up remains the last operation
     # before the stopwatch and arm A is unperturbed. Reading early also matters
     # for correctness: a late ActiveWindow read can name a Protected View
-    # sandbox WINWORD the caller never bound to
-    # (probe-init-attribution.ps1:36-44).
+    # sandbox WINWORD the caller never bound to -- the "What this deliberately
+    # does NOT measure" note in probe-init-attribution.ps1 records why the read
+    # is early and what moving it would cost.
     $attributed = Get-AttributedWordPid $word
     if ($null -eq $attributed) {
         "  ownership: could not attribute this instance to a pid."
@@ -179,7 +182,8 @@ finally {
     # is addressed to the RCW we created, so it can only ever end the instance
     # we are bound to; a kill is addressed to a coordinate and can land on a
     # Word we never started. Destroy by handle is safe where destroy by
-    # coordinate is not (word-host.ps1:804-813).
+    # coordinate is not -- the same argument the `Quit` gate in `Stop-Word`
+    # (word-host.ps1) makes, in those words.
     #
     # Every step below is individually wrapped: an error escaping this block
     # would replace a real failure from the probe body.
@@ -217,7 +221,8 @@ finally {
     if ($ownedPid) {
         # 90 s is a generous observation budget, not a measured boundary: a Word
         # has been seen to outlive a 30 s poll under concurrent load and then
-        # exit on its own (test/integration/word-pids.mjs:130-137). Polling
+        # exit on its own -- the note on `assertNoLeakedWord`'s 90 s deadline in
+        # test/integration/word-pids.mjs records that run. Polling
         # makes the budget free on success.
         $deadline = (Get-Date).AddSeconds(90)
         # Poll until the pid is absent, not merely until it is identified. An
@@ -260,7 +265,8 @@ finally {
 }
 
 # Placed after the finally so cleanup always runs first: an exit that skipped
-# cleanup would trade a reported failure for a leaked WINWORD
-# (probe-fileshare-algebra.ps1:243-248). If the probe body threw, that exception
+# cleanup would trade a reported failure for a leaked WINWORD -- probe-fileshare-algebra.ps1
+# places its own exit gate after its `finally` for that reason, "so PART B's Word
+# is always reaped first". If the probe body threw, that exception
 # propagates past this line and the original failure is preserved.
 if ($verdict -ne 0) { exit $verdict }

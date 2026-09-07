@@ -60,7 +60,8 @@ export class RenderCache {
 
     #live(what) {
         if (this.disposed) {
-            // word-host.mjs:117, verbatim: this is the sentence the user saw.
+            // `#ensureStarted` in word-host.mjs, verbatim: this is the sentence
+            // the user saw.
             const err = new Error("The Word host has been shut down.");
             err.code = "word_unavailable";
             throw err;
