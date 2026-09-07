@@ -13,23 +13,12 @@ import path from "node:path";
 
 import { RenderCache } from "../../src/render-cache.mjs";
 import { flatOpc, paragraph } from "./word-fixtures.mjs";
+import { deferred, turns } from "./queue-probe.mjs";
 
 const GENERATIONS = [
     { text: "Chapter one", start: 100, page: 1 },
     { text: "Chapter two", start: 200, page: 7 },
 ];
-
-const turns = async (count) => {
-    for (let i = 0; i < count; i++) await new Promise((resolve) => setImmediate(resolve));
-};
-
-const deferred = () => {
-    let resolve;
-    const promise = new Promise((r) => {
-        resolve = r;
-    });
-    return { promise, resolve };
-};
 
 test("a refresh cannot land between outline markup and outline positions", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "outline-interleave-"));
