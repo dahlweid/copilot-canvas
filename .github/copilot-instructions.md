@@ -134,11 +134,10 @@ plausible cause already attached, and several were stated more confidently than
 they had been measured — the anchor claim was true of PowerShell and false of
 Node, and the test-output prefix was blamed first on interactive-versus-CI and
 then on the Node version alone, when it is both. Each was on its way into this
-file, carrying authority and with
-nothing downstream positioned to check it, and each survived only because
-somebody re-measured their own claim. An example is a claim, and an example
-inside a rule about unverified measurement is a claim under the brightest light
-there is.
+file, carrying authority and with nothing downstream positioned to check it,
+and each survived only because somebody re-measured their own claim. An example
+is a claim, and an example inside a rule about unverified measurement is a
+claim under the brightest light there is.
 
 ## Deliberate decisions that look like defects
 
@@ -209,10 +208,15 @@ welcome and has repeatedly found genuine defects.
   value`, `explorer.exe <path>`), never interpolated into a command string.
   Flag any new `-Command` with an interpolated value, any `shell: true`, and any
   `cmd.exe /c`. A `node -e "<program>"` whose program text is assembled by
-  interpolation is the same shape and belongs in that list: measured, a regex
-  written `/^alpha\$/m` inside a PowerShell double-quoted string reached Node as
-  `^alpha\$`, an escaped literal, because the escape character there is a
-  backtick. Write the program to a file and pass the path as argv.
+  interpolation belongs in that list for the *opposite* reason to the entries
+  above it. Measured: a regex written `/^alpha\$/m` inside a PowerShell
+  double-quoted string reached Node as `^alpha\$`, an escaped literal — and the
+  bare `$` arrives intact, because `$/` is not a valid variable start. Nothing
+  was corrupted in transit; the parser's presence induced a defence that was
+  unnecessary and destructive. The remedy is stronger for that, not weaker:
+  removing the parser stops a live one mangling a correct value **and** removes
+  the impulse to defend against it. Write the program to a file and pass the
+  path as argv.
 
 ## Conventions
 
