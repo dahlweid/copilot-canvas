@@ -137,9 +137,18 @@ export class RenderCache {
         // leaves a half-open document behind.
         const state = this.#stateFor(docPath);
         if (state.closing) {
-            // `close()` is the sole queue entry accepted after this flag is set.
-            // Other document operations must refuse it, or they can append after
-            // this await and act on a state that has already been removed.
+            // The one caller whose answer to a closing document is a document
+            // rather than a refusal: it waits for the closer and opens again.
+            //
+            // This branch **returns**, so `open` never reaches
+            // `#enqueueDocumentOperation` with the flag set, and the choke-point
+            // refusal there is unreachable from here. The recursion re-derives
+            // state through `#stateFor`, and the closer deletes the map entry
+            // before `documentPending` resolves, so what it opens is a fresh
+            // state. "A repeated close cannot delete a document reopened behind
+            // the first close" in `outline-interleave.test.mjs` is what holds
+            // this: were the wait-and-reopen ever to fall through to the queue,
+            // that test would see `not_open` instead of a second document.
             await state.documentPending;
             return this.open(docPath);
         }
@@ -244,9 +253,6 @@ export class RenderCache {
         const docPath = requireSupported(rawPath);
         const state = this.#docs.get(identityOf(docPath));
         if (!state) return this.#editorFor().edit(docPath, intent, options);
-        if (state.closing) {
-            throw new DocumentError("not_open", "That document is not open in this canvas.");
-        }
         return this.#enqueueDocumentOperation(state, async () => {
             const result = await this.#editorFor().edit(docPath, intent, options);
             await this.#invalidateState(state);
@@ -259,9 +265,6 @@ export class RenderCache {
         const docPath = requireSupported(rawPath);
         const state = this.#docs.get(identityOf(docPath));
         if (!state) return this.#editorFor().revert(docPath, options);
-        if (state.closing) {
-            throw new DocumentError("not_open", "That document is not open in this canvas.");
-        }
         return this.#enqueueDocumentOperation(state, async () => {
             const result = await this.#editorFor().revert(docPath, options);
             await this.#invalidateState(state);
@@ -307,13 +310,46 @@ export class RenderCache {
 
     #require(docPath) {
         const state = this.#docs.get(identityOf(normalizeDocPath(docPath)));
+        // The `closing` arm stays here rather than deferring to the queue's own
+        // refusal. Every `#require` caller except `outline` reaches the host
+        // without enqueuing anything, so for all of them this is the only
+        // refusal there is.
+        //
+        // Stated as "every caller except `outline`" on purpose. An explicit list
+        // would be a second copy of a fact the code already holds, and the next
+        // caller added silently makes it an undercount -- which is the direction
+        // that does harm, since a reader auditing the named ones would conclude
+        // anyone unnamed is covered by the choke point when they never pass
+        // through it. This form cannot rot that way.
         if (!state || !state.meta || state.closing) {
             throw new DocumentError("not_open", "That document is not open in this canvas.");
         }
         return state;
     }
 
-    #enqueueDocumentOperation(state, operation) {
+    /**
+     * Serializes one document's operations, and refuses to extend the chain of
+     * a document that is closing.
+     *
+     * The refusal lives here, at the choke point every queued operation passes
+     * through, rather than in each caller. `open()`'s guard awaits
+     * `state.documentPending` **as stored at that moment** and acts on the state
+     * it checked; that is only sound while nothing else can append a link behind
+     * it. Stated as "every caller must check `closing` first" it was a property
+     * of four call sites, and a fifth that forgot would have broken `open()`
+     * from a distance with nothing to catch it. Stated here it is a property of
+     * one function, and forgetting is not available.
+     *
+     * The invariant is narrowed rather than retired, and both exemptions are
+     * deliberate. `close()` sets the flag and must still enqueue itself, so it
+     * opts out explicitly. `open()` never arrives here with the flag set at all
+     * -- its own branch waits for the closer and reopens instead of falling
+     * through -- so its different answer survives untouched.
+     */
+    #enqueueDocumentOperation(state, operation, { allowClosing = false } = {}) {
+        if (state.closing && !allowClosing) {
+            throw new DocumentError("not_open", "That document is not open in this canvas.");
+        }
         const run = state.documentPending.then(operation);
         state.documentPending = run.then(
             () => undefined,
@@ -430,11 +466,17 @@ export class RenderCache {
         if (!state) return;
         if (state.closing) return state.documentPending;
         state.closing = true;
-        return this.#enqueueDocumentOperation(state, async () => {
-            this.#docs.delete(identity);
-            await this.host.closeDocument({ docId: state.docId }).catch(() => {});
-            await rm(state.workDir, { recursive: true, force: true }).catch(() => {});
-        });
+        return this.#enqueueDocumentOperation(
+            state,
+            async () => {
+                this.#docs.delete(identity);
+                await this.host.closeDocument({ docId: state.docId }).catch(() => {});
+                await rm(state.workDir, { recursive: true, force: true }).catch(() => {});
+            },
+            // The closer is the one operation a closing document still accepts;
+            // it set the flag itself immediately before this call.
+            { allowClosing: true },
+        );
     }
 
     /** Number of documents actually open in Word -- used to decide when to quit it. */
