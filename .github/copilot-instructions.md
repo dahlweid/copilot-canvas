@@ -16,6 +16,129 @@ measurement as the stronger evidence and say so rather than restating the
 general rule. If you believe a cited measurement does not support the conclusion
 drawn from it, that is a high-value finding — say it plainly.
 
+**A measurement that can come back empty must say how much it matched.** The
+probe that found nothing and the probe that ran wrong produce the same output —
+silence — and silence reads as agreement with whatever you already expected.
+This has bitten in four separate tools: a `Select-String` for
+`^# (tests|pass|fail)` over test output, which matched nothing because the
+summary prefix depends on **both** the Node version and whether stdout is a
+terminal; a `.Contains('on')` against `gh` output that searched for a whole
+array element rather than a substring, because PowerShell line-splits
+native-command output; a regex anchor carried across an **engine boundary**,
+our harnesses straddling two — a PowerShell harness applying anchors, driving
+a Node suite whose tests apply their own; and a `Select-Object -First 3` over
+a diff that showed three comment lines and hid the fourth, which was the one
+that mattered. None of them errored. All of them looked like measurements.
+
+The first is the sharpest, because nobody wrote anything careless. Measured,
+`node --test` with no `--test-reporter`:
+
+|              | stdout piped       | real console       |
+| ------------ | ------------------ | ------------------ |
+| Node 22.23.2 | `# tests 1` (TAP)  | `ℹ tests 1` (spec) |
+| Node 24.18.0 | `ℹ tests 1` (spec) | `ℹ tests 1` (spec) |
+
+Node 22 picks its default from `process.stdout.isTTY` when the test runner's
+reporter utilities load; Node 24 has no choice left to make. So the prefix
+depends on the version **and** on the terminal, and neither alone accounts for
+it. An earlier draft of this rule said it was "not TTY detection", on the
+strength of a probe that set `isTTY` from a preload and saw no change. That
+probe could not have shown anything: the default is a module-level `const`,
+already evaluated by the time a preload assigns to it, so the observation was
+the one the hypothesis predicted either way. Only a different class of input
+settles it — a real console, where Node 22 emits spec while the same version
+piped emits TAP. `validate.yml` pins Node 22 and passes no reporter flag, and
+CI pipes, so `^# tests` matches today, matches nothing the day CI moves to 24,
+and the run stays green either way. A probe that needs a stable prefix should
+name its reporter.
+
+The other two carry the same shape in miniature. `.Contains('on')` is `False`
+on the `System.Object[]` that two lines of native-command output produce and
+`True` on the `System.String` that one line produces, so the filter's meaning
+depends on how much output there was — and it starts working as the output
+shrinks, which is a false all-clear on exactly the small input someone reduces
+to when isolating a problem. And `(?m)^alpha$` under .NET matches LF input but
+not CRLF, because .NET puts `$` only before `\n` — a statement about newline
+handling, which does not deny the independent end-of-input position — while
+`/^alpha$/m` in JavaScript matches both, because ECMAScript puts it before any
+LineTerminator and `\r` is one. A mechanism verified in one engine is not
+verified in the other.
+
+So before trusting a result, ask which two states the check has to tell apart.
+**A check whose value does not differ between the state it accepts and the
+state it rejects is not a check.** That question picks the instrument where a
+fixed recipe does not, and the headline above is the commonest case of it
+rather than the whole of it:
+
+- To separate a **broken instrument** from a real absence, give the probe a
+  **positive control** — an input you know matches.
+- To separate **truncation** from completeness, assert the **count** against
+  the whole input, not merely that some rows came back.
+- To separate "**absent**" from "present in a form my pattern does not
+  describe", you need a second, wider view of the same input. A control
+  cannot do it.
+
+That third one is the limit of the positive control, and it was measured
+rather than assumed. With the filter above and a control line of `# tests 1`,
+a typo'd filter reads control 0 and is caught — but Node 24 output, which
+*does* carry a summary, and a run with no summary at all **both** read control
+1 and data 0. A control certifies the instrument against an input you chose,
+so what it certifies is your model of the data; where that model is the thing
+that is wrong, the control passes and the zero still misleads. A wider matcher
+separates those two, 3 against 0. This arrived twice — once on purpose, and
+once when the matcher written to measure the table above scored zero against
+real console output that contained what it sought, because the control began
+at a line start and the data did not.
+
+Where it does apply, the control is not ceremony. The probe first written to
+check that anchor claim returned `false` for every input, including the one
+that had to be `true`, because a JavaScript program was interpolated into a
+PowerShell double-quoted string: `\` is not the escape character there, a
+backtick is, so Node received `^alpha\$` — an escaped literal dollar sign —
+and searched for text that occurs nowhere. The failure agreed with the
+hypothesis, so nothing in the output invited doubt; that is a broken
+instrument, and the control caught it. Two refinements, each of which the bare
+rule misses:
+
+- **The instrument must not change between calibration and use.** Calibrating
+  "expect 14" with a filter that excludes JSDoc `*` lines and then checking with
+  one that excludes only `//` is not a filter matching nothing: the count is
+  real and the filter is real, and it is the *pair* that is incoherent. Verify
+  with the filter that set the expectation, or re-derive the expectation.
+- **Verify a restoration against the bytes you saved — not against a diff, and
+  not against a green baseline.** A mutation harness that restores in the same
+  shell it mutates in is one killed process away from leaving the tree
+  mutated, and a diff read through a filter is this class eating its own
+  cleanup check. But a passing baseline is no better: a mutant that survives
+  on an untested boundary leaves the suite green, so that check reads the same
+  whether the restoration worked or not. Compare the restored files against
+  the captured pre-mutation bytes, unfiltered and untruncated, and keep the
+  baseline beside it as a *behavioural* check. Capture those bytes yourself —
+  `git HEAD` does not know about edits that were already in the tree.
+
+What makes this class expensive is not the wrong answer, it is where the wrong
+answer sends you: its output is attributed to the code under test first. A tree
+left mutated by a killed run surfaced as a test timing out on correct code, and
+the code was distrusted for a while before the tooling was.
+
+Expect the criterion to outrun both of those remedies. The preload probe above
+reported a count and would have passed a positive control: it produced a
+plausible, non-empty, correct-looking result whose value was identical whether
+or not `isTTY` mattered. Neither counting nor controlling reaches that. When
+the check you hold cannot differ across the two states you are trying to
+separate, what you need is a different check — often a different class of
+input altogether — and not a better-tuned version of the one you have.
+
+Finally, hold the examples to the rule. Every instance above arrived with a
+plausible cause already attached, and several were stated more confidently than
+they had been measured — the anchor claim was true of PowerShell and false of
+Node, and the test-output prefix was blamed first on interactive-versus-CI and
+then on the Node version alone, when it is both. Each was on its way into this
+file, carrying authority and with nothing downstream positioned to check it,
+and each survived only because somebody re-measured their own claim. An example
+is a claim, and an example inside a rule about unverified measurement is a
+claim under the brightest light there is.
+
 ## Deliberate decisions that look like defects
 
 Please do not report these as bugs on their own. Do report a place where the
@@ -84,7 +207,16 @@ welcome and has repeatedly found genuine defects.
   values as discrete argv elements (`powershell.exe -File script.ps1 -Param
   value`, `explorer.exe <path>`), never interpolated into a command string.
   Flag any new `-Command` with an interpolated value, any `shell: true`, and any
-  `cmd.exe /c`.
+  `cmd.exe /c`. A `node -e "<program>"` whose program text is assembled by
+  interpolation belongs in that list for the *opposite* reason to the entries
+  above it. Measured: a regex written `/^alpha\$/m` inside a PowerShell
+  double-quoted string reached Node as `^alpha\$`, an escaped literal — and the
+  bare `$` arrives intact, because `$/` is not a valid variable start. Nothing
+  was corrupted in transit; the parser's presence induced a defence that was
+  unnecessary and destructive. The remedy is stronger for that, not weaker:
+  removing the parser stops a live one mangling a correct value **and** removes
+  the impulse to defend against it. Write the program to a file and pass the
+  path as argv.
 
 ## Conventions
 
