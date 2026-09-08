@@ -16,6 +16,73 @@ measurement as the stronger evidence and say so rather than restating the
 general rule. If you believe a cited measurement does not support the conclusion
 drawn from it, that is a high-value finding — say it plainly.
 
+**A measurement that can come back empty must say how much it matched.** The
+probe that found nothing and the probe that ran wrong produce the same output —
+silence — and silence reads as agreement with whatever you already expected.
+This has bitten in four separate tools: a `Select-String` for
+`^# (tests|pass|fail)` over test output, which matched nothing because the
+summary prefix is a property of the **Node version** rather than of the filter
+or the terminal; a `.Contains()` against `gh` output that searched for a whole
+array element, because PowerShell line-splits native-command output; a regex
+anchor carried across an **engine boundary**, our harnesses straddling two — a
+PowerShell harness applying anchors, driving a Node suite whose tests apply
+their own; and a `Select-Object -First 3` over a diff that showed three comment
+lines and hid the fourth, which was the one that mattered. None of them
+errored. All of them looked like measurements.
+
+The first is the sharpest, because nobody wrote anything careless. Measured:
+`node --test` with no `--test-reporter` emits `# tests 1` (TAP) under Node
+22.23.2 and `ℹ tests 1` (spec) under Node 24.18.0 — in both stdout modes,
+piped and with `process.stdout.isTTY` forced true — so the prefix follows the
+version's default reporter and is **not** TTY detection. `validate.yml` pins
+Node 22 and passes no reporter flag. A matcher on `^# tests` is therefore
+correct today and matches nothing the day CI moves to 24, and the run keeps
+passing. The other two carry the same shape in miniature. `.Contains()` is
+`False` on the `System.Object[]` that two lines of native-command output
+produce and `True` on the `System.String` that one line produces, so the
+filter's meaning depends on how much output there was. And `(?m)^alpha$` under
+.NET matches LF input but not CRLF, because .NET puts `$` only before `\n`,
+while `/^alpha$/m` in JavaScript matches both, because ECMAScript puts it
+before any LineTerminator and `\r` is one — so a mechanism verified in one
+engine is not verified in the other, and CRLF is the example that shows the
+boundary rather than the lesson itself.
+
+So assert the count before you trust the result, and give the probe a
+**positive control** — an input you know matches — so that zero is
+distinguishable from broken. The control is not ceremony. The probe first
+written to check that anchor claim returned `false` for every input, including
+the one that had to be `true`, because a JavaScript program was interpolated
+into a PowerShell double-quoted string: `\` is not the escape character there,
+a backtick is, so Node received `^alpha\$` — an escaped literal dollar sign —
+and searched for text that occurs nowhere. The failure agreed with the
+hypothesis, so nothing in the output invited doubt; only the control caught it.
+Two refinements, each of which the bare rule misses:
+
+- **The instrument must not change between calibration and use.** Calibrating
+  "expect 14" with a filter that excludes JSDoc `*` lines and then checking with
+  one that excludes only `//` is not a filter matching nothing: the count is
+  real and the filter is real, and it is the *pair* that is incoherent. Verify
+  with the filter that set the expectation, or re-derive the expectation.
+- **Verify a restoration by re-running the baseline, not by reading a diff.** A
+  mutation harness that restores in the same shell it mutates in is one killed
+  process away from leaving the tree mutated, and a diff read through a filter
+  is this class eating its own cleanup check.
+
+What makes this class expensive is not the wrong answer, it is where the wrong
+answer sends you: its output is attributed to the code under test first. A tree
+left mutated by a killed run surfaced as a test timing out on correct code, and
+the code was distrusted for a while before the tooling was.
+
+Finally, hold the examples to the rule. Every instance above arrived with a
+plausible cause already attached, and several were stated more confidently than
+they had been measured — the anchor claim was true of PowerShell and false of
+Node, and the test-output prefix was attributed to interactive-versus-CI when
+it is neither. Each was on its way into this file, carrying authority and with
+nothing downstream positioned to check it, and each survived only because
+somebody re-measured their own claim. An example is a claim, and an example
+inside a rule about unverified measurement is a claim under the brightest light
+there is.
+
 ## Deliberate decisions that look like defects
 
 Please do not report these as bugs on their own. Do report a place where the
@@ -84,7 +151,11 @@ welcome and has repeatedly found genuine defects.
   values as discrete argv elements (`powershell.exe -File script.ps1 -Param
   value`, `explorer.exe <path>`), never interpolated into a command string.
   Flag any new `-Command` with an interpolated value, any `shell: true`, and any
-  `cmd.exe /c`.
+  `cmd.exe /c`. A `node -e "<program>"` whose program text is assembled by
+  interpolation is the same shape and belongs in that list: measured, a regex
+  written `/^alpha\$/m` inside a PowerShell double-quoted string reached Node as
+  `^alpha\$`, an escaped literal, because the escape character there is a
+  backtick. Write the program to a file and pass the path as argv.
 
 ## Conventions
 
